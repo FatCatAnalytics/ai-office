@@ -1,464 +1,420 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import type { AgentState, Project } from "../types";
+
+import bgImg      from "@assets/sprite_office_bg.png";
+import managerImg from "@assets/sprite_manager.png";
+import frontendImg from "@assets/sprite_frontend.png";
+import backendImg  from "@assets/sprite_backend.png";
+import qaImg       from "@assets/sprite_qa.png";
+import uiuxImg     from "@assets/sprite_uiux.png";
+import devopsImg   from "@assets/sprite_devops.png";
 
 interface Props {
   agents: AgentState[];
   project: Project | null;
 }
 
-// ─── Iso math ─────────────────────────────────────────────────────────────────
-const TW = 100; // tile width
-const TH = 50;  // tile height
-const OX = 500; // origin x (horizontal centre of SVG)
-const OY = 160; // origin y (top of grid)
+const AGENT_IDS    = ["manager","frontend","backend","qa","uiux","devops"];
+const AGENT_IMGS   = [managerImg, frontendImg, backendImg, qaImg, uiuxImg, devopsImg];
+const AGENT_COLORS = ["#6366f1","#22c55e","#3b82f6","#f59e0b","#ec4899","#14b8a6"];
+const AGENT_NAMES  = ["Manager","Frontend Dev","Backend Dev","QA Engineer","UI/UX Designer","DevOps Eng."];
 
-function ix(col: number, row: number) { return OX + (col - row) * (TW / 2); }
-function iy(col: number, row: number) { return OY + (col + row) * (TH / 2); }
-
-// ─── Floor tile ───────────────────────────────────────────────────────────────
-function Tile({ c, r }: { c: number; r: number }) {
-  const x = ix(c, r), y = iy(c, r), hw = TW / 2, hh = TH / 2;
-  const even = (c + r) % 2 === 0;
-  return (
-    <polygon
-      points={`${x},${y-hh} ${x+hw},${y} ${x},${y+hh} ${x-hw},${y}`}
-      fill={even ? "#19243a" : "#1c2840"}
-      stroke="#22304d" strokeWidth="0.8"
-    />
-  );
-}
-
-// ─── Wall ─────────────────────────────────────────────────────────────────────
-function Wall({ c, r }: { c: number; r: number }) {
-  const x = ix(c, r), y = iy(c, r), hw = TW / 2, hh = TH / 2, wh = 60;
-  return (
-    <g>
-      <polygon points={`${x-hw},${y} ${x},${y+hh} ${x},${y+hh-wh} ${x-hw},${y-wh}`}
-        fill="#141e30" stroke="#1e2d45" strokeWidth="0.5" />
-      <polygon points={`${x},${y+hh} ${x+hw},${y} ${x+hw},${y-wh} ${x},${y+hh-wh}`}
-        fill="#111926" stroke="#1e2d45" strokeWidth="0.5" />
-    </g>
-  );
-}
-
-// ─── Desk ─────────────────────────────────────────────────────────────────────
-function Desk({ c, r, color, active }: { c: number; r: number; color: string; active: boolean }) {
-  const x = ix(c, r), y = iy(c, r);
-  const dw = TW * 0.72, dd = TH * 0.6, dh = 16;
-  const hw = dw / 2;
-
-  return (
-    <g>
-      {/* desk front-left face */}
-      <polygon points={`${x-hw},${y+dd*0.28} ${x-hw},${y+dd*0.28+dh} ${x},${y+dd*0.58+dh} ${x},${y+dd*0.58}`}
-        fill="#2c3a54" stroke="#3a4d6a" strokeWidth="0.5"/>
-      {/* desk front-right face */}
-      <polygon points={`${x},${y+dd*0.58} ${x},${y+dd*0.58+dh} ${x+hw},${y+dd*0.28+dh} ${x+hw},${y+dd*0.28}`}
-        fill="#233048" stroke="#3a4d6a" strokeWidth="0.5"/>
-      {/* desk top */}
-      <polygon points={`${x-hw},${y+dd*0.28} ${x},${y} ${x+hw},${y+dd*0.28} ${x},${y+dd*0.58}`}
-        fill="#344766" stroke="#4a6080" strokeWidth="0.5"/>
-      {/* colour accent */}
-      <polygon points={`${x-hw},${y+dd*0.28} ${x-hw},${y+dd*0.28+3} ${x},${y+dd*0.58+3} ${x},${y+dd*0.58}`}
-        fill={color} opacity="0.75"/>
-
-      {/* Monitor stand */}
-      <line x1={x-4} y1={y+dd*0.18} x2={x-4} y2={y+dd*0.18-24} stroke="#4a5a7a" strokeWidth="2"/>
-      {/* Monitor */}
-      <polygon points={`${x-22},${y+dd*0.18-38} ${x+10},${y+dd*0.18-22} ${x+10},${y+dd*0.18-44} ${x-22},${y+dd*0.18-60}`}
-        fill={active ? "#0d1f35" : "#0a1520"} stroke={active ? color : "#253550"} strokeWidth="1.5"/>
-      {active && <>
-        <polygon points={`${x-20},${y+dd*0.18-40} ${x+8},${y+dd*0.18-25} ${x+8},${y+dd*0.18-42} ${x-20},${y+dd*0.18-57}`}
-          fill={color} opacity="0.12"/>
-        {[0,1,2,3].map(i=>(
-          <line key={i} x1={x-16+i} y1={y+dd*0.18-54+i*7} x2={x+4+i*0.4} y2={y+dd*0.18-47+i*7}
-            stroke={color} strokeWidth="1" opacity={0.35+i*0.12}/>
-        ))}
-      </>}
-
-      {/* Keyboard */}
-      <polygon points={`${x-14},${y+dd*0.5} ${x-2},${y+dd*0.38} ${x+4},${y+dd*0.43} ${x-8},${y+dd*0.55}`}
-        fill="#283a52" stroke="#374e68" strokeWidth="0.5"/>
-      {/* Mouse */}
-      <ellipse cx={x+10} cy={y+dd*0.43} rx={3.5} ry={2.5}
-        transform={`rotate(-28,${x+10},${y+dd*0.43})`} fill="#283a52" stroke="#374e68" strokeWidth="0.5"/>
-      {/* Coffee */}
-      <rect x={x+hw-18} y={y+dd*0.14} width={7} height={8} rx={1} fill="#7a5810" stroke="#9a7020" strokeWidth="0.5"/>
-      <line x1={x+hw-11} y1={y+dd*0.17} x2={x+hw-8} y2={y+dd*0.21} stroke="#7a5810" strokeWidth="1.5"/>
-    </g>
-  );
-}
-
-// ─── Person ───────────────────────────────────────────────────────────────────
-const STYLES = [
-  { shirt:"#6366f1", hair:"#2d1800", skin:"#f0a070", hs:"short" },
-  { shirt:"#22c55e", hair:"#1a1a1a", skin:"#c88040", hs:"medium" },
-  { shirt:"#3b82f6", hair:"#7a3800", skin:"#f5c8a0", hs:"short" },
-  { shirt:"#f59e0b", hair:"#3a0000", skin:"#e8a880", hs:"long" },
-  { shirt:"#ec4899", hair:"#111111", skin:"#fad0a0", hs:"bun" },
-  { shirt:"#14b8a6", hair:"#2a2a2a", skin:"#c8a070", hs:"medium" },
+// Positions as % of container [left%, top%] for each agent sprite overlay
+// Tuned to sit at the 6 desk positions visible in the background image
+const POSITIONS: [number, number][] = [
+  [36,  8],  // manager    — top-centre desk
+  [12, 28],  // frontend   — left desk
+  [60, 28],  // backend    — right desk
+  [22, 50],  // qa         — bottom-left desk
+  [52, 50],  // uiux       — bottom-right desk
+  [38, 62],  // devops     — bottom-centre desk
 ];
 
-function Person({ c, r, idx, status, typing, celebrate }:
-  { c:number; r:number; idx:number; status:string; typing:boolean; celebrate:boolean }) {
-  const x = ix(c,r), y = iy(c,r);
-  const s = STYLES[idx] || STYLES[0];
-  const px = x - 8, py = y - 10;
-  const idle = status === "idle";
+// Sprite size as % of container width
+const SPRITE_SIZE = 22;
 
+function fmt(n: number) {
+  return n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"K" : String(n);
+}
+
+// ─── Speech Bubble ────────────────────────────────────────────────────────────
+function SpeechBubble({ text, color }: { text: string; color: string }) {
+  const disp = text.length > 26 ? text.slice(0, 26) + "…" : text;
   return (
-    <g>
-      {/* Chair base */}
-      <ellipse cx={px} cy={py+28} rx={13} ry={6} fill="#1a2840" stroke="#253550" strokeWidth="0.5"/>
-      <rect x={px-5} y={py+22} width={10} height={12} rx={2} fill="#202e48"/>
-      {/* Chair back */}
-      <rect x={px-7} y={py+6} width={14} height={15} rx={3} fill="#1a2840" stroke="#253550" strokeWidth="0.5"/>
-
-      {/* Body */}
-      <rect x={px-9} y={py+8} width={18} height={14} rx={4} fill={s.shirt}/>
-      {/* Collar */}
-      <polygon points={`${px-3},${py+8} ${px+3},${py+8} ${px},${py+13}`} fill="white" opacity="0.25"/>
-
-      {/* Arms */}
-      {typing ? <>
-        <line x1={px-9} y1={py+14} x2={px-15} y2={py+21} stroke={s.skin} strokeWidth="4.5" strokeLinecap="round"/>
-        <line x1={px+9} y1={py+14} x2={px+3}  y2={py+21} stroke={s.skin} strokeWidth="4.5" strokeLinecap="round"/>
-      </> : <>
-        <line x1={px-9} y1={py+13} x2={px-12} y2={py+22} stroke={s.skin} strokeWidth="4.5" strokeLinecap="round"/>
-        <line x1={px+9} y1={py+13} x2={px+5}  y2={py+22} stroke={s.skin} strokeWidth="4.5" strokeLinecap="round"/>
-      </>}
-
-      {/* Neck */}
-      <rect x={px-4} y={py+1} width={8} height={9} rx={3} fill={s.skin}/>
-      {/* Head */}
-      <ellipse cx={px} cy={py-3} rx={10} ry={11} fill={s.skin}/>
-
-      {/* Hair */}
-      {s.hs==="short" && <ellipse cx={px} cy={py-9} rx={10} ry={6} fill={s.hair}/>}
-      {s.hs==="medium" && <>
-        <ellipse cx={px} cy={py-9} rx={10} ry={6} fill={s.hair}/>
-        <rect x={px-10} y={py-5} width={4} height={8} rx={2} fill={s.hair}/>
-        <rect x={px+6}  y={py-5} width={4} height={8} rx={2} fill={s.hair}/>
-      </>}
-      {s.hs==="long" && <>
-        <ellipse cx={px} cy={py-9} rx={10} ry={6} fill={s.hair}/>
-        <rect x={px-10} y={py-5} width={4} height={16} rx={2} fill={s.hair}/>
-        <rect x={px+6}  y={py-5} width={4} height={16} rx={2} fill={s.hair}/>
-      </>}
-      {s.hs==="bun" && <>
-        <ellipse cx={px} cy={py-9} rx={10} ry={6} fill={s.hair}/>
-        <circle cx={px+5} cy={py-14} r={5} fill={s.hair}/>
-      </>}
-
-      {/* Eyes */}
-      {celebrate ? <>
-        <path d={`M${px-5},${py-4} Q${px-3},${py-7} ${px-1},${py-4}`} stroke="#111" strokeWidth="1.5" fill="none"/>
-        <path d={`M${px+1},${py-4} Q${px+3},${py-7} ${px+5},${py-4}`} stroke="#111" strokeWidth="1.5" fill="none"/>
-      </> : idle ? <>
-        <ellipse cx={px-3} cy={py-3} rx={2} ry={1.4} fill="#111" opacity="0.55"/>
-        <ellipse cx={px+3} cy={py-3} rx={2} ry={1.4} fill="#111" opacity="0.55"/>
-      </> : <>
-        <circle cx={px-3} cy={py-3} r={2.4} fill="#111"/>
-        <circle cx={px+3} cy={py-3} r={2.4} fill="#111"/>
-        <circle cx={px-2.2} cy={py-3.7} r={0.7} fill="white"/>
-        <circle cx={px+3.8} cy={py-3.7} r={0.7} fill="white"/>
-      </>}
-
-      {/* Mouth */}
-      {celebrate
-        ? <path d={`M${px-4},${py+4} Q${px},${py+8} ${px+4},${py+4}`} stroke="#111" strokeWidth="1.4" fill="#ff8888"/>
-        : typing
-          ? <ellipse cx={px} cy={py+4} rx={2} ry={1.4} fill="#b07050"/>
-          : <path d={`M${px-3},${py+4} Q${px},${py+6} ${px+3},${py+4}`} stroke="#8B5E3C" strokeWidth="1.1" fill="none"/>
-      }
-
-      {/* Sparkles on done */}
-      {celebrate && <>
-        <text x={px-22} y={py-18} fontSize="13" style={{userSelect:"none"}}>✨</text>
-        <text x={px+10}  y={py-22} fontSize="11" style={{userSelect:"none"}}>⭐</text>
-      </>}
-    </g>
+    <div
+      className="absolute left-1/2 -translate-x-1/2 whitespace-nowrap pointer-events-none"
+      style={{ top: "-32px", zIndex: 20 }}
+    >
+      <div
+        className="px-2.5 py-1 rounded-full text-xs font-mono font-semibold shadow-lg"
+        style={{
+          background: "rgba(8,14,26,0.92)",
+          border: `1.5px solid ${color}`,
+          color: color,
+          fontSize: 10,
+        }}
+      >
+        {disp}
+      </div>
+      {/* tail */}
+      <div className="flex justify-center">
+        <div style={{ width:0, height:0,
+          borderLeft:"5px solid transparent",
+          borderRight:"5px solid transparent",
+          borderTop:`6px solid ${color}`,
+          marginTop:"-1px"
+        }}/>
+      </div>
+    </div>
   );
 }
 
-// ─── Speech bubble ────────────────────────────────────────────────────────────
-function Bubble({ c, r, text, color }: { c:number; r:number; text:string; color:string }) {
-  const x = ix(c,r)+22, y = iy(c,r)-58;
-  const disp = text.length > 24 ? text.slice(0,24)+"…" : text;
-  const bw = disp.length * 5.8 + 14;
+// ─── Agent Sprite Overlay ─────────────────────────────────────────────────────
+function AgentSprite({ agent, idx, containerW, containerH }: {
+  agent: AgentState | undefined;
+  idx: number;
+  containerW: number;
+  containerH: number;
+}) {
+  const [left, top] = POSITIONS[idx];
+  const color = AGENT_COLORS[idx];
+  const status = agent?.status ?? "idle";
+  const isActive = status === "working" || status === "thinking";
+  const isDone = status === "done";
+  const isIdle = status === "idle";
+  const task = agent?.currentTask;
+
+  const spriteW = (SPRITE_SIZE / 100) * containerW;
+  const leftPx  = (left / 100) * containerW;
+  const topPx   = (top  / 100) * containerH;
+
   return (
-    <g style={{pointerEvents:"none"}}>
-      <rect x={x-4} y={y-14} width={bw} height={20} rx={8}
-        fill="#0c1624" stroke={color} strokeWidth="1.2" opacity="0.96"/>
-      <polygon points={`${x+6},${y+6} ${x+4},${y+15} ${x+14},${y+6}`}
-        fill="#0c1624" stroke={color} strokeWidth="1"/>
-      <text x={x+2} y={y} fontSize="8.5" fill={color} fontFamily="JetBrains Mono, monospace">{disp}</text>
-    </g>
+    <div
+      className="absolute"
+      style={{
+        left: leftPx,
+        top: topPx,
+        width: spriteW,
+        zIndex: 10 + idx,
+        transition: "filter 0.4s ease",
+        filter: isIdle
+          ? "grayscale(60%) brightness(0.7)"
+          : isDone
+          ? `drop-shadow(0 0 12px ${color}) brightness(1.1)`
+          : isActive
+          ? `drop-shadow(0 0 8px ${color})`
+          : "none",
+      }}
+      data-testid={`sprite-${AGENT_IDS[idx]}`}
+    >
+      {/* Glow ring on floor under active agent */}
+      {isActive && (
+        <div
+          className="absolute bottom-0 left-1/2 -translate-x-1/2"
+          style={{
+            width: spriteW * 0.7,
+            height: spriteW * 0.18,
+            background: `radial-gradient(ellipse, ${color}55 0%, transparent 70%)`,
+            borderRadius: "50%",
+            zIndex: -1,
+          }}
+        />
+      )}
+
+      {/* Pulse ring when working */}
+      {isActive && (
+        <div
+          className="absolute inset-0 rounded-full pointer-events-none"
+          style={{ animation: "none" }}
+        >
+          <div
+            className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full"
+            style={{
+              width: spriteW * 0.5,
+              height: spriteW * 0.12,
+              background: color,
+              opacity: 0.2,
+              animation: "pingMid 2s ease-out infinite",
+            }}
+          />
+        </div>
+      )}
+
+      {/* The sprite image */}
+      <img
+        src={AGENT_IMGS[idx]}
+        alt={AGENT_NAMES[idx]}
+        style={{ width: "100%", display: "block", userSelect: "none" }}
+        draggable={false}
+      />
+
+      {/* Speech bubble */}
+      {task && (isActive || isDone) && (
+        <SpeechBubble text={task} color={color} />
+      )}
+
+      {/* Name + status label */}
+      <div
+        className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1 px-2 py-0.5 rounded-full"
+        style={{
+          bottom: -18,
+          background: "rgba(8,14,26,0.85)",
+          border: `1px solid ${color}44`,
+          whiteSpace: "nowrap",
+          zIndex: 20,
+        }}
+      >
+        <div
+          className="rounded-full flex-shrink-0"
+          style={{
+            width: 6, height: 6,
+            background: isIdle ? "#334155" : isDone ? "#10b981" : color,
+            boxShadow: isActive ? `0 0 6px ${color}` : "none",
+          }}
+        />
+        <span style={{ fontSize: 9, color: isIdle ? "#64748b" : "#e2e8f0", fontFamily: "Inter, sans-serif", fontWeight: 600 }}>
+          {AGENT_NAMES[idx]}
+        </span>
+      </div>
+
+      {/* Celebrate emoji */}
+      {isDone && (
+        <div
+          className="absolute -top-6 right-0 text-base pointer-events-none"
+          style={{ animation: "bounce 0.6s ease infinite alternate" }}
+        >
+          🎉
+        </div>
+      )}
+    </div>
   );
 }
 
-// ─── Decorations ──────────────────────────────────────────────────────────────
-function Plant({ c, r }: { c:number; r:number }) {
-  const x = ix(c,r), y = iy(c,r);
-  return <g>
-    <ellipse cx={x} cy={y+8} rx={9} ry={4.5} fill="#7a3a10"/>
-    <rect x={x-9} y={y+5} width={18} height={9} rx={2} fill="#5a2c0c"/>
-    <ellipse cx={x-7} cy={y-4} rx={8} ry={5.5} fill="#16a34a" transform={`rotate(-30,${x-7},${y-4})`}/>
-    <ellipse cx={x+7} cy={y-7} rx={8} ry={5.5} fill="#15803d" transform={`rotate(25,${x+7},${y-7})`}/>
-    <ellipse cx={x}   cy={y-11} rx={7} ry={6} fill="#16a34a"/>
-  </g>;
-}
-
-function Shelf({ c, r }: { c:number; r:number }) {
-  const x = ix(c,r), y = iy(c,r);
-  const books = ["#e63946","#2a9d8f","#e9c46a","#f4a261","#6366f1","#ec4899","#14b8a6","#f97316"];
-  return <g>
-    <rect x={x-28} y={y-44} width={56} height={44} rx={2} fill="#2a1c0c" stroke="#3a2810" strokeWidth="0.5"/>
-    {[0,1,2].map(i=><rect key={i} x={x-26} y={y-44+11+i*13} width={52} height={2} fill="#3a2810"/>)}
-    {books.map((b,i)=>(
-      <rect key={i} x={x-22+i*6} y={y-42+(i%3)*12} width={4.5} height={10} rx={0.5} fill={b}/>
-    ))}
-  </g>;
-}
-
-function Whiteboard({ c, r, active }: { c:number; r:number; active:boolean }) {
-  const x = ix(c,r), y = iy(c,r);
-  return <g>
-    <rect x={x-52} y={y-72} width={104} height={60} rx={3} fill="#dde8f8" stroke="#8a9ab8" strokeWidth="1.5"/>
-    <rect x={x-48} y={y-68} width={96} height={52} rx={2} fill={active?"#f0f8ff":"#e8f0fc"}/>
-    {active && <>
-      <text x={x-42} y={y-52} fontSize="8" fill="#6366f1" fontFamily="monospace" fontWeight="bold">BUILD · SHIP · SCALE</text>
-      <line x1={x-42} y1={y-42} x2={x+20} y2={y-42} stroke="#6366f1" strokeWidth="1.5"/>
-      <line x1={x-42} y1={y-32} x2={x+35} y2={y-32} stroke="#3b82f6" strokeWidth="1"/>
-      <line x1={x-42} y1={y-22} x2={x+10} y2={y-22} stroke="#3b82f6" strokeWidth="1"/>
-      <circle cx={x+38} cy={y-28} r={8} fill="none" stroke="#22c55e" strokeWidth="1.5"/>
-      <line x1={x+34} y1={y-28} x2={x+42} y2={y-28} stroke="#22c55e" strokeWidth="1.2"/>
-      <line x1={x+38} y1={y-32} x2={x+38} y2={y-24} stroke="#22c55e" strokeWidth="1.2"/>
-    </>}
-    <line x1={x-30} y1={y-12} x2={x-35} y2={y+8} stroke="#8a9ab8" strokeWidth="2"/>
-    <line x1={x+30} y1={y-12} x2={x+35} y2={y+8} stroke="#8a9ab8" strokeWidth="2"/>
-  </g>;
-}
-
-function Cooler({ c, r }: { c:number; r:number }) {
-  const x = ix(c,r), y = iy(c,r);
-  return <g>
-    <rect x={x-8} y={y-32} width={16} height={30} rx={3} fill="#c8d8e8" stroke="#a0b4c8" strokeWidth="0.5"/>
-    <ellipse cx={x} cy={y-32} rx={6} ry={9} fill="#90c0f0" stroke="#60a0e8" strokeWidth="0.5"/>
-    <rect x={x-4} y={y-8} width={8} height={5} rx={1} fill="#60a0f0"/>
-  </g>;
-}
-
-// ─── Stat overlay card (floats in scene) ──────────────────────────────────────
-function StatCard({ x, y, label, value, color, sub }:
-  { x:number; y:number; label:string; value:string; color:string; sub?:string }) {
+// ─── Progress Ring ────────────────────────────────────────────────────────────
+function ProgressRing({ pct, color, size }: { pct: number; color: string; size: number }) {
+  const r = (size - 8) / 2;
+  const circ = 2 * Math.PI * r;
+  const dash = (pct / 100) * circ;
   return (
-    <g>
-      <rect x={x} y={y} width={90} height={40} rx={6} fill="#0c1624" stroke={color} strokeWidth="1" opacity="0.92"/>
-      <text x={x+8} y={y+14} fontSize="8" fill={color} fontFamily="Inter, sans-serif" opacity="0.8">{label}</text>
-      <text x={x+8} y={y+30} fontSize="14" fill={color} fontFamily="JetBrains Mono, monospace" fontWeight="bold">{value}</text>
-      {sub && <text x={x+60} y={y+30} fontSize="8" fill={color} fontFamily="monospace" opacity="0.6">{sub}</text>}
-    </g>
+    <svg width={size} height={size}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#1e3050" strokeWidth="6"/>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth="6"
+        strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
+        transform={`rotate(-90 ${size/2} ${size/2})`}
+        style={{ transition: "stroke-dasharray 0.6s ease" }}
+      />
+      <text x={size/2} y={size/2+5} textAnchor="middle" fill="white"
+        fontSize="14" fontFamily="JetBrains Mono, monospace" fontWeight="bold">
+        {pct}%
+      </text>
+    </svg>
   );
 }
 
-// ─── Mini sparkline ───────────────────────────────────────────────────────────
-function Sparkline({ x, y, data, color }: { x:number; y:number; data:number[]; color:string }) {
-  if (data.length < 2) return null;
+// ─── Sparkline ────────────────────────────────────────────────────────────────
+function Sparkline({ data, color, w, h }: { data: number[]; color: string; w: number; h: number }) {
+  if (data.length < 2) return <div style={{ width: w, height: h, background: "#0c1624", borderRadius: 4 }} />;
   const max = Math.max(...data), min = Math.min(...data);
   const range = max - min || 1;
-  const w = 80, h = 24;
   const pts = data.map((v, i) => {
-    const sx = x + (i / (data.length - 1)) * w;
-    const sy = y + h - ((v - min) / range) * h;
-    return `${sx},${sy}`;
+    const x = 4 + (i / (data.length - 1)) * (w - 8);
+    const y = h - 4 - ((v - min) / range) * (h - 8);
+    return `${x},${y}`;
   }).join(" ");
   return (
-    <g>
-      <rect x={x} y={y-2} width={w} height={h+4} rx={4} fill="#0c1624" stroke={color} strokeWidth="0.8" opacity="0.85"/>
-      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" opacity="0.9"/>
-    </g>
+    <svg width={w} height={h} style={{ display: "block" }}>
+      <rect x={0} y={0} width={w} height={h} rx={4} fill="#0c1624"/>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.8" opacity="0.9"/>
+      <circle cx={pts.split(" ").pop()!.split(",")[0]} cy={pts.split(" ").pop()!.split(",")[1]}
+        r={3} fill={color}/>
+    </svg>
   );
 }
 
-// ─── Agent positions ──────────────────────────────────────────────────────────
-const POS: [number,number][] = [
-  [3,1], // manager   — top centre
-  [1,2], // frontend  — left
-  [5,2], // backend   — right
-  [2,4], // qa        — bottom left
-  [4,4], // uiux      — bottom right
-  [3,5], // devops    — bottom centre
-];
-const COLORS = ["#6366f1","#22c55e","#3b82f6","#f59e0b","#ec4899","#14b8a6"];
-const IDS    = ["manager","frontend","backend","qa","uiux","devops"];
+// ─── Stat Panel ───────────────────────────────────────────────────────────────
+function StatPanel({ project, agents, sparkData }: {
+  project: Project | null;
+  agents: AgentState[];
+  sparkData: number[];
+}) {
+  const active = agents.filter(a => a.status !== "idle").length;
+  const COLORS = AGENT_COLORS;
 
-function fmt(n:number){ return n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(1)+"K":String(n); }
+  return (
+    <div
+      className="absolute top-4 right-4 flex flex-col gap-2"
+      style={{ width: 170, zIndex: 30 }}
+    >
+      {/* Progress card */}
+      <div className="rounded-xl p-3" style={{ background: "rgba(8,14,26,0.9)", border: "1px solid #1e3050" }}>
+        <div style={{ fontSize: 9, color: "#64748b", letterSpacing: "0.08em", fontFamily: "Inter", textTransform: "uppercase" }} className="mb-2">
+          Project Progress
+        </div>
+        <div className="flex items-center gap-3">
+          <ProgressRing pct={project?.progress ?? 0} color="#6366f1" size={56} />
+          <div>
+            <div style={{ fontSize: 11, color: "#94a3b8", fontFamily: "monospace" }}>
+              {project?.tasksCompleted ?? 0}/{project?.tasksTotal ?? 7} tasks
+            </div>
+            <div style={{ fontSize: 10, color: project?.status === "completed" ? "#10b981" : "#f59e0b", fontFamily: "monospace", marginTop: 2 }}>
+              {project?.status === "completed" ? "✓ Done" : project ? "● Running" : "○ Idle"}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Agents card */}
+      <div className="rounded-xl p-3" style={{ background: "rgba(8,14,26,0.9)", border: "1px solid #1e3050" }}>
+        <div style={{ fontSize: 9, color: "#64748b", letterSpacing: "0.08em", fontFamily: "Inter", textTransform: "uppercase" }} className="mb-1.5">
+          Agents ({active}/{agents.length} active)
+        </div>
+        <div className="flex gap-1.5 flex-wrap">
+          {agents.map((a, i) => (
+            <div key={a.id} title={a.name}
+              className="rounded-full"
+              style={{
+                width: 12, height: 12,
+                background: a.status === "idle" ? "#1e3050" : COLORS[AGENT_IDS.indexOf(a.id)],
+                border: `1.5px solid ${COLORS[AGENT_IDS.indexOf(a.id)]}`,
+                boxShadow: a.status !== "idle" ? `0 0 5px ${COLORS[AGENT_IDS.indexOf(a.id)]}` : "none",
+                transition: "all 0.3s ease",
+              }}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* Metrics */}
+      {[
+        { label: "Tokens", value: fmt(project?.tokensUsed ?? 0), color: "#f59e0b" },
+        { label: "Cost Today", value: `$${(project?.costToday ?? 0).toFixed(2)}`, color: "#10b981" },
+        { label: "Avg Response", value: `${(project?.avgResponseTime ?? 0).toFixed(1)}s`, color: "#06b6d4" },
+      ].map(m => (
+        <div key={m.label} className="rounded-xl px-3 py-2 flex items-center justify-between"
+          style={{ background: "rgba(8,14,26,0.9)", border: "1px solid #1e3050" }}>
+          <span style={{ fontSize: 9, color: "#64748b", fontFamily: "Inter", textTransform: "uppercase", letterSpacing: "0.08em" }}>{m.label}</span>
+          <span style={{ fontSize: 14, color: m.color, fontFamily: "JetBrains Mono, monospace", fontWeight: 700 }}>{m.value}</span>
+        </div>
+      ))}
+
+      {/* Sparkline */}
+      <div className="rounded-xl p-3" style={{ background: "rgba(8,14,26,0.9)", border: "1px solid #1e3050" }}>
+        <div style={{ fontSize: 9, color: "#64748b", letterSpacing: "0.08em", fontFamily: "Inter", textTransform: "uppercase" }} className="mb-2">
+          Progress Trend
+        </div>
+        <Sparkline data={sparkData} color="#6366f1" w={144} h={36} />
+      </div>
+    </div>
+  );
+}
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function IsometricOffice({ agents, project }: Props) {
-  const [tick, setTick] = useState(0);
-  const [sparkData, setSparkData] = useState<number[]>([0,0,0,0,0]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dims, setDims] = useState({ w: 900, h: 600 });
+  const [sparkData, setSparkData] = useState<number[]>([0, 0, 0, 0, 0]);
 
   useEffect(() => {
-    const id = setInterval(() => setTick(t=>t+1), 500);
-    return () => clearInterval(id);
+    const obs = new ResizeObserver(entries => {
+      const e = entries[0];
+      if (e) setDims({ w: e.contentRect.width, h: e.contentRect.height });
+    });
+    if (containerRef.current) obs.observe(containerRef.current);
+    return () => obs.disconnect();
   }, []);
 
-  // build sparkline from project progress over time
   useEffect(() => {
-    if (project?.progress) {
+    if (project?.progress !== undefined) {
       setSparkData(d => [...d.slice(-9), project.progress]);
     }
   }, [project?.progress]);
 
-  const get = (id:string) => agents.find(a=>a.id===id);
-  const activeCount = agents.filter(a=>a.status!=="idle").length;
-
-  // floor grid
-  const tiles: [number,number][] = [];
-  for(let c=0;c<8;c++) for(let r=0;r<8;r++) tiles.push([c,r]);
-
-  // sort agents back-to-front
-  const sorted = POS.map((pos,i)=>({i,pos})).sort((a,b)=>(a.pos[0]+a.pos[1])-(b.pos[0]+b.pos[1]));
-
-  const hasProject = !!project;
+  const get = (id: string) => agents.find(a => a.id === id);
 
   return (
-    <div className="w-full h-full" style={{background:"linear-gradient(180deg,#080e1a 0%,#0c1422 100%)"}}>
-      <svg viewBox="0 0 1000 760" preserveAspectRatio="xMidYMid meet"
-        style={{width:"100%",height:"100%"}}>
-        <defs>
-          <radialGradient id="oGlow" cx="50%" cy="35%" r="55%">
-            <stop offset="0%" stopColor="#1a3060" stopOpacity="0.5"/>
-            <stop offset="100%" stopColor="#080e1a" stopOpacity="0"/>
-          </radialGradient>
-          <filter id="fg">
-            <feGaussianBlur stdDeviation="4" result="b"/>
-            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-        </defs>
+    <div
+      ref={containerRef}
+      className="w-full h-full relative overflow-hidden"
+      style={{ background: "linear-gradient(160deg, #0a1020 0%, #0c1828 100%)" }}
+    >
+      {/* Keyframe styles */}
+      <style>{`
+        @keyframes pingMid {
+          0%   { transform: translateX(-50%) scaleX(1);   opacity: 0.25; }
+          100% { transform: translateX(-50%) scaleX(2.2); opacity: 0; }
+        }
+        @keyframes bounce {
+          from { transform: translateY(0); }
+          to   { transform: translateY(-6px); }
+        }
+      `}</style>
 
-        {/* Background glow */}
-        <rect x="0" y="0" width="1000" height="760" fill="url(#oGlow)"/>
+      {/* Office background image — fills container maintaining aspect */}
+      <div
+        className="absolute inset-0 flex items-center justify-center"
+        style={{ zIndex: 1 }}
+      >
+        <img
+          src={bgImg}
+          alt="office"
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            objectPosition: "center top",
+            userSelect: "none",
+          }}
+          draggable={false}
+        />
+      </div>
 
-        {/* Floor */}
-        {tiles.map(([c,r])=><Tile key={`${c}${r}`} c={c} r={r}/>)}
+      {/* Dark overlay to let UI elements pop */}
+      <div
+        className="absolute inset-0"
+        style={{ background: "rgba(5,10,20,0.25)", zIndex: 2 }}
+      />
 
-        {/* Back walls (row 0) */}
-        {[0,1,2,3,4,5,6,7].map(c=><Wall key={c} c={c} r={0}/>)}
+      {/* Agent sprites */}
+      <div className="absolute inset-0" style={{ zIndex: 3 }}>
+        {AGENT_IDS.map((id, i) => (
+          <AgentSprite
+            key={id}
+            agent={get(id)}
+            idx={i}
+            containerW={dims.w}
+            containerH={dims.h}
+          />
+        ))}
+      </div>
 
-        {/* Decorations */}
-        <Shelf c={0} r={1}/>
-        <Shelf c={7} r={1}/>
-        <Whiteboard c={3} r={0} active={hasProject}/>
-        <Whiteboard c={4} r={0} active={hasProject}/>
-        <Plant c={0} r={3}/>
-        <Plant c={7} r={3}/>
-        <Plant c={0} r={6}/>
-        <Plant c={7} r={6}/>
-        <Cooler c={6} r={5}/>
+      {/* Stat panel */}
+      <StatPanel project={project} agents={agents} sparkData={sparkData} />
 
-        {/* Desks + people (back to front) */}
-        {sorted.map(({i,pos:[c,r]})=>{
-          const id = IDS[i];
-          const agent = get(id);
-          const color = COLORS[i];
-          const status = agent?.status ?? "idle";
-          const active = status==="working"||status==="thinking";
-          const typing = status==="working" && tick%2===0;
-          const done = status==="done";
-          const task = agent?.currentTask;
-          return (
-            <g key={id}>
-              <Desk c={c} r={r} color={color} active={active}/>
-              <Person c={c} r={r} idx={i} status={status} typing={typing} celebrate={done}/>
-              {task && (active||done) && <Bubble c={c} r={r} text={task} color={color}/>}
-              {/* Active desk glow */}
-              {active && (
-                <ellipse cx={ix(c,r)} cy={iy(c,r)-15} rx={38} ry={22}
-                  fill={color} opacity="0.07" filter="url(#fg)"/>
-              )}
-            </g>
-          );
-        })}
-
-        {/* ── Floating stat overlay cards (top-right of scene) ── */}
-        {/* Progress ring-style card */}
-        <g>
-          <rect x={812} y={20} width={170} height={130} rx={10}
-            fill="#0c1624" stroke="#1e3050" strokeWidth="1" opacity="0.95"/>
-          <text x={830} y={44} fontSize="9" fill="#64748b" fontFamily="Inter,sans-serif"
-            textAnchor="start" letterSpacing="1">PROJECT PROGRESS</text>
-          {/* Arc progress */}
-          <circle cx={897} cy={100} r={34} fill="none" stroke="#1e3050" strokeWidth="6"/>
-          <circle cx={897} cy={100} r={34} fill="none" stroke="#6366f1" strokeWidth="6"
-            strokeDasharray={`${(project?.progress??0)/100*213.6} 213.6`}
-            strokeLinecap="round"
-            transform="rotate(-90 897 100)"/>
-          <text x={897} y={106} fontSize="18" fill="white" textAnchor="middle"
-            fontFamily="JetBrains Mono,monospace" fontWeight="bold">
-            {project?.progress??0}%
-          </text>
-          <text x={897} y={122} fontSize="8" fill="#64748b" textAnchor="middle"
-            fontFamily="monospace">
-            {project?.tasksCompleted??0}/{project?.tasksTotal??7} tasks
-          </text>
-        </g>
-
-        {/* Active agents card */}
-        <g>
-          <rect x={812} y={162} width={170} height={52} rx={8}
-            fill="#0c1624" stroke="#1e3050" strokeWidth="1" opacity="0.95"/>
-          <text x={830} y={180} fontSize="9" fill="#64748b" fontFamily="Inter,sans-serif" letterSpacing="1">AGENTS</text>
-          <text x={830} y={202} fontSize="20" fill="#22c55e" fontFamily="JetBrains Mono,monospace" fontWeight="bold">
-            {activeCount}
-          </text>
-          <text x={858} y={202} fontSize="10" fill="#64748b" fontFamily="monospace"> / {agents.length} active</text>
-          {/* Agent status dots */}
-          {agents.map((a,i)=>(
-            <circle key={a.id} cx={905+i*11} cy={183} r={4}
-              fill={a.status==="idle"?"#1e3050":COLORS[IDS.indexOf(a.id)]}
-              stroke={COLORS[IDS.indexOf(a.id)]} strokeWidth="1"/>
-          ))}
-        </g>
-
-        {/* Tokens + Cost */}
-        <StatCard x={812} y={226} label="TOKENS USED" value={fmt(project?.tokensUsed??0)} color="#f59e0b"/>
-        <StatCard x={812} y={278} label="COST TODAY"  value={`$${(project?.costToday??0).toFixed(2)}`} color="#10b981"/>
-        <StatCard x={812} y={330} label="AVG RESPONSE" value={`${(project?.avgResponseTime??0).toFixed(1)}s`} color="#06b6d4"/>
-
-        {/* Sparkline — progress over time */}
-        <g>
-          <rect x={812} y={382} width={170} height={52} rx={8}
-            fill="#0c1624" stroke="#1e3050" strokeWidth="1" opacity="0.95"/>
-          <text x={820} y={398} fontSize="9" fill="#64748b" fontFamily="Inter,sans-serif" letterSpacing="1">PROGRESS TREND</text>
-          <Sparkline x={820} y={402} data={sparkData} color="#6366f1"/>
-        </g>
-
-        {/* Project name banner bottom-left */}
-        {project && (
-          <g>
-            <rect x={12} y={690} width={280} height={48} rx={8}
-              fill="#0c1624" stroke="#1e3050" strokeWidth="1" opacity="0.95"/>
-            <circle cx={32} cy={714} r={6} fill="#22c55e"/>
-            <circle cx={32} cy={714} r={6} fill="#22c55e" opacity="0.4">
-              <animate attributeName="r" values="6;12;6" dur="2s" repeatCount="indefinite"/>
-              <animate attributeName="opacity" values="0.4;0;0.4" dur="2s" repeatCount="indefinite"/>
-            </circle>
-            <text x={46} y={710} fontSize="10" fill="#94a3b8" fontFamily="Inter,sans-serif">Active Project</text>
-            <text x={46} y={726} fontSize="13" fill="white" fontFamily="Inter,sans-serif" fontWeight="600">
-              {project.name.length>28?project.name.slice(0,28)+"…":project.name}
-            </text>
-          </g>
+      {/* Project banner bottom-left */}
+      <div className="absolute bottom-4 left-4" style={{ zIndex: 30 }}>
+        {project ? (
+          <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl"
+            style={{ background: "rgba(8,14,26,0.92)", border: "1px solid #1e3050", maxWidth: 280 }}>
+            <div className="relative flex-shrink-0">
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+              <div className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-60" />
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "Inter" }}>Active Project</div>
+              <div style={{ fontSize: 13, color: "white", fontWeight: 600, fontFamily: "Inter" }}>
+                {project.name.length > 28 ? project.name.slice(0, 28) + "…" : project.name}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="px-4 py-2 rounded-xl"
+            style={{ background: "rgba(8,14,26,0.7)", border: "1px solid #1e3050" }}>
+            <span style={{ fontSize: 12, color: "#334155", fontFamily: "Inter" }}>
+              Click "New Project" to start a simulation
+            </span>
+          </div>
         )}
-
-        {/* Idle hint */}
-        {!project && (
-          <text x={500} y={700} textAnchor="middle" fontSize="13" fill="#334155"
-            fontFamily="Inter,sans-serif">Click "New Project" to start a simulation</text>
-        )}
-      </svg>
+      </div>
     </div>
   );
 }
