@@ -1,529 +1,463 @@
-import { useEffect, useRef, useState } from "react";
-import type { AgentState } from "../types";
+import { useEffect, useState } from "react";
+import type { AgentState, Project } from "../types";
 
 interface Props {
   agents: AgentState[];
+  project: Project | null;
 }
 
-// ─── Isometric math helpers ───────────────────────────────────────────────────
-// Convert grid (col, row) to isometric screen (x, y)
-// Standard iso: x = (col - row) * tileW/2, y = (col + row) * tileH/2
-const TILE_W = 120;
-const TILE_H = 60;
-const GRID_OFFSET_X = 480;
-const GRID_OFFSET_Y = 80;
+// ─── Iso math ─────────────────────────────────────────────────────────────────
+const TW = 100; // tile width
+const TH = 50;  // tile height
+const OX = 500; // origin x (horizontal centre of SVG)
+const OY = 160; // origin y (top of grid)
 
-function isoX(col: number, row: number) {
-  return GRID_OFFSET_X + (col - row) * (TILE_W / 2);
-}
-function isoY(col: number, row: number) {
-  return GRID_OFFSET_Y + (col + row) * (TILE_H / 2);
-}
+function ix(col: number, row: number) { return OX + (col - row) * (TW / 2); }
+function iy(col: number, row: number) { return OY + (col + row) * (TH / 2); }
 
 // ─── Floor tile ───────────────────────────────────────────────────────────────
-function FloorTile({ col, row, shade }: { col: number; row: number; shade?: boolean }) {
-  const x = isoX(col, row);
-  const y = isoY(col, row);
-  const hw = TILE_W / 2;
-  const hh = TILE_H / 2;
-  const fill = shade ? "#1a2235" : "#1e2a3d";
-  const stroke = "#263348";
+function Tile({ c, r }: { c: number; r: number }) {
+  const x = ix(c, r), y = iy(c, r), hw = TW / 2, hh = TH / 2;
+  const even = (c + r) % 2 === 0;
   return (
     <polygon
-      points={`${x},${y - hh} ${x + hw},${y} ${x},${y + hh} ${x - hw},${y}`}
-      fill={fill}
-      stroke={stroke}
-      strokeWidth="1"
+      points={`${x},${y-hh} ${x+hw},${y} ${x},${y+hh} ${x-hw},${y}`}
+      fill={even ? "#19243a" : "#1c2840"}
+      stroke="#22304d" strokeWidth="0.8"
     />
   );
 }
 
-// ─── Desk with monitor ────────────────────────────────────────────────────────
-function IsoDesk({ col, row, color, isWorking }: { col: number; row: number; color: string; isWorking: boolean }) {
-  const x = isoX(col, row);
-  const y = isoY(col, row);
-
-  // Desk top surface (isometric box top)
-  const deskH = 18;
-  const deskW = TILE_W * 0.7;
-  const deskD = TILE_H * 0.55;
-  const hw = deskW / 2;
-
+// ─── Wall ─────────────────────────────────────────────────────────────────────
+function Wall({ c, r }: { c: number; r: number }) {
+  const x = ix(c, r), y = iy(c, r), hw = TW / 2, hh = TH / 2, wh = 60;
   return (
     <g>
-      {/* Desk body - front face */}
-      <polygon
-        points={`
-          ${x - hw},${y + deskD * 0.3}
-          ${x - hw},${y + deskD * 0.3 + deskH}
-          ${x},${y + deskD * 0.6 + deskH}
-          ${x},${y + deskD * 0.6}
-        `}
-        fill="#2d3a52"
-        stroke="#3a4a68"
-        strokeWidth="0.5"
-      />
-      {/* Desk body - right face */}
-      <polygon
-        points={`
-          ${x},${y + deskD * 0.6}
-          ${x},${y + deskD * 0.6 + deskH}
-          ${x + hw},${y + deskD * 0.3 + deskH}
-          ${x + hw},${y + deskD * 0.3}
-        `}
-        fill="#243044"
-        stroke="#3a4a68"
-        strokeWidth="0.5"
-      />
-      {/* Desk top surface */}
-      <polygon
-        points={`
-          ${x - hw},${y + deskD * 0.3}
-          ${x},${y}
-          ${x + hw},${y + deskD * 0.3}
-          ${x},${y + deskD * 0.6}
-        `}
-        fill="#364d6e"
-        stroke="#4a6080"
-        strokeWidth="0.5"
-      />
-      {/* Color accent strip on desk edge */}
-      <polygon
-        points={`
-          ${x - hw},${y + deskD * 0.3}
-          ${x - hw},${y + deskD * 0.3 + 3}
-          ${x},${y + deskD * 0.6 + 3}
-          ${x},${y + deskD * 0.6}
-        `}
-        fill={color}
-        opacity="0.7"
-      />
-
-      {/* Monitor stand */}
-      <line
-        x1={x - 5} y1={y + deskD * 0.2}
-        x2={x - 5} y2={y + deskD * 0.2 - 22}
-        stroke="#4a5a7a"
-        strokeWidth="2"
-      />
-      {/* Monitor screen (isometric face) */}
-      <polygon
-        points={`
-          ${x - 20},${y + deskD * 0.2 - 36}
-          ${x + 12},${y + deskD * 0.2 - 22}
-          ${x + 12},${y + deskD * 0.2 - 42}
-          ${x - 20},${y + deskD * 0.2 - 56}
-        `}
-        fill={isWorking ? "#0d1f35" : "#0a1520"}
-        stroke={isWorking ? color : "#2a3a50"}
-        strokeWidth="1.5"
-      />
-      {/* Monitor screen glow */}
-      {isWorking && (
-        <>
-          <polygon
-            points={`
-              ${x - 18},${y + deskD * 0.2 - 38}
-              ${x + 10},${y + deskD * 0.2 - 25}
-              ${x + 10},${y + deskD * 0.2 - 40}
-              ${x - 18},${y + deskD * 0.2 - 53}
-            `}
-            fill={color}
-            opacity="0.15"
-          />
-          {/* Code lines on screen */}
-          {[0, 1, 2, 3].map((i) => (
-            <line
-              key={i}
-              x1={x - 14 + i * 1} y1={y + deskD * 0.2 - 50 + i * 6}
-              x2={x + 4 + i * 0.5} y2={y + deskD * 0.2 - 43 + i * 6}
-              stroke={color}
-              strokeWidth="1"
-              opacity={0.4 + i * 0.1}
-            />
-          ))}
-        </>
-      )}
-      {/* Keyboard */}
-      <polygon
-        points={`
-          ${x - 14},${y + deskD * 0.5}
-          ${x - 2},${y + deskD * 0.38}
-          ${x + 4},${y + deskD * 0.44}
-          ${x - 8},${y + deskD * 0.56}
-        `}
-        fill="#2a3a52"
-        stroke="#3a4a62"
-        strokeWidth="0.5"
-      />
-      {/* Mouse */}
-      <ellipse cx={x + 10} cy={y + deskD * 0.44} rx={4} ry={3}
-        transform={`rotate(-30, ${x + 10}, ${y + deskD * 0.44})`}
-        fill="#2a3a52" stroke="#3a4a62" strokeWidth="0.5"
-      />
-      {/* Coffee cup */}
-      <rect x={x + hw - 18} y={y + deskD * 0.15} width={8} height={9} rx={1}
-        fill="#8B6914" stroke="#a07820" strokeWidth="0.5"
-      />
-      <line x1={x + hw - 10} y1={y + deskD * 0.18} x2={x + hw - 7} y2={y + deskD * 0.22}
-        stroke="#8B6914" strokeWidth="1.5"
-      />
+      <polygon points={`${x-hw},${y} ${x},${y+hh} ${x},${y+hh-wh} ${x-hw},${y-wh}`}
+        fill="#141e30" stroke="#1e2d45" strokeWidth="0.5" />
+      <polygon points={`${x},${y+hh} ${x+hw},${y} ${x+hw},${y-wh} ${x},${y+hh-wh}`}
+        fill="#111926" stroke="#1e2d45" strokeWidth="0.5" />
     </g>
   );
 }
 
-// ─── Agent character ──────────────────────────────────────────────────────────
-// Each agent has a unique outfit color and hair style
-const AGENT_STYLES = [
-  { shirt: "#6366f1", hair: "#2d1b00", skin: "#f4a261", hairStyle: "short" },   // manager - purple
-  { shirt: "#22c55e", hair: "#1a1a1a", skin: "#c68642", hairStyle: "medium" },  // frontend - green
-  { shirt: "#3b82f6", hair: "#8B4513", skin: "#f5cba7", hairStyle: "short" },   // backend - blue
-  { shirt: "#f59e0b", hair: "#4a0000", skin: "#e8b89a", hairStyle: "long" },    // qa - amber
-  { shirt: "#ec4899", hair: "#1a1a1a", skin: "#fad7b0", hairStyle: "bun" },     // uiux - pink
-  { shirt: "#14b8a6", hair: "#2d2d2d", skin: "#c8a882", hairStyle: "medium" },  // devops - teal
-];
-
-function AgentCharacter({
-  col, row, agentIndex, status, isTyping, isCelebrating
-}: {
-  col: number; row: number; agentIndex: number;
-  status: string; isTyping: boolean; isCelebrating: boolean;
-}) {
-  const x = isoX(col, row);
-  const y = isoY(col, row);
-  const style = AGENT_STYLES[agentIndex] || AGENT_STYLES[0];
-
-  // Character sits behind the desk, slightly elevated
-  const cx = x - 8;
-  const cy = y - 14;
-
-  const isIdle = status === "idle";
-  const isDone = status === "done";
+// ─── Desk ─────────────────────────────────────────────────────────────────────
+function Desk({ c, r, color, active }: { c: number; r: number; color: string; active: boolean }) {
+  const x = ix(c, r), y = iy(c, r);
+  const dw = TW * 0.72, dd = TH * 0.6, dh = 16;
+  const hw = dw / 2;
 
   return (
     <g>
-      {/* Chair */}
-      <ellipse cx={cx} cy={cy + 26} rx={14} ry={7} fill="#1e2d42" stroke="#2a3d58" strokeWidth="0.5" />
-      <rect x={cx - 5} y={cy + 20} width={10} height={14} rx={2} fill="#243350" stroke="#2a3d58" strokeWidth="0.5" />
-      {/* Chair back */}
-      <rect x={cx - 7} y={cy + 6} width={14} height={16} rx={3}
-        fill="#1e2d42" stroke="#2a3d58" strokeWidth="0.5"
-      />
+      {/* desk front-left face */}
+      <polygon points={`${x-hw},${y+dd*0.28} ${x-hw},${y+dd*0.28+dh} ${x},${y+dd*0.58+dh} ${x},${y+dd*0.58}`}
+        fill="#2c3a54" stroke="#3a4d6a" strokeWidth="0.5"/>
+      {/* desk front-right face */}
+      <polygon points={`${x},${y+dd*0.58} ${x},${y+dd*0.58+dh} ${x+hw},${y+dd*0.28+dh} ${x+hw},${y+dd*0.28}`}
+        fill="#233048" stroke="#3a4d6a" strokeWidth="0.5"/>
+      {/* desk top */}
+      <polygon points={`${x-hw},${y+dd*0.28} ${x},${y} ${x+hw},${y+dd*0.28} ${x},${y+dd*0.58}`}
+        fill="#344766" stroke="#4a6080" strokeWidth="0.5"/>
+      {/* colour accent */}
+      <polygon points={`${x-hw},${y+dd*0.28} ${x-hw},${y+dd*0.28+3} ${x},${y+dd*0.58+3} ${x},${y+dd*0.58}`}
+        fill={color} opacity="0.75"/>
 
-      {/* Body / torso */}
-      <rect x={cx - 9} y={cy + 8} width={18} height={14} rx={4}
-        fill={style.shirt} stroke={style.shirt} strokeWidth="0.5"
-      />
-      {/* Shirt collar */}
-      <polygon
-        points={`${cx - 3},${cy + 8} ${cx + 3},${cy + 8} ${cx},${cy + 13}`}
-        fill="white" opacity="0.3"
-      />
+      {/* Monitor stand */}
+      <line x1={x-4} y1={y+dd*0.18} x2={x-4} y2={y+dd*0.18-24} stroke="#4a5a7a" strokeWidth="2"/>
+      {/* Monitor */}
+      <polygon points={`${x-22},${y+dd*0.18-38} ${x+10},${y+dd*0.18-22} ${x+10},${y+dd*0.18-44} ${x-22},${y+dd*0.18-60}`}
+        fill={active ? "#0d1f35" : "#0a1520"} stroke={active ? color : "#253550"} strokeWidth="1.5"/>
+      {active && <>
+        <polygon points={`${x-20},${y+dd*0.18-40} ${x+8},${y+dd*0.18-25} ${x+8},${y+dd*0.18-42} ${x-20},${y+dd*0.18-57}`}
+          fill={color} opacity="0.12"/>
+        {[0,1,2,3].map(i=>(
+          <line key={i} x1={x-16+i} y1={y+dd*0.18-54+i*7} x2={x+4+i*0.4} y2={y+dd*0.18-47+i*7}
+            stroke={color} strokeWidth="1" opacity={0.35+i*0.12}/>
+        ))}
+      </>}
+
+      {/* Keyboard */}
+      <polygon points={`${x-14},${y+dd*0.5} ${x-2},${y+dd*0.38} ${x+4},${y+dd*0.43} ${x-8},${y+dd*0.55}`}
+        fill="#283a52" stroke="#374e68" strokeWidth="0.5"/>
+      {/* Mouse */}
+      <ellipse cx={x+10} cy={y+dd*0.43} rx={3.5} ry={2.5}
+        transform={`rotate(-28,${x+10},${y+dd*0.43})`} fill="#283a52" stroke="#374e68" strokeWidth="0.5"/>
+      {/* Coffee */}
+      <rect x={x+hw-18} y={y+dd*0.14} width={7} height={8} rx={1} fill="#7a5810" stroke="#9a7020" strokeWidth="0.5"/>
+      <line x1={x+hw-11} y1={y+dd*0.17} x2={x+hw-8} y2={y+dd*0.21} stroke="#7a5810" strokeWidth="1.5"/>
+    </g>
+  );
+}
+
+// ─── Person ───────────────────────────────────────────────────────────────────
+const STYLES = [
+  { shirt:"#6366f1", hair:"#2d1800", skin:"#f0a070", hs:"short" },
+  { shirt:"#22c55e", hair:"#1a1a1a", skin:"#c88040", hs:"medium" },
+  { shirt:"#3b82f6", hair:"#7a3800", skin:"#f5c8a0", hs:"short" },
+  { shirt:"#f59e0b", hair:"#3a0000", skin:"#e8a880", hs:"long" },
+  { shirt:"#ec4899", hair:"#111111", skin:"#fad0a0", hs:"bun" },
+  { shirt:"#14b8a6", hair:"#2a2a2a", skin:"#c8a070", hs:"medium" },
+];
+
+function Person({ c, r, idx, status, typing, celebrate }:
+  { c:number; r:number; idx:number; status:string; typing:boolean; celebrate:boolean }) {
+  const x = ix(c,r), y = iy(c,r);
+  const s = STYLES[idx] || STYLES[0];
+  const px = x - 8, py = y - 10;
+  const idle = status === "idle";
+
+  return (
+    <g>
+      {/* Chair base */}
+      <ellipse cx={px} cy={py+28} rx={13} ry={6} fill="#1a2840" stroke="#253550" strokeWidth="0.5"/>
+      <rect x={px-5} y={py+22} width={10} height={12} rx={2} fill="#202e48"/>
+      {/* Chair back */}
+      <rect x={px-7} y={py+6} width={14} height={15} rx={3} fill="#1a2840" stroke="#253550" strokeWidth="0.5"/>
+
+      {/* Body */}
+      <rect x={px-9} y={py+8} width={18} height={14} rx={4} fill={s.shirt}/>
+      {/* Collar */}
+      <polygon points={`${px-3},${py+8} ${px+3},${py+8} ${px},${py+13}`} fill="white" opacity="0.25"/>
 
       {/* Arms */}
-      {isTyping ? (
-        <>
-          {/* Arms extended to keyboard */}
-          <line x1={cx - 9} y1={cy + 14} x2={cx - 16} y2={cy + 20} stroke={style.skin} strokeWidth="5" strokeLinecap="round" />
-          <line x1={cx + 9} y1={cy + 14} x2={cx + 4} y2={cy + 20} stroke={style.skin} strokeWidth="5" strokeLinecap="round" />
-        </>
-      ) : (
-        <>
-          <line x1={cx - 9} y1={cy + 12} x2={cx - 13} y2={cy + 22} stroke={style.skin} strokeWidth="5" strokeLinecap="round" />
-          <line x1={cx + 9} y1={cy + 12} x2={cx + 5} y2={cy + 22} stroke={style.skin} strokeWidth="5" strokeLinecap="round" />
-        </>
-      )}
+      {typing ? <>
+        <line x1={px-9} y1={py+14} x2={px-15} y2={py+21} stroke={s.skin} strokeWidth="4.5" strokeLinecap="round"/>
+        <line x1={px+9} y1={py+14} x2={px+3}  y2={py+21} stroke={s.skin} strokeWidth="4.5" strokeLinecap="round"/>
+      </> : <>
+        <line x1={px-9} y1={py+13} x2={px-12} y2={py+22} stroke={s.skin} strokeWidth="4.5" strokeLinecap="round"/>
+        <line x1={px+9} y1={py+13} x2={px+5}  y2={py+22} stroke={s.skin} strokeWidth="4.5" strokeLinecap="round"/>
+      </>}
 
       {/* Neck */}
-      <rect x={cx - 4} y={cy + 2} width={8} height={8} rx={3} fill={style.skin} />
-
+      <rect x={px-4} y={py+1} width={8} height={9} rx={3} fill={s.skin}/>
       {/* Head */}
-      <ellipse cx={cx} cy={cy - 2} rx={11} ry={12} fill={style.skin} />
+      <ellipse cx={px} cy={py-3} rx={10} ry={11} fill={s.skin}/>
 
       {/* Hair */}
-      {style.hairStyle === "short" && (
-        <ellipse cx={cx} cy={cy - 8} rx={11} ry={7} fill={style.hair} />
-      )}
-      {style.hairStyle === "medium" && (
-        <>
-          <ellipse cx={cx} cy={cy - 8} rx={11} ry={7} fill={style.hair} />
-          <rect x={cx - 11} y={cy - 4} width={5} height={8} rx={2} fill={style.hair} />
-          <rect x={cx + 6} y={cy - 4} width={5} height={8} rx={2} fill={style.hair} />
-        </>
-      )}
-      {style.hairStyle === "long" && (
-        <>
-          <ellipse cx={cx} cy={cy - 8} rx={11} ry={7} fill={style.hair} />
-          <rect x={cx - 11} y={cy - 4} width={4} height={16} rx={2} fill={style.hair} />
-          <rect x={cx + 7} y={cy - 4} width={4} height={16} rx={2} fill={style.hair} />
-        </>
-      )}
-      {style.hairStyle === "bun" && (
-        <>
-          <ellipse cx={cx} cy={cy - 8} rx={11} ry={7} fill={style.hair} />
-          <circle cx={cx + 6} cy={cy - 13} r={5} fill={style.hair} />
-        </>
-      )}
+      {s.hs==="short" && <ellipse cx={px} cy={py-9} rx={10} ry={6} fill={s.hair}/>}
+      {s.hs==="medium" && <>
+        <ellipse cx={px} cy={py-9} rx={10} ry={6} fill={s.hair}/>
+        <rect x={px-10} y={py-5} width={4} height={8} rx={2} fill={s.hair}/>
+        <rect x={px+6}  y={py-5} width={4} height={8} rx={2} fill={s.hair}/>
+      </>}
+      {s.hs==="long" && <>
+        <ellipse cx={px} cy={py-9} rx={10} ry={6} fill={s.hair}/>
+        <rect x={px-10} y={py-5} width={4} height={16} rx={2} fill={s.hair}/>
+        <rect x={px+6}  y={py-5} width={4} height={16} rx={2} fill={s.hair}/>
+      </>}
+      {s.hs==="bun" && <>
+        <ellipse cx={px} cy={py-9} rx={10} ry={6} fill={s.hair}/>
+        <circle cx={px+5} cy={py-14} r={5} fill={s.hair}/>
+      </>}
 
       {/* Eyes */}
-      {isCelebrating ? (
-        <>
-          <path d={`M ${cx - 5} ${cy - 3} Q ${cx - 3} ${cy - 6} ${cx - 1} ${cy - 3}`} stroke="#1a1a1a" strokeWidth="1.5" fill="none" />
-          <path d={`M ${cx + 1} ${cy - 3} Q ${cx + 3} ${cy - 6} ${cx + 5} ${cy - 3}`} stroke="#1a1a1a" strokeWidth="1.5" fill="none" />
-        </>
-      ) : isIdle ? (
-        <>
-          <ellipse cx={cx - 3} cy={cy - 2} rx={2} ry={1.5} fill="#1a1a1a" opacity="0.6" />
-          <ellipse cx={cx + 3} cy={cy - 2} rx={2} ry={1.5} fill="#1a1a1a" opacity="0.6" />
-        </>
-      ) : (
-        <>
-          <circle cx={cx - 3} cy={cy - 2} r={2.5} fill="#1a1a1a" />
-          <circle cx={cx + 3} cy={cy - 2} r={2.5} fill="#1a1a1a" />
-          <circle cx={cx - 2.2} cy={cy - 2.8} r={0.8} fill="white" />
-          <circle cx={cx + 3.8} cy={cy - 2.8} r={0.8} fill="white" />
-        </>
-      )}
+      {celebrate ? <>
+        <path d={`M${px-5},${py-4} Q${px-3},${py-7} ${px-1},${py-4}`} stroke="#111" strokeWidth="1.5" fill="none"/>
+        <path d={`M${px+1},${py-4} Q${px+3},${py-7} ${px+5},${py-4}`} stroke="#111" strokeWidth="1.5" fill="none"/>
+      </> : idle ? <>
+        <ellipse cx={px-3} cy={py-3} rx={2} ry={1.4} fill="#111" opacity="0.55"/>
+        <ellipse cx={px+3} cy={py-3} rx={2} ry={1.4} fill="#111" opacity="0.55"/>
+      </> : <>
+        <circle cx={px-3} cy={py-3} r={2.4} fill="#111"/>
+        <circle cx={px+3} cy={py-3} r={2.4} fill="#111"/>
+        <circle cx={px-2.2} cy={py-3.7} r={0.7} fill="white"/>
+        <circle cx={px+3.8} cy={py-3.7} r={0.7} fill="white"/>
+      </>}
 
       {/* Mouth */}
-      {isCelebrating ? (
-        <path d={`M ${cx - 4} ${cy + 4} Q ${cx} ${cy + 8} ${cx + 4} ${cy + 4}`} stroke="#1a1a1a" strokeWidth="1.5" fill="#ff8888" />
-      ) : isTyping ? (
-        <ellipse cx={cx} cy={cy + 4} rx={2.5} ry={1.5} fill="#c0805a" />
-      ) : (
-        <path d={`M ${cx - 3} ${cy + 4} Q ${cx} ${cy + 6} ${cx + 3} ${cy + 4}`} stroke="#8B5E3C" strokeWidth="1.2" fill="none" />
-      )}
+      {celebrate
+        ? <path d={`M${px-4},${py+4} Q${px},${py+8} ${px+4},${py+4}`} stroke="#111" strokeWidth="1.4" fill="#ff8888"/>
+        : typing
+          ? <ellipse cx={px} cy={py+4} rx={2} ry={1.4} fill="#b07050"/>
+          : <path d={`M${px-3},${py+4} Q${px},${py+6} ${px+3},${py+4}`} stroke="#8B5E3C" strokeWidth="1.1" fill="none"/>
+      }
 
-      {/* Celebrate sparkles */}
-      {isCelebrating && (
-        <>
-          <text x={cx - 20} y={cy - 20} fontSize="12">✨</text>
-          <text x={cx + 10} y={cy - 25} fontSize="10">⭐</text>
-        </>
-      )}
+      {/* Sparkles on done */}
+      {celebrate && <>
+        <text x={px-22} y={py-18} fontSize="13" style={{userSelect:"none"}}>✨</text>
+        <text x={px+10}  y={py-22} fontSize="11" style={{userSelect:"none"}}>⭐</text>
+      </>}
     </g>
   );
 }
 
 // ─── Speech bubble ────────────────────────────────────────────────────────────
-function SpeechBubble({ col, row, text, color }: { col: number; row: number; text: string; color: string }) {
-  const x = isoX(col, row) + 20;
-  const y = isoY(col, row) - 60;
-  const maxLen = 22;
-  const display = text.length > maxLen ? text.slice(0, maxLen) + "…" : text;
-
+function Bubble({ c, r, text, color }: { c:number; r:number; text:string; color:string }) {
+  const x = ix(c,r)+22, y = iy(c,r)-58;
+  const disp = text.length > 24 ? text.slice(0,24)+"…" : text;
+  const bw = disp.length * 5.8 + 14;
   return (
-    <g>
-      <rect x={x - 4} y={y - 14} width={display.length * 6.2 + 8} height={20} rx={8}
-        fill="#0f1929" stroke={color} strokeWidth="1.2" opacity="0.95"
-      />
-      {/* Tail */}
-      <polygon
-        points={`${x + 4},${y + 6} ${x + 2},${y + 14} ${x + 12},${y + 6}`}
-        fill="#0f1929" stroke={color} strokeWidth="1"
-      />
-      <text x={x} y={y} fontSize="9" fill={color} fontFamily="JetBrains Mono, monospace">
-        {display}
-      </text>
+    <g style={{pointerEvents:"none"}}>
+      <rect x={x-4} y={y-14} width={bw} height={20} rx={8}
+        fill="#0c1624" stroke={color} strokeWidth="1.2" opacity="0.96"/>
+      <polygon points={`${x+6},${y+6} ${x+4},${y+15} ${x+14},${y+6}`}
+        fill="#0c1624" stroke={color} strokeWidth="1"/>
+      <text x={x+2} y={y} fontSize="8.5" fill={color} fontFamily="JetBrains Mono, monospace">{disp}</text>
     </g>
   );
 }
 
-// ─── Plant decoration ─────────────────────────────────────────────────────────
-function Plant({ col, row }: { col: number; row: number }) {
-  const x = isoX(col, row);
-  const y = isoY(col, row);
+// ─── Decorations ──────────────────────────────────────────────────────────────
+function Plant({ c, r }: { c:number; r:number }) {
+  const x = ix(c,r), y = iy(c,r);
+  return <g>
+    <ellipse cx={x} cy={y+8} rx={9} ry={4.5} fill="#7a3a10"/>
+    <rect x={x-9} y={y+5} width={18} height={9} rx={2} fill="#5a2c0c"/>
+    <ellipse cx={x-7} cy={y-4} rx={8} ry={5.5} fill="#16a34a" transform={`rotate(-30,${x-7},${y-4})`}/>
+    <ellipse cx={x+7} cy={y-7} rx={8} ry={5.5} fill="#15803d" transform={`rotate(25,${x+7},${y-7})`}/>
+    <ellipse cx={x}   cy={y-11} rx={7} ry={6} fill="#16a34a"/>
+  </g>;
+}
+
+function Shelf({ c, r }: { c:number; r:number }) {
+  const x = ix(c,r), y = iy(c,r);
+  const books = ["#e63946","#2a9d8f","#e9c46a","#f4a261","#6366f1","#ec4899","#14b8a6","#f97316"];
+  return <g>
+    <rect x={x-28} y={y-44} width={56} height={44} rx={2} fill="#2a1c0c" stroke="#3a2810" strokeWidth="0.5"/>
+    {[0,1,2].map(i=><rect key={i} x={x-26} y={y-44+11+i*13} width={52} height={2} fill="#3a2810"/>)}
+    {books.map((b,i)=>(
+      <rect key={i} x={x-22+i*6} y={y-42+(i%3)*12} width={4.5} height={10} rx={0.5} fill={b}/>
+    ))}
+  </g>;
+}
+
+function Whiteboard({ c, r, active }: { c:number; r:number; active:boolean }) {
+  const x = ix(c,r), y = iy(c,r);
+  return <g>
+    <rect x={x-52} y={y-72} width={104} height={60} rx={3} fill="#dde8f8" stroke="#8a9ab8" strokeWidth="1.5"/>
+    <rect x={x-48} y={y-68} width={96} height={52} rx={2} fill={active?"#f0f8ff":"#e8f0fc"}/>
+    {active && <>
+      <text x={x-42} y={y-52} fontSize="8" fill="#6366f1" fontFamily="monospace" fontWeight="bold">BUILD · SHIP · SCALE</text>
+      <line x1={x-42} y1={y-42} x2={x+20} y2={y-42} stroke="#6366f1" strokeWidth="1.5"/>
+      <line x1={x-42} y1={y-32} x2={x+35} y2={y-32} stroke="#3b82f6" strokeWidth="1"/>
+      <line x1={x-42} y1={y-22} x2={x+10} y2={y-22} stroke="#3b82f6" strokeWidth="1"/>
+      <circle cx={x+38} cy={y-28} r={8} fill="none" stroke="#22c55e" strokeWidth="1.5"/>
+      <line x1={x+34} y1={y-28} x2={x+42} y2={y-28} stroke="#22c55e" strokeWidth="1.2"/>
+      <line x1={x+38} y1={y-32} x2={x+38} y2={y-24} stroke="#22c55e" strokeWidth="1.2"/>
+    </>}
+    <line x1={x-30} y1={y-12} x2={x-35} y2={y+8} stroke="#8a9ab8" strokeWidth="2"/>
+    <line x1={x+30} y1={y-12} x2={x+35} y2={y+8} stroke="#8a9ab8" strokeWidth="2"/>
+  </g>;
+}
+
+function Cooler({ c, r }: { c:number; r:number }) {
+  const x = ix(c,r), y = iy(c,r);
+  return <g>
+    <rect x={x-8} y={y-32} width={16} height={30} rx={3} fill="#c8d8e8" stroke="#a0b4c8" strokeWidth="0.5"/>
+    <ellipse cx={x} cy={y-32} rx={6} ry={9} fill="#90c0f0" stroke="#60a0e8" strokeWidth="0.5"/>
+    <rect x={x-4} y={y-8} width={8} height={5} rx={1} fill="#60a0f0"/>
+  </g>;
+}
+
+// ─── Stat overlay card (floats in scene) ──────────────────────────────────────
+function StatCard({ x, y, label, value, color, sub }:
+  { x:number; y:number; label:string; value:string; color:string; sub?:string }) {
   return (
     <g>
-      {/* Pot */}
-      <ellipse cx={x} cy={y + 8} rx={10} ry={5} fill="#8B4513" />
-      <rect x={x - 10} y={y + 5} width={20} height={10} rx={2} fill="#6B3410" />
-      {/* Leaves */}
-      <ellipse cx={x - 8} cy={y - 5} rx={9} ry={6} fill="#16a34a" transform={`rotate(-30, ${x - 8}, ${y - 5})`} />
-      <ellipse cx={x + 8} cy={y - 8} rx={9} ry={6} fill="#15803d" transform={`rotate(20, ${x + 8}, ${y - 8})`} />
-      <ellipse cx={x} cy={y - 12} rx={8} ry={7} fill="#16a34a" />
+      <rect x={x} y={y} width={90} height={40} rx={6} fill="#0c1624" stroke={color} strokeWidth="1" opacity="0.92"/>
+      <text x={x+8} y={y+14} fontSize="8" fill={color} fontFamily="Inter, sans-serif" opacity="0.8">{label}</text>
+      <text x={x+8} y={y+30} fontSize="14" fill={color} fontFamily="JetBrains Mono, monospace" fontWeight="bold">{value}</text>
+      {sub && <text x={x+60} y={y+30} fontSize="8" fill={color} fontFamily="monospace" opacity="0.6">{sub}</text>}
     </g>
   );
 }
 
-// ─── Bookshelf ────────────────────────────────────────────────────────────────
-function Bookshelf({ col, row }: { col: number; row: number }) {
-  const x = isoX(col, row);
-  const y = isoY(col, row);
-  const w = 50; const h = 40;
+// ─── Mini sparkline ───────────────────────────────────────────────────────────
+function Sparkline({ x, y, data, color }: { x:number; y:number; data:number[]; color:string }) {
+  if (data.length < 2) return null;
+  const max = Math.max(...data), min = Math.min(...data);
+  const range = max - min || 1;
+  const w = 80, h = 24;
+  const pts = data.map((v, i) => {
+    const sx = x + (i / (data.length - 1)) * w;
+    const sy = y + h - ((v - min) / range) * h;
+    return `${sx},${sy}`;
+  }).join(" ");
   return (
     <g>
-      {/* Back */}
-      <rect x={x - w / 2} y={y - h} width={w} height={h} rx={2} fill="#2d1f0e" stroke="#3d2a12" strokeWidth="0.5" />
-      {/* Shelves */}
-      {[0, 1, 2].map(i => (
-        <rect key={i} x={x - w / 2 + 2} y={y - h + 10 + i * 12} width={w - 4} height={2} fill="#4a3520" />
-      ))}
-      {/* Books */}
-      {[
-        { hue: "#e63946", bx: -20 }, { hue: "#2a9d8f", bx: -13 },
-        { hue: "#e9c46a", bx: -6 }, { hue: "#f4a261", bx: 1 },
-        { hue: "#6366f1", bx: 8 }, { hue: "#ec4899", bx: 14 },
-      ].map((b, i) => (
-        <rect key={i} x={x + b.bx} y={y - h + 3 + (i % 3) * 12} width={5} height={9} rx={0.5} fill={b.hue} />
-      ))}
+      <rect x={x} y={y-2} width={w} height={h+4} rx={4} fill="#0c1624" stroke={color} strokeWidth="0.8" opacity="0.85"/>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" opacity="0.9"/>
     </g>
   );
 }
 
-// ─── Whiteboard ───────────────────────────────────────────────────────────────
-function Whiteboard({ col, row, hasContent }: { col: number; row: number; hasContent: boolean }) {
-  const x = isoX(col, row);
-  const y = isoY(col, row);
-  return (
-    <g>
-      <rect x={x - 45} y={y - 70} width={90} height={55} rx={3} fill="#e8f0fe" stroke="#94a3b8" strokeWidth="1.5" />
-      <rect x={x - 42} y={y - 67} width={84} height={49} rx={2} fill={hasContent ? "#f0f9ff" : "#e8f0fe"} />
-      {hasContent && (
-        <>
-          <line x1={x - 35} y1={y - 60} x2={x + 10} y2={y - 60} stroke="#6366f1" strokeWidth="1.5" />
-          <line x1={x - 35} y1={y - 52} x2={x + 25} y2={y - 52} stroke="#6366f1" strokeWidth="1.5" />
-          <line x1={x - 35} y1={y - 44} x2={x + 5} y2={y - 44} stroke="#3b82f6" strokeWidth="1" />
-          <circle cx={x + 20} cy={y - 44} r={6} fill="none" stroke="#22c55e" strokeWidth="1.5" />
-          <line x1={x + 17} y1={y - 44} x2={x + 23} y2={y - 44} stroke="#22c55e" strokeWidth="1" />
-          <line x1={x + 20} y1={y - 47} x2={x + 20} y2={y - 41} stroke="#22c55e" strokeWidth="1" />
-        </>
-      )}
-      {/* Stand legs */}
-      <line x1={x - 25} y1={y - 15} x2={x - 30} y2={y + 5} stroke="#94a3b8" strokeWidth="2" />
-      <line x1={x + 25} y1={y - 15} x2={x + 30} y2={y + 5} stroke="#94a3b8" strokeWidth="2" />
-    </g>
-  );
-}
-
-// ─── Water cooler ─────────────────────────────────────────────────────────────
-function WaterCooler({ col, row }: { col: number; row: number }) {
-  const x = isoX(col, row);
-  const y = isoY(col, row);
-  return (
-    <g>
-      <rect x={x - 8} y={y - 30} width={16} height={28} rx={3} fill="#cbd5e1" stroke="#94a3b8" strokeWidth="0.5" />
-      <ellipse cx={x} cy={y - 30} rx={7} ry={10} fill="#93c5fd" stroke="#60a5fa" strokeWidth="0.5" />
-      <rect x={x - 3} y={y - 8} width={6} height={5} rx={1} fill="#60a5fa" />
-    </g>
-  );
-}
-
-// ─── Agent desk layout positions ──────────────────────────────────────────────
-// [col, row] grid positions for 6 agents in the iso world
-const AGENT_POSITIONS: [number, number][] = [
-  [2, 0], // manager - top
-  [0, 1], // frontend - left
-  [4, 1], // backend - right
-  [1, 3], // qa - bottom left
-  [3, 3], // uiux - bottom right
-  [2, 4], // devops - bottom center
+// ─── Agent positions ──────────────────────────────────────────────────────────
+const POS: [number,number][] = [
+  [3,1], // manager   — top centre
+  [1,2], // frontend  — left
+  [5,2], // backend   — right
+  [2,4], // qa        — bottom left
+  [4,4], // uiux      — bottom right
+  [3,5], // devops    — bottom centre
 ];
+const COLORS = ["#6366f1","#22c55e","#3b82f6","#f59e0b","#ec4899","#14b8a6"];
+const IDS    = ["manager","frontend","backend","qa","uiux","devops"];
 
-const AGENT_COLORS = ["#6366f1", "#22c55e", "#3b82f6", "#f59e0b", "#ec4899", "#14b8a6"];
-const AGENT_IDS = ["manager", "frontend", "backend", "qa", "uiux", "devops"];
+function fmt(n:number){ return n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(1)+"K":String(n); }
 
-// ─── Main component ───────────────────────────────────────────────────────────
-export default function IsometricOffice({ agents }: Props) {
+// ─── Main ─────────────────────────────────────────────────────────────────────
+export default function IsometricOffice({ agents, project }: Props) {
   const [tick, setTick] = useState(0);
+  const [sparkData, setSparkData] = useState<number[]>([0,0,0,0,0]);
 
-  // Typing animation tick
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 600);
+    const id = setInterval(() => setTick(t=>t+1), 500);
     return () => clearInterval(id);
   }, []);
 
-  const getAgent = (id: string) => agents.find((a) => a.id === id);
-
-  // Floor grid: 5 cols x 6 rows
-  const floorTiles: [number, number][] = [];
-  for (let c = 0; c < 6; c++) {
-    for (let r = 0; r < 6; r++) {
-      floorTiles.push([c, r]);
+  // build sparkline from project progress over time
+  useEffect(() => {
+    if (project?.progress) {
+      setSparkData(d => [...d.slice(-9), project.progress]);
     }
-  }
+  }, [project?.progress]);
 
-  // Render order: back to front (higher col+row = front)
-  const renderOrder = [...AGENT_POSITIONS.entries()].sort(
-    (a, b) => (a[1][0] + a[1][1]) - (b[1][0] + b[1][1])
-  );
+  const get = (id:string) => agents.find(a=>a.id===id);
+  const activeCount = agents.filter(a=>a.status!=="idle").length;
+
+  // floor grid
+  const tiles: [number,number][] = [];
+  for(let c=0;c<8;c++) for(let r=0;r<8;r++) tiles.push([c,r]);
+
+  // sort agents back-to-front
+  const sorted = POS.map((pos,i)=>({i,pos})).sort((a,b)=>(a.pos[0]+a.pos[1])-(b.pos[0]+b.pos[1]));
+
+  const hasProject = !!project;
 
   return (
-    <div className="w-full h-full overflow-hidden flex items-center justify-center" style={{ background: "linear-gradient(180deg, #0a0f1a 0%, #0d1520 100%)" }}>
-      <svg
-        viewBox="0 100 960 620"
-        preserveAspectRatio="xMidYMid meet"
-        style={{ width: "100%", height: "100%", maxHeight: "100%" }}
-      >
-        {/* Ambient gradient background */}
+    <div className="w-full h-full" style={{background:"linear-gradient(180deg,#080e1a 0%,#0c1422 100%)"}}>
+      <svg viewBox="0 0 1000 760" preserveAspectRatio="xMidYMid meet"
+        style={{width:"100%",height:"100%"}}>
         <defs>
-          <radialGradient id="ambientGlow" cx="50%" cy="40%" r="60%">
-            <stop offset="0%" stopColor="#1a2a4a" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="#080d14" stopOpacity="0" />
+          <radialGradient id="oGlow" cx="50%" cy="35%" r="55%">
+            <stop offset="0%" stopColor="#1a3060" stopOpacity="0.5"/>
+            <stop offset="100%" stopColor="#080e1a" stopOpacity="0"/>
           </radialGradient>
-          <filter id="glow">
-            <feGaussianBlur stdDeviation="3" result="coloredBlur" />
-            <feMerge><feMergeNode in="coloredBlur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          <filter id="fg">
+            <feGaussianBlur stdDeviation="4" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
           </filter>
         </defs>
 
-        <rect x="0" y="0" width="960" height="800" fill="url(#ambientGlow)" />
+        {/* Background glow */}
+        <rect x="0" y="0" width="1000" height="760" fill="url(#oGlow)"/>
 
-        {/* Floor tiles */}
-        {floorTiles.map(([c, r]) => (
-          <FloorTile key={`${c}-${r}`} col={c} row={r} shade={(c + r) % 2 === 0} />
-        ))}
+        {/* Floor */}
+        {tiles.map(([c,r])=><Tile key={`${c}${r}`} c={c} r={r}/>)}
 
-        {/* Back decorations */}
-        <Bookshelf col={0} row={0} />
-        <Whiteboard col={3} row={0} hasContent={agents.some(a => a.status !== "idle")} />
-        <Plant col={5} row={0} />
-        <Plant col={5} row={2} />
-        <WaterCooler col={5} row={4} />
+        {/* Back walls (row 0) */}
+        {[0,1,2,3,4,5,6,7].map(c=><Wall key={c} c={c} r={0}/>)}
 
-        {/* Render desks + agents back to front */}
-        {renderOrder.map(([i, [col, row]]) => {
-          const agentId = AGENT_IDS[i];
-          const agent = getAgent(agentId);
-          const color = AGENT_COLORS[i];
+        {/* Decorations */}
+        <Shelf c={0} r={1}/>
+        <Shelf c={7} r={1}/>
+        <Whiteboard c={3} r={0} active={hasProject}/>
+        <Whiteboard c={4} r={0} active={hasProject}/>
+        <Plant c={0} r={3}/>
+        <Plant c={7} r={3}/>
+        <Plant c={0} r={6}/>
+        <Plant c={7} r={6}/>
+        <Cooler c={6} r={5}/>
+
+        {/* Desks + people (back to front) */}
+        {sorted.map(({i,pos:[c,r]})=>{
+          const id = IDS[i];
+          const agent = get(id);
+          const color = COLORS[i];
           const status = agent?.status ?? "idle";
-          const isWorking = status === "working";
-          const isThinking = status === "thinking";
-          const isDone = status === "done";
-          const isTyping = isWorking && tick % 2 === 0;
-          const isCelebrating = isDone;
-          const currentTask = agent?.currentTask;
-
+          const active = status==="working"||status==="thinking";
+          const typing = status==="working" && tick%2===0;
+          const done = status==="done";
+          const task = agent?.currentTask;
           return (
-            <g key={agentId}>
-              <IsoDesk col={col} row={row} color={color} isWorking={isWorking || isThinking} />
-              <AgentCharacter
-                col={col} row={row}
-                agentIndex={i}
-                status={status}
-                isTyping={isTyping}
-                isCelebrating={isCelebrating}
-              />
-              {currentTask && (isWorking || isThinking || isDone) && (
-                <SpeechBubble col={col} row={row} text={currentTask} color={color} />
+            <g key={id}>
+              <Desk c={c} r={r} color={color} active={active}/>
+              <Person c={c} r={r} idx={i} status={status} typing={typing} celebrate={done}/>
+              {task && (active||done) && <Bubble c={c} r={r} text={task} color={color}/>}
+              {/* Active desk glow */}
+              {active && (
+                <ellipse cx={ix(c,r)} cy={iy(c,r)-15} rx={38} ry={22}
+                  fill={color} opacity="0.07" filter="url(#fg)"/>
               )}
             </g>
           );
         })}
 
-        {/* Ceiling light effect */}
-        {AGENT_POSITIONS.map(([col, row], i) => {
-          const agent = getAgent(AGENT_IDS[i]);
-          const isActive = agent?.status === "working" || agent?.status === "thinking";
-          if (!isActive) return null;
-          const x = isoX(col, row);
-          const y = isoY(col, row);
-          return (
-            <ellipse key={i} cx={x} cy={y - 20} rx={35} ry={20}
-              fill={AGENT_COLORS[i]} opacity="0.06" filter="url(#glow)"
-            />
-          );
-        })}
+        {/* ── Floating stat overlay cards (top-right of scene) ── */}
+        {/* Progress ring-style card */}
+        <g>
+          <rect x={812} y={20} width={170} height={130} rx={10}
+            fill="#0c1624" stroke="#1e3050" strokeWidth="1" opacity="0.95"/>
+          <text x={830} y={44} fontSize="9" fill="#64748b" fontFamily="Inter,sans-serif"
+            textAnchor="start" letterSpacing="1">PROJECT PROGRESS</text>
+          {/* Arc progress */}
+          <circle cx={897} cy={100} r={34} fill="none" stroke="#1e3050" strokeWidth="6"/>
+          <circle cx={897} cy={100} r={34} fill="none" stroke="#6366f1" strokeWidth="6"
+            strokeDasharray={`${(project?.progress??0)/100*213.6} 213.6`}
+            strokeLinecap="round"
+            transform="rotate(-90 897 100)"/>
+          <text x={897} y={106} fontSize="18" fill="white" textAnchor="middle"
+            fontFamily="JetBrains Mono,monospace" fontWeight="bold">
+            {project?.progress??0}%
+          </text>
+          <text x={897} y={122} fontSize="8" fill="#64748b" textAnchor="middle"
+            fontFamily="monospace">
+            {project?.tasksCompleted??0}/{project?.tasksTotal??7} tasks
+          </text>
+        </g>
+
+        {/* Active agents card */}
+        <g>
+          <rect x={812} y={162} width={170} height={52} rx={8}
+            fill="#0c1624" stroke="#1e3050" strokeWidth="1" opacity="0.95"/>
+          <text x={830} y={180} fontSize="9" fill="#64748b" fontFamily="Inter,sans-serif" letterSpacing="1">AGENTS</text>
+          <text x={830} y={202} fontSize="20" fill="#22c55e" fontFamily="JetBrains Mono,monospace" fontWeight="bold">
+            {activeCount}
+          </text>
+          <text x={858} y={202} fontSize="10" fill="#64748b" fontFamily="monospace"> / {agents.length} active</text>
+          {/* Agent status dots */}
+          {agents.map((a,i)=>(
+            <circle key={a.id} cx={905+i*11} cy={183} r={4}
+              fill={a.status==="idle"?"#1e3050":COLORS[IDS.indexOf(a.id)]}
+              stroke={COLORS[IDS.indexOf(a.id)]} strokeWidth="1"/>
+          ))}
+        </g>
+
+        {/* Tokens + Cost */}
+        <StatCard x={812} y={226} label="TOKENS USED" value={fmt(project?.tokensUsed??0)} color="#f59e0b"/>
+        <StatCard x={812} y={278} label="COST TODAY"  value={`$${(project?.costToday??0).toFixed(2)}`} color="#10b981"/>
+        <StatCard x={812} y={330} label="AVG RESPONSE" value={`${(project?.avgResponseTime??0).toFixed(1)}s`} color="#06b6d4"/>
+
+        {/* Sparkline — progress over time */}
+        <g>
+          <rect x={812} y={382} width={170} height={52} rx={8}
+            fill="#0c1624" stroke="#1e3050" strokeWidth="1" opacity="0.95"/>
+          <text x={820} y={398} fontSize="9" fill="#64748b" fontFamily="Inter,sans-serif" letterSpacing="1">PROGRESS TREND</text>
+          <Sparkline x={820} y={402} data={sparkData} color="#6366f1"/>
+        </g>
+
+        {/* Project name banner bottom-left */}
+        {project && (
+          <g>
+            <rect x={12} y={690} width={280} height={48} rx={8}
+              fill="#0c1624" stroke="#1e3050" strokeWidth="1" opacity="0.95"/>
+            <circle cx={32} cy={714} r={6} fill="#22c55e"/>
+            <circle cx={32} cy={714} r={6} fill="#22c55e" opacity="0.4">
+              <animate attributeName="r" values="6;12;6" dur="2s" repeatCount="indefinite"/>
+              <animate attributeName="opacity" values="0.4;0;0.4" dur="2s" repeatCount="indefinite"/>
+            </circle>
+            <text x={46} y={710} fontSize="10" fill="#94a3b8" fontFamily="Inter,sans-serif">Active Project</text>
+            <text x={46} y={726} fontSize="13" fill="white" fontFamily="Inter,sans-serif" fontWeight="600">
+              {project.name.length>28?project.name.slice(0,28)+"…":project.name}
+            </text>
+          </g>
+        )}
+
+        {/* Idle hint */}
+        {!project && (
+          <text x={500} y={700} textAnchor="middle" fontSize="13" fill="#334155"
+            fontFamily="Inter,sans-serif">Click "New Project" to start a simulation</text>
+        )}
       </svg>
     </div>
   );

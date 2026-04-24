@@ -724,8 +724,16 @@ export default function OfficeDashboard() {
                 <Loader2 size={24} className="animate-spin" />
                 <span className="text-sm">Loading agents...</span>
               </div>
+            ) : activeView === "sims" ? (
+              <IsometricOffice agents={agents} project={project} />
             ) : (
-              <IsometricOffice agents={agents} />
+              <div className="overflow-y-auto custom-scroll floor-pattern h-full p-5">
+                <div className="office-grid max-w-3xl mx-auto">
+                  {agents.map((agent) => (
+                    <AgentDesk key={agent.id} agent={agent} />
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         </main>
