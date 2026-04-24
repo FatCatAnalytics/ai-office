@@ -1,0 +1,239 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* AI Office Dark Theme — deep navy/slate command center feel */
+    --background: 222 47% 8%;
+    --foreground: 210 20% 88%;
+
+    --card: 222 40% 10%;
+    --card-foreground: 210 20% 88%;
+
+    --popover: 222 40% 10%;
+    --popover-foreground: 210 20% 88%;
+
+    --primary: 199 89% 48%;
+    --primary-foreground: 222 47% 8%;
+
+    --secondary: 222 30% 15%;
+    --secondary-foreground: 210 20% 88%;
+
+    --muted: 222 30% 14%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 222 30% 18%;
+    --accent-foreground: 210 20% 88%;
+
+    --destructive: 0 62% 55%;
+    --destructive-foreground: 210 20% 88%;
+
+    --border: 222 25% 18%;
+    --input: 222 30% 14%;
+    --ring: 199 89% 48%;
+
+    --radius: 0.5rem;
+
+    /* Custom tokens */
+    --color-cyan: #06b6d4;
+    --color-violet: #8b5cf6;
+    --color-amber: #f59e0b;
+    --color-emerald: #10b981;
+    --color-rose: #f43f5e;
+    --color-pink: #ec4899;
+    --color-teal: #14b8a6;
+    --color-blue: #3b82f6;
+
+    /* Agent colors */
+    --agent-manager: #6366f1;
+    --agent-frontend: #22c55e;
+    --agent-backend: #3b82f6;
+    --agent-qa: #f59e0b;
+    --agent-uiux: #ec4899;
+    --agent-devops: #14b8a6;
+
+    /* Glow effects */
+    --glow-cyan: 0 0 20px rgba(6, 182, 212, 0.3);
+    --glow-violet: 0 0 20px rgba(139, 92, 246, 0.3);
+  }
+
+  /* Force dark mode always for this app */
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+    font-family: 'Inter', sans-serif;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    -webkit-font-smoothing: antialiased;
+  }
+
+  * { box-sizing: border-box; }
+}
+
+@layer utilities {
+  .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+  /* Scanline overlay effect */
+  .scanlines::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.04) 2px,
+      rgba(0, 0, 0, 0.04) 4px
+    );
+    pointer-events: none;
+    border-radius: inherit;
+  }
+
+  /* Isometric desk card */
+  .desk-card {
+    background: linear-gradient(135deg, hsl(222 40% 12%) 0%, hsl(222 40% 10%) 100%);
+    border: 1px solid hsl(var(--border));
+    border-radius: 12px;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    position: relative;
+    overflow: hidden;
+  }
+  .desk-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--agent-color, var(--color-cyan));
+    opacity: 0.8;
+  }
+  .desk-card.working {
+    border-color: var(--agent-color, var(--color-cyan));
+    box-shadow: 0 0 0 1px var(--agent-color, var(--color-cyan)), 0 4px 20px rgba(0,0,0,0.4);
+  }
+  .desk-card.thinking {
+    border-color: var(--color-amber);
+    box-shadow: 0 0 0 1px var(--color-amber), 0 4px 20px rgba(0,0,0,0.4);
+    animation: pulse-thinking 2s ease-in-out infinite;
+  }
+  .desk-card.blocked {
+    border-color: var(--color-rose);
+    box-shadow: 0 0 0 1px var(--color-rose);
+  }
+  .desk-card.done {
+    border-color: var(--color-emerald);
+    box-shadow: 0 0 0 1px var(--color-emerald);
+  }
+  .desk-card.idle {
+    opacity: 0.75;
+  }
+
+  @keyframes pulse-thinking {
+    0%, 100% { box-shadow: 0 0 0 1px var(--color-amber), 0 4px 20px rgba(0,0,0,0.4); }
+    50% { box-shadow: 0 0 0 1px var(--color-amber), 0 0 20px rgba(245, 158, 11, 0.3), 0 4px 20px rgba(0,0,0,0.4); }
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  .status-blink { animation: blink 1.5s ease-in-out infinite; }
+
+  @keyframes slide-in-right {
+    from { transform: translateX(20px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+  .slide-in { animation: slide-in-right 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+  @keyframes count-up {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .count-up { animation: count-up 0.3s ease-out forwards; }
+
+  /* Typing indicator */
+  .typing-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: typing 1.4s ease-in-out infinite;
+  }
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes typing {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-4px); opacity: 1; }
+  }
+
+  /* Scrollbar styling */
+  .custom-scroll::-webkit-scrollbar { width: 4px; }
+  .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+  .custom-scroll::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 2px;
+  }
+  .custom-scroll::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground));
+  }
+
+  /* Grid line background */
+  .grid-bg {
+    background-image:
+      linear-gradient(hsl(var(--border) / 0.3) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--border) / 0.3) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  /* Progress bar animated */
+  .progress-animated {
+    background: linear-gradient(90deg, var(--color-cyan), var(--color-violet));
+    background-size: 200% 100%;
+    animation: progress-shimmer 2s linear infinite;
+  }
+  @keyframes progress-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Live indicator */
+  .live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-emerald);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+    animation: live-pulse 2s ease-out infinite;
+  }
+  @keyframes live-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+    70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  }
+
+  /* Isometric grid layout */
+  .office-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  /* Floor pattern for office background */
+  .floor-pattern {
+    background:
+      repeating-linear-gradient(
+        45deg,
+        hsl(222 40% 9%),
+        hsl(222 40% 9%) 10px,
+        hsl(222 40% 10%) 10px,
+        hsl(222 40% 10%) 20px
+      );
+  }
+}
