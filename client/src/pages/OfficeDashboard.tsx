@@ -10,6 +10,7 @@ import {
   Settings, Terminal, GitBranch, BarChart3, Loader2,
   ArrowUpRight, Circle
 } from "lucide-react";
+import IsometricOffice from "../components/IsometricOffice";
 
 const ICON_MAP: Record<string, React.ElementType> = {
   Crown, Monitor, Server, Bug, Palette, Rocket,
@@ -717,19 +718,14 @@ export default function OfficeDashboard() {
           </div>
 
           {/* Office floor */}
-          <div className="flex-1 overflow-y-auto custom-scroll floor-pattern p-5">
-            <div className="office-grid max-w-3xl mx-auto">
-              {agents.map((agent) => (
-                <AgentDesk key={agent.id} agent={agent} />
-              ))}
-            </div>
-
-            {/* Empty state — only show spinner briefly on first load */}
-            {agents.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-64 gap-3 text-slate-600">
+          <div className="flex-1 overflow-hidden relative">
+            {agents.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
                 <Loader2 size={24} className="animate-spin" />
                 <span className="text-sm">Loading agents...</span>
               </div>
+            ) : (
+              <IsometricOffice agents={agents} />
             )}
           </div>
         </main>
