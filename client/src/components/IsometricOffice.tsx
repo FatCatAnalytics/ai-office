@@ -34,7 +34,18 @@ const ROOM_SIZE = 1800;
 const ZOOM_MIN  = 0.25;
 const ZOOM_MAX  = 2.0;
 const ZOOM_STEP = 0.09;
-const ZOOM_INIT = 0.52;
+
+// Compute a fit-zoom so the room fills ~90% of the viewport
+function fitZoom(vpW: number, vpH: number): number {
+  const z = Math.min(vpW, vpH) / ROOM_SIZE * 0.90;
+  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+}
+
+// Fallback used before the ResizeObserver fires (avoids jarring re-layout)
+const ZOOM_INIT = fitZoom(
+  typeof window !== "undefined" ? window.innerWidth  : 1200,
+  typeof window !== "undefined" ? window.innerHeight : 700,
+);
 
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
 function fmt(n: number) {
@@ -50,14 +61,17 @@ function spriteFrac(count: number): number {
 }
 
 // ─── Agent positions: spread across floor diamond ─────────────────────────────
-// Floor spans x: 0.10..0.90, y: 0.46..0.84 (isometric diamond area)
-// Generate grid positions for up to 14 agents
+// Safe zone inside the isometric floor diamond:
+//   x: 0.24..0.76  (tight horizontal — avoids left/right diamond edges)
+//   y: 0.52..0.73  (tight vertical   — avoids near/far diamond tips)
+// For 10 agents: 4 cols × 3 rows fits perfectly within this safe zone.
 function computePositions(count: number): [number, number][] {
-  const cols = count <= 4 ? 2 : count <= 9 ? 3 : 4;
+  const cols = count <= 3 ? 2 : count <= 6 ? 3 : 4;
   const rows = Math.ceil(count / cols);
 
-  const xMin = 0.14, xMax = 0.86;
-  const yMin = 0.50, yMax = 0.80;
+  // Tighten bounds so agents stay well inside the diamond at all agent counts
+  const xMin = 0.24, xMax = 0.76;
+  const yMin = 0.52, yMax = 0.73;
 
   const positions: [number, number][] = [];
   for (let r = 0; r < rows; r++) {
@@ -65,8 +79,8 @@ function computePositions(count: number): [number, number][] {
       if (positions.length >= count) break;
       const xT = cols > 1 ? c / (cols - 1) : 0.5;
       const yT = rows > 1 ? r / (rows - 1) : 0.5;
-      // Slight stagger for isometric feel
-      const stagger = (r % 2 === 1) ? 0.04 : 0;
+      // Slight isometric stagger on odd rows
+      const stagger = (r % 2 === 1) ? 0.03 : 0;
       positions.push([
         xMin + (xMax - xMin) * xT + stagger,
         yMin + (yMax - yMin) * yT,
@@ -460,6 +474,7 @@ export default function IsometricOffice({ agents, project }: Props) {
   const [pan,    setPan]        = useState<[number,number]>([0,0]);
   const [zoom,   setZoom]       = useState(ZOOM_INIT);
   const [sparkData, setSparkData] = useState<number[]>([0,0,0,0,0]);
+  const initialFitDone = useRef(false);
 
   const dragRef   = useRef<{ sx:number; sy:number; sp:[number,number] }|null>(null);
   const isDragging = useRef(false);
@@ -472,9 +487,13 @@ export default function IsometricOffice({ agents, project }: Props) {
       const e = entries[0]; if (!e) return;
       const w = e.contentRect.width, h = e.contentRect.height;
       setVpDims({ w, h });
-      setPan(p => (p[0] === 0 && p[1] === 0)
-        ? [(w - ROOM_SIZE * ZOOM_INIT) / 2, (h - ROOM_SIZE * ZOOM_INIT) / 2]
-        : p);
+      // On first real measurement, snap to a viewport-fitted zoom + centred pan
+      if (!initialFitDone.current) {
+        initialFitDone.current = true;
+        const fz = fitZoom(w, h);
+        setZoom(fz);
+        setPan([(w - ROOM_SIZE * fz) / 2, (h - ROOM_SIZE * fz) / 2]);
+      }
     });
     if (containerRef.current) obs.observe(containerRef.current);
     return () => obs.disconnect();
@@ -552,6 +571,13 @@ export default function IsometricOffice({ agents, project }: Props) {
     (vpDims.w - ROOM_SIZE * z) / 2,
     (vpDims.h - ROOM_SIZE * z) / 2,
   ], [vpDims]);
+
+  // Reset always re-fits to viewport rather than going back to a fixed zoom
+  const handleReset = useCallback(() => {
+    const fz = fitZoom(vpDims.w, vpDims.h);
+    setZoom(fz);
+    setPan(centredPan(fz));
+  }, [vpDims, centredPan]);
 
   return (
     <div
@@ -642,7 +668,7 @@ export default function IsometricOffice({ agents, project }: Props) {
           });
           setZoom(nz);
         }}
-        onReset={() => { setZoom(ZOOM_INIT); setPan(centredPan(ZOOM_INIT)); }}
+        onReset={handleReset}
         zoom={zoom}
       />
 
