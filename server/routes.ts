@@ -2,245 +2,595 @@ import type { Express } from "express";
 import type { Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
-import { insertProjectSchema } from "@shared/schema";
+import type { Agent, Task, Project } from "@shared/schema";
 
-// Fake event scenarios for each project stage
-const EVENT_SCENARIOS: Record<string, { agentId: string; agentName: string; action: string; detail: string; status: string }[][]> = {
-  phases: [
-    // Phase 0: Manager assigns
-    [
-      { agentId: "manager", agentName: "Manager Agent", action: "assigned task", detail: "Analyzing requirements and delegating to team", status: "info" },
-    ],
-    // Phase 1: Frontend + Backend start
-    [
-      { agentId: "frontend", agentName: "Frontend Dev", action: "started UI", detail: "Setting up React components and routing", status: "info" },
-      { agentId: "backend", agentName: "Backend Dev", action: "started API", detail: "Scaffolding FastAPI endpoints", status: "info" },
-      { agentId: "uiux", agentName: "UI/UX Designer", action: "designing layout", detail: "Creating wireframes and component specs", status: "info" },
-    ],
-    // Phase 2: Progress updates
-    [
-      { agentId: "frontend", agentName: "Frontend Dev", action: "built component", detail: "AuthForm and Dashboard skeleton complete", status: "success" },
-      { agentId: "backend", agentName: "Backend Dev", action: "built endpoints", detail: "/api/auth, /api/users, /api/projects wired", status: "success" },
-      { agentId: "uiux", agentName: "UI/UX Designer", action: "uploaded components", detail: "Design tokens and new component library pushed", status: "success" },
-    ],
-    // Phase 3: QA enters
-    [
-      { agentId: "qa", agentName: "QA Engineer", action: "started testing", detail: "Running integration tests on auth flow", status: "info" },
-      { agentId: "manager", agentName: "Manager Agent", action: "updated plan", detail: "Phase 2 on track — frontend 68% complete", status: "info" },
-    ],
-    // Phase 4: QA finds bugs
-    [
-      { agentId: "qa", agentName: "QA Engineer", action: "found 2 bugs", detail: "Login redirect broken on mobile, token expiry not handled", status: "warning" },
-      { agentId: "frontend", agentName: "Frontend Dev", action: "fixing bug", detail: "Patching mobile redirect issue in AuthGuard", status: "warning" },
-      { agentId: "backend", agentName: "Backend Dev", action: "fixing bug", detail: "Added token refresh endpoint and expiry handler", status: "warning" },
-    ],
-    // Phase 5: Fixes land, DevOps enters
-    [
-      { agentId: "frontend", agentName: "Frontend Dev", action: "bug fixed", detail: "Mobile redirect now working — tests passing", status: "success" },
-      { agentId: "devops", agentName: "DevOps Engineer", action: "setting up CI/CD", detail: "GitHub Actions pipeline for staging deploy", status: "info" },
-      { agentId: "qa", agentName: "QA Engineer", action: "testing user flows", detail: "Running E2E tests: login, dashboard, settings", status: "info" },
-    ],
-    // Phase 6: Deploy
-    [
-      { agentId: "devops", agentName: "DevOps Engineer", action: "deployed to staging", detail: "Build passed — staging.example.com live", status: "success" },
-      { agentId: "qa", agentName: "QA Engineer", action: "sign-off", detail: "All critical paths passing — cleared for production", status: "success" },
-      { agentId: "manager", agentName: "Manager Agent", action: "project complete", detail: "All milestones hit — marking project done", status: "success" },
-    ],
-  ],
-};
-
-// WebSocket clients
+// ─── WebSocket broadcast ───────────────────────────────────────────────────────
 const wsClients = new Set<WebSocket>();
-let activeSimulation: NodeJS.Timeout | null = null;
-let currentProjectId: number | null = null;
 
 function broadcast(data: unknown) {
   const msg = JSON.stringify(data);
   wsClients.forEach((ws) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(msg);
-    }
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   });
 }
 
-function getAgentTaskForPhase(agentId: string, phase: number): string | null {
-  const tasks: Record<string, string[]> = {
-    manager: ["Analyzing requirements", "Coordinating team", "Reviewing progress", "Updating roadmap", "Final review"],
-    frontend: ["Setting up React", "Building components", "Fixing mobile bug", "Polish & testing", "Complete"],
-    backend: ["Scaffolding API", "Building endpoints", "Fixing token expiry", "API hardening", "Complete"],
-    qa: [null, null, "Running integration tests", "Testing E2E flows", "Sign-off complete"],
-    uiux: ["Creating wireframes", "Designing tokens", "Component library", "Visual QA", "Complete"],
-    devops: [null, null, null, "Setting up CI/CD", "Deployed to staging"],
-  };
-  const list = tasks[agentId] || [];
-  return list[Math.min(phase, list.length - 1)] ?? null;
-}
+// ─── Manager Orchestration Engine ─────────────────────────────────────────────
+// When a project is submitted, the Manager:
+//   1. Plans tasks based on project description + agent capabilities
+//   2. Creates real Task rows in DB, assigned to agents
+//   3. Runs a simulation timeline: agents work, report back, manager reviews
+//   4. Manager can reassign blocked tasks
+// ─────────────────────────────────────────────────────────────────────────────
 
-function getAgentStatusForPhase(agentId: string, phase: number): string {
-  const statuses: Record<string, string[]> = {
-    manager: ["thinking", "working", "working", "thinking", "done"],
-    frontend: ["idle", "working", "working", "working", "done"],
-    backend: ["idle", "working", "working", "working", "done"],
-    qa: ["idle", "idle", "working", "working", "done"],
-    uiux: ["idle", "working", "working", "working", "done"],
-    devops: ["idle", "idle", "idle", "working", "done"],
-  };
-  const list = statuses[agentId] || [];
-  return list[Math.min(phase, list.length - 1)] ?? "idle";
-}
+let activeSimulation: NodeJS.Timeout | null = null;
+let currentProjectId: number | null = null;
 
-function runSimulation(projectId: number) {
+function clearSim() {
   if (activeSimulation) {
     clearTimeout(activeSimulation);
     activeSimulation = null;
   }
+}
+
+// Generate tasks for a project based on available agents and project description
+function planProjectTasks(project: Project, agents: Agent[]): Array<{
+  title: string;
+  description: string;
+  assignedTo: string;
+  priority: "critical" | "high" | "normal" | "low";
+}> {
+  const subAgents = agents.filter((a) => a.id !== "manager");
+
+  // Capability-based task planning
+  const taskTemplates: Array<{
+    capability: string;
+    title: string;
+    descFn: (p: Project) => string;
+    priority: "critical" | "high" | "normal" | "low";
+  }> = [
+    {
+      capability: "product",
+      title: "Define requirements & user stories",
+      descFn: (p) => `Break down "${p.name}" into user stories, acceptance criteria and success metrics.`,
+      priority: "critical",
+    },
+    {
+      capability: "design",
+      title: "Create wireframes & design system",
+      descFn: (p) => `Design UI wireframes, component library and design tokens for "${p.name}".`,
+      priority: "high",
+    },
+    {
+      capability: "schema-design",
+      title: "Design database schema",
+      descFn: (p) => `Design normalized schema, relationships and migration plan for "${p.name}".`,
+      priority: "high",
+    },
+    {
+      capability: "react",
+      title: "Build frontend components",
+      descFn: (p) => `Implement React components, routing and state management for "${p.name}".`,
+      priority: "normal",
+    },
+    {
+      capability: "api",
+      title: "Implement backend API",
+      descFn: (p) => `Build REST/GraphQL endpoints, middleware and business logic for "${p.name}".`,
+      priority: "normal",
+    },
+    {
+      capability: "security",
+      title: "Security review & hardening",
+      descFn: (p) => `Threat modeling, auth review, dependency audit and OWASP checks for "${p.name}".`,
+      priority: "high",
+    },
+    {
+      capability: "ml",
+      title: "Analytics & instrumentation",
+      descFn: (p) => `Define KPIs, implement tracking, build dashboards and reports for "${p.name}".`,
+      priority: "normal",
+    },
+    {
+      capability: "testing",
+      title: "QA & integration tests",
+      descFn: (p) => `Write unit tests, integration tests and E2E test suite for "${p.name}".`,
+      priority: "normal",
+    },
+    {
+      capability: "ci-cd",
+      title: "CI/CD pipeline & deployment",
+      descFn: (p) => `Set up GitHub Actions, Docker, staging and production deployment for "${p.name}".`,
+      priority: "normal",
+    },
+  ];
+
+  const assignedTasks: Array<{
+    title: string;
+    description: string;
+    assignedTo: string;
+    priority: "critical" | "high" | "normal" | "low";
+  }> = [];
+
+  for (const tmpl of taskTemplates) {
+    // Find an agent with this capability
+    const capable = subAgents.find((a) => {
+      const caps: string[] = JSON.parse(a.capabilities || "[]");
+      return caps.includes(tmpl.capability);
+    });
+    if (capable) {
+      assignedTasks.push({
+        title: tmpl.title,
+        description: tmpl.descFn(project),
+        assignedTo: capable.id,
+        priority: tmpl.priority,
+      });
+    }
+  }
+
+  // If very few agents, fallback: assign to available subagents round-robin
+  if (assignedTasks.length === 0 && subAgents.length > 0) {
+    const fallbackTasks = [
+      "Analyse requirements and plan approach",
+      "Implement core functionality",
+      "Review and test implementation",
+    ];
+    fallbackTasks.forEach((t, i) => {
+      assignedTasks.push({
+        title: t,
+        description: `${t} for "${project.name}"`,
+        assignedTo: subAgents[i % subAgents.length].id,
+        priority: "normal",
+      });
+    });
+  }
+
+  return assignedTasks;
+}
+
+// Post a WebSocket event + persist to DB
+function emitEvent(
+  projectId: number,
+  agentId: string,
+  agentName: string,
+  action: string,
+  detail: string,
+  status: "info" | "success" | "warning" | "error" = "info"
+) {
+  const event = storage.createEvent({
+    projectId,
+    agentId,
+    agentName,
+    action,
+    detail,
+    status,
+    timestamp: Date.now(),
+  });
+  broadcast({ type: "event", event });
+  return event;
+}
+
+// Update agent status in DB + broadcast
+function setAgentStatus(
+  agentId: string,
+  status: "idle" | "working" | "thinking" | "blocked" | "done",
+  currentTask: string | null = null
+) {
+  storage.updateAgent(agentId, { status, currentTask });
+  broadcast({ type: "agent_update", agentId, status, currentTask });
+}
+
+// Main simulation: Manager orchestrates tasks through the team
+function runManagerOrchestration(projectId: number) {
+  clearSim();
   currentProjectId = projectId;
 
-  const phases = EVENT_SCENARIOS.phases;
-  let phaseIndex = 0;
-  let totalEvents = 0;
-  let totalPhases = phases.length;
+  const project = storage.getProject(projectId);
+  if (!project) return;
+  const agents = storage.getAgents();
+  const manager = agents.find((a) => a.id === "manager");
+  if (!manager) return;
 
-  function runNextPhase() {
-    if (phaseIndex >= phases.length) {
-      // Done
-      storage.updateProject(projectId, { status: "completed", progress: 100 });
-      broadcast({ type: "project_update", projectId, status: "completed", progress: 100 });
-      activeSimulation = null;
+  // Phase 0: Manager starts planning
+  setAgentStatus("manager", "thinking", "Analysing project requirements");
+  emitEvent(projectId, "manager", manager.name, "received project",
+    `Analysing "${project.name}" — breaking down into tasks for the team`, "info");
+
+  storage.updateProject(projectId, { status: "planning" });
+  broadcast({ type: "project_update", projectId, status: "planning" });
+
+  // Phase 1: Plan and create tasks (with delay to simulate thinking)
+  activeSimulation = setTimeout(() => {
+    const taskPlans = planProjectTasks(project, agents);
+    const createdTasks: Task[] = [];
+
+    for (const plan of taskPlans) {
+      const task = storage.createTask({
+        title: plan.title,
+        description: plan.description,
+        projectId,
+        assignedTo: plan.assignedTo,
+        assignedBy: "manager",
+        status: "todo",
+        priority: plan.priority,
+      });
+      createdTasks.push(task);
+
+      const assignee = agents.find((a) => a.id === plan.assignedTo);
+      emitEvent(projectId, "manager", manager.name, "assigned task",
+        `→ ${assignee?.name ?? plan.assignedTo}: "${plan.title}"`, "info");
+      broadcast({ type: "task_created", task });
+    }
+
+    // Update project task total
+    storage.updateProject(projectId, {
+      status: "active",
+      tasksTotal: createdTasks.length,
+      tasksCompleted: 0,
+    });
+    broadcast({ type: "project_update", projectId, status: "active", tasksTotal: createdTasks.length });
+
+    setAgentStatus("manager", "working", "Monitoring team progress");
+    emitEvent(projectId, "manager", manager.name, "plan complete",
+      `Delegated ${createdTasks.length} tasks across ${new Set(createdTasks.map(t => t.assignedTo)).size} agents`, "success");
+
+    // Phase 2: Run tasks in waves
+    runTaskWaves(projectId, createdTasks, agents);
+  }, 2500 + Math.random() * 1500);
+}
+
+function runTaskWaves(projectId: number, tasks: Task[], agents: Agent[]) {
+  const priorities = ["critical", "high", "normal", "low"];
+  let completedCount = 0;
+  const totalTasks = tasks.length;
+
+  // Group tasks by priority order
+  const ordered = [...tasks].sort((a, b) =>
+    priorities.indexOf(a.priority) - priorities.indexOf(b.priority)
+  );
+
+  let waveIndex = 0;
+
+  // Process tasks one at a time with delays to simulate real work
+  function processNextTask() {
+    if (waveIndex >= ordered.length) {
+      // All tasks done — project complete
+      allTasksDone(projectId, agents);
       return;
     }
 
-    const phaseEvents = phases[phaseIndex];
-    let eventIndex = 0;
+    const task = ordered[waveIndex];
+    waveIndex++;
 
-    function emitNextEvent() {
-      if (eventIndex >= phaseEvents.length) {
-        // Update project progress
-        const progress = Math.min(100, Math.round(((phaseIndex + 1) / totalPhases) * 100));
-        const tasksCompleted = phaseIndex + 1;
-        storage.updateProject(projectId, {
-          progress,
-          tasksCompleted,
-          tokensUsed: Math.floor(Math.random() * 50000) + 100000 * (phaseIndex + 1),
-          costToday: parseFloat((0.5 + phaseIndex * 0.8 + Math.random() * 0.3).toFixed(2)),
-          avgResponseTime: parseFloat((1.5 + Math.random() * 1.5).toFixed(1)),
-        });
-        broadcast({
-          type: "project_update",
-          projectId,
-          progress,
-          tasksCompleted,
-        });
+    const assignee = agents.find((a) => a.id === task.assignedTo);
+    const agentName = assignee?.name ?? task.assignedTo;
 
-        phaseIndex++;
-        const delay = 3000 + Math.random() * 2000;
-        activeSimulation = setTimeout(runNextPhase, delay);
-        return;
-      }
+    // Mark task in_progress
+    storage.updateTask(task.id, { status: "in_progress" });
+    broadcast({ type: "task_update", task: { ...task, status: "in_progress" } });
 
-      const ev = phaseEvents[eventIndex];
-      const event = storage.createEvent({
-        projectId,
-        agentId: ev.agentId,
-        agentName: ev.agentName,
-        action: ev.action,
-        detail: ev.detail,
-        status: ev.status,
-        timestamp: Date.now(),
-      });
+    setAgentStatus(task.assignedTo, "working", task.title);
+    emitEvent(projectId, task.assignedTo, agentName, "started task",
+      `Working on: ${task.title}`, "info");
 
-      // Update agent state
-      const task = getAgentTaskForPhase(ev.agentId, phaseIndex);
-      const status = getAgentStatusForPhase(ev.agentId, phaseIndex);
-      storage.updateAgentState(ev.agentId, {
-        status,
-        currentTask: task,
-      });
+    // Simulate work duration based on priority
+    const durations: Record<string, number> = {
+      critical: 4000 + Math.random() * 3000,
+      high: 3000 + Math.random() * 2500,
+      normal: 2000 + Math.random() * 2000,
+      low: 1500 + Math.random() * 1500,
+    };
+    const workTime = durations[task.priority] ?? 3000;
 
-      broadcast({ type: "event", event });
-      broadcast({
-        type: "agent_update",
-        agentId: ev.agentId,
-        status,
-        currentTask: task,
-      });
+    // 15% chance of a blocking event
+    const willBlock = Math.random() < 0.15;
 
-      totalEvents++;
-      eventIndex++;
-      const delay = 1200 + Math.random() * 1800;
-      activeSimulation = setTimeout(emitNextEvent, delay);
+    if (willBlock) {
+      activeSimulation = setTimeout(() => {
+        const blockReason = randomBlockReason();
+        storage.updateTask(task.id, { status: "blocked", blockedReason: blockReason });
+        broadcast({ type: "task_update", task: { ...task, status: "blocked", blockedReason: blockReason } });
+
+        setAgentStatus(task.assignedTo, "blocked", task.title);
+        emitEvent(projectId, task.assignedTo, agentName, "blocked",
+          `Blocked: ${blockReason}`, "warning");
+
+        // Manager notices and reassigns after a moment
+        activeSimulation = setTimeout(() => {
+          const manager = agents.find((a) => a.id === "manager");
+          emitEvent(projectId, "manager", manager?.name ?? "Manager Agent", "detected block",
+            `${agentName} is blocked — unblocking and reassigning`, "warning");
+
+          setAgentStatus(task.assignedTo, "idle", null);
+
+          // Unblock: reset to in_progress and retry
+          storage.updateTask(task.id, { status: "in_progress", blockedReason: null });
+          broadcast({ type: "task_update", task: { ...task, status: "in_progress" } });
+
+          setAgentStatus(task.assignedTo, "working", task.title);
+          emitEvent(projectId, task.assignedTo, agentName, "resumed",
+            `Unblocked — resuming "${task.title}"`, "info");
+
+          // Complete after additional time
+          activeSimulation = setTimeout(() => {
+            completeTask(projectId, task, agentName, agents, ++completedCount, totalTasks);
+            processNextTask();
+          }, workTime * 0.7);
+        }, 2000 + Math.random() * 1500);
+      }, workTime * 0.4);
+    } else {
+      activeSimulation = setTimeout(() => {
+        completedCount++;
+        completeTask(projectId, task, agentName, agents, completedCount, totalTasks);
+        processNextTask();
+      }, workTime);
     }
-
-    emitNextEvent();
   }
 
-  // Kick off
-  runNextPhase();
+  processNextTask();
 }
 
+function completeTask(
+  projectId: number,
+  task: Task,
+  agentName: string,
+  agents: Agent[],
+  completedCount: number,
+  totalTasks: number
+) {
+  storage.updateTask(task.id, { status: "done" });
+  broadcast({ type: "task_update", task: { ...task, status: "done" } });
+
+  setAgentStatus(task.assignedTo, "done", null);
+  emitEvent(projectId, task.assignedTo, agentName, "completed task",
+    `✓ Finished: ${task.title}`, "success");
+
+  // Manager acknowledges progress
+  const progress = Math.round((completedCount / totalTasks) * 100);
+  storage.updateProject(projectId, {
+    progress,
+    tasksCompleted: completedCount,
+    tokensUsed: Math.floor(Math.random() * 30000) + 50000 * completedCount,
+    costToday: parseFloat((0.3 + completedCount * 0.5 + Math.random() * 0.2).toFixed(2)),
+    avgResponseTime: parseFloat((1.2 + Math.random() * 1.8).toFixed(1)),
+  });
+  broadcast({ type: "project_update", projectId, progress, tasksCompleted: completedCount });
+
+  // After a moment, set agent back to idle
+  setTimeout(() => setAgentStatus(task.assignedTo, "idle", null), 1500);
+}
+
+function allTasksDone(projectId: number, agents: Agent[]) {
+  const manager = agents.find((a) => a.id === "manager");
+  storage.updateProject(projectId, { status: "completed", progress: 100 });
+  broadcast({ type: "project_update", projectId, status: "completed", progress: 100 });
+
+  emitEvent(projectId, "manager", manager?.name ?? "Manager Agent", "project complete",
+    "All tasks delivered — project marked done ✓", "success");
+
+  setAgentStatus("manager", "done", "All tasks complete");
+  setTimeout(() => setAgentStatus("manager", "idle", null), 3000);
+  activeSimulation = null;
+}
+
+function randomBlockReason(): string {
+  const reasons = [
+    "Waiting for API credentials from DevOps",
+    "Design spec not finalised yet",
+    "Database migration conflict — needs resolution",
+    "Dependency not yet available from another agent",
+    "Insufficient permissions on staging server",
+    "Rate limit hit on external API",
+    "Test environment down — awaiting restart",
+  ];
+  return reasons[Math.floor(Math.random() * reasons.length)];
+}
+
+// ─── Route registration ────────────────────────────────────────────────────────
 export function registerRoutes(httpServer: Server, app: Express) {
-  // WebSocket server
+  // WebSocket
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
   wss.on("connection", (ws) => {
     wsClients.add(ws);
-    // Send current state on connect
-    const agents = storage.getAgentStates();
-    ws.send(JSON.stringify({ type: "init", agents }));
+
+    // Send full init payload
+    const agents = storage.getAgents();
+    const projects = storage.getProjects();
+    ws.send(JSON.stringify({ type: "init", agents, projects }));
 
     if (currentProjectId) {
       const project = storage.getProject(currentProjectId);
+      const tasks = storage.getTasks(currentProjectId);
+      const events = storage.getEvents(currentProjectId, 50);
       if (project) {
-        ws.send(JSON.stringify({ type: "project_init", project }));
+        ws.send(JSON.stringify({ type: "project_init", project, tasks, events }));
       }
     }
 
     ws.on("close", () => wsClients.delete(ws));
   });
 
-  // GET /api/projects
+  // ── Agents ──────────────────────────────────────────────────────────────────
+
+  app.get("/api/agents", (_req, res) => {
+    res.json(storage.getAgents());
+  });
+
+  app.get("/api/agents/:id", (req, res) => {
+    const agent = storage.getAgent(req.params.id);
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+    res.json(agent);
+  });
+
+  app.post("/api/agents", (req, res) => {
+    const { id, name, role, spriteType, provider, modelId, systemPrompt, capabilities, reportsTo, color, icon } = req.body;
+    if (!id || !name || !role || !spriteType || !color || !icon) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    const existing = storage.getAgent(id);
+    if (existing) return res.status(409).json({ error: "Agent ID already exists" });
+
+    const agent = storage.createAgent({
+      id,
+      name,
+      role,
+      spriteType: spriteType || "manager",
+      provider: provider || "anthropic",
+      modelId: modelId || "claude-opus-4-5",
+      systemPrompt: systemPrompt || "",
+      capabilities: JSON.stringify(capabilities || []),
+      reportsTo: reportsTo || null,
+      status: "idle",
+      currentTask: null,
+      color,
+      icon,
+    });
+    broadcast({ type: "agent_created", agent });
+    res.json(agent);
+  });
+
+  app.patch("/api/agents/:id", (req, res) => {
+    const { id } = req.params;
+    const data = req.body;
+    // Don't allow direct status/currentTask manipulation via this endpoint (that's internal)
+    const { status, currentTask, ...safeData } = data;
+    if (safeData.capabilities && Array.isArray(safeData.capabilities)) {
+      safeData.capabilities = JSON.stringify(safeData.capabilities);
+    }
+    const agent = storage.updateAgent(id, safeData);
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+    broadcast({ type: "agent_updated", agent });
+    res.json(agent);
+  });
+
+  app.delete("/api/agents/:id", (req, res) => {
+    const { id } = req.params;
+    if (id === "manager") return res.status(400).json({ error: "Cannot delete the Manager" });
+    storage.deleteAgent(id);
+    broadcast({ type: "agent_deleted", agentId: id });
+    res.json({ ok: true });
+  });
+
+  // ── Projects ─────────────────────────────────────────────────────────────────
+
   app.get("/api/projects", (_req, res) => {
     res.json(storage.getProjects());
   });
 
-  // POST /api/projects
+  app.get("/api/projects/:id", (req, res) => {
+    const project = storage.getProject(parseInt(req.params.id));
+    if (!project) return res.status(404).json({ error: "Not found" });
+    res.json(project);
+  });
+
   app.post("/api/projects", (req, res) => {
-    const parsed = insertProjectSchema.safeParse({
-      ...req.body,
-      status: "active",
+    const { name, description, priority, deadline } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: "name is required" });
+
+    const project = storage.createProject({
+      name: name.trim(),
+      description: description?.trim() || "",
+      priority: priority || "normal",
+      status: "planning",
       progress: 0,
-      tasksTotal: 7,
+      deadline: deadline || null,
+      tasksTotal: 0,
       tasksCompleted: 0,
       tokensUsed: 0,
       costToday: 0,
       avgResponseTime: 0,
     });
-    if (!parsed.success) {
-      return res.status(400).json({ error: parsed.error });
-    }
-    const project = storage.createProject(parsed.data);
 
     // Reset all agents to idle
-    const agents = storage.getAgentStates();
+    const agents = storage.getAgents();
     for (const agent of agents) {
-      storage.updateAgentState(agent.id, { status: "idle", currentTask: null });
+      storage.updateAgent(agent.id, { status: "idle", currentTask: null });
     }
-
-    // Start simulation
-    runSimulation(project.id);
 
     broadcast({ type: "new_project", project });
     res.json(project);
+
+    // Kick off Manager orchestration after response is sent
+    setImmediate(() => runManagerOrchestration(project.id));
   });
 
-  // GET /api/projects/:id/events
+  app.patch("/api/projects/:id", (req, res) => {
+    const project = storage.updateProject(parseInt(req.params.id), req.body);
+    if (!project) return res.status(404).json({ error: "Not found" });
+    broadcast({ type: "project_update", projectId: project.id, ...project });
+    res.json(project);
+  });
+
   app.get("/api/projects/:id/events", (req, res) => {
     const id = parseInt(req.params.id);
-    res.json(storage.getEvents(id, 100));
+    const limit = parseInt(req.query.limit as string) || 100;
+    res.json(storage.getEvents(id, limit));
   });
 
-  // GET /api/agents
-  app.get("/api/agents", (_req, res) => {
-    res.json(storage.getAgentStates());
+  app.get("/api/projects/:id/tasks", (req, res) => {
+    const id = parseInt(req.params.id);
+    res.json(storage.getTasks(id));
+  });
+
+  // ── Tasks ────────────────────────────────────────────────────────────────────
+
+  app.get("/api/tasks", (req, res) => {
+    const projectId = req.query.projectId ? parseInt(req.query.projectId as string) : undefined;
+    res.json(storage.getTasks(projectId));
+  });
+
+  app.patch("/api/tasks/:id", (req, res) => {
+    const { id } = req.params;
+    const task = storage.updateTask(parseInt(id), req.body);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    broadcast({ type: "task_update", task });
+    res.json(task);
+  });
+
+  // Manager reassignment
+  app.post("/api/tasks/:id/reassign", (req, res) => {
+    const { id } = req.params;
+    const { assignedTo } = req.body;
+    if (!assignedTo) return res.status(400).json({ error: "assignedTo required" });
+
+    const agent = storage.getAgent(assignedTo);
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+    const task = storage.updateTask(parseInt(id), {
+      assignedTo,
+      status: "todo",
+      blockedReason: null,
+    });
+    if (!task) return res.status(404).json({ error: "Task not found" });
+
+    // Log manager reassignment event
+    const manager = storage.getAgent("manager");
+    emitEvent(task.projectId, "manager", manager?.name ?? "Manager Agent", "reassigned task",
+      `"${task.title}" → ${agent.name}`, "info");
+
+    broadcast({ type: "task_update", task });
+    res.json(task);
+  });
+
+  // ── Settings ─────────────────────────────────────────────────────────────────
+
+  app.get("/api/settings", (_req, res) => {
+    res.json(storage.getAllSettings());
+  });
+
+  app.post("/api/settings", (req, res) => {
+    const { key, value } = req.body;
+    if (!key || value === undefined) return res.status(400).json({ error: "key and value required" });
+    storage.setSetting(key, String(value));
+    res.json({ ok: true });
+  });
+
+  app.patch("/api/settings", (req, res) => {
+    // Bulk update
+    const entries = Object.entries(req.body);
+    for (const [key, value] of entries) {
+      storage.setSetting(key, String(value));
+    }
+    res.json({ ok: true });
   });
 }
