@@ -30,14 +30,15 @@ const SPRITE_MAP: Record<string, string> = {
 };
 
 // ─── Room / pan / zoom ────────────────────────────────────────────────────────
-const ROOM_SIZE = 1800;
+const ROOM_SIZE = 2400;  // larger world → sprites are smaller relative to room
 const ZOOM_MIN  = 0.25;
 const ZOOM_MAX  = 2.0;
 const ZOOM_STEP = 0.09;
 
-// Compute a fit-zoom so the room fills ~90% of the viewport
+// Compute a fit-zoom so the room fills the viewport nicely
+// We target ~95% of viewport height so the room fills the screen top-to-bottom
 function fitZoom(vpW: number, vpH: number): number {
-  const z = Math.min(vpW, vpH) / ROOM_SIZE * 0.90;
+  const z = vpH / ROOM_SIZE * 0.95;
   return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
 }
 
@@ -53,25 +54,33 @@ function fmt(n: number) {
 }
 
 // ─── Auto-scaling: sprite fraction of ROOM_SIZE based on agent count ──────────
+// ROOM_SIZE is now 2400, so these fractions produce the same pixel sizes as before
 function spriteFrac(count: number): number {
-  if (count <= 3)  return 0.14;
-  if (count <= 6)  return 0.115;
-  if (count <= 10) return 0.09;
-  return 0.07;
+  if (count <= 3)  return 0.105;
+  if (count <= 6)  return 0.088;
+  if (count <= 10) return 0.072;
+  return 0.058;
 }
 
 // ─── Agent positions: spread across floor diamond ─────────────────────────────
-// Safe zone inside the isometric floor diamond:
-//   x: 0.24..0.76  (tight horizontal — avoids left/right diamond edges)
-//   y: 0.52..0.73  (tight vertical   — avoids near/far diamond tips)
-// For 10 agents: 4 cols × 3 rows fits perfectly within this safe zone.
+// The office_floor.png is an isometric room. When rendered at ROOM_SIZE×ROOM_SIZE
+// the wooden floor diamond occupies roughly:
+//   left tip  ≈ (0.08, 0.60)   right tip ≈ (0.92, 0.60)
+//   top tip   ≈ (0.50, 0.38)   bottom tip ≈ (0.50, 0.82)
+// Safe usable zone (avoiding walls, plants, edges):
+//   x: 0.32..0.68   y: 0.45..0.74
+// isometric rows slope: each row down shifts x slightly right → apply row skew
 function computePositions(count: number): [number, number][] {
-  const cols = count <= 3 ? 2 : count <= 6 ? 3 : 4;
+  // Grid columns: 2 for ≤4, 3 for ≤6, 4 for 7-12
+  const cols = count <= 4 ? 2 : count <= 6 ? 3 : 4;
   const rows = Math.ceil(count / cols);
 
-  // Tighten bounds so agents stay well inside the diamond at all agent counts
-  const xMin = 0.24, xMax = 0.76;
-  const yMin = 0.52, yMax = 0.73;
+  // Floor safe zone
+  const xMin = 0.32, xMax = 0.68;
+  const yMin = 0.46, yMax = 0.72;
+
+  // isometric skew: each row shifts x left a bit (near rows appear lower-left)
+  const rowSkewX = -0.025;
 
   const positions: [number, number][] = [];
   for (let r = 0; r < rows; r++) {
@@ -79,10 +88,8 @@ function computePositions(count: number): [number, number][] {
       if (positions.length >= count) break;
       const xT = cols > 1 ? c / (cols - 1) : 0.5;
       const yT = rows > 1 ? r / (rows - 1) : 0.5;
-      // Slight isometric stagger on odd rows
-      const stagger = (r % 2 === 1) ? 0.03 : 0;
       positions.push([
-        xMin + (xMax - xMin) * xT + stagger,
+        xMin + (xMax - xMin) * xT + r * rowSkewX,
         yMin + (yMax - yMin) * yT,
       ]);
     }
@@ -245,7 +252,7 @@ function AgentSprite({ agent, fx, fy, zoom, spriteSize }: {
   const task     = agent.currentTask;
   const color    = agent.color;
 
-  const labelSize = Math.round(clamp(9 / zoom, 7, 12));
+  const labelSize = Math.round(clamp(10 / zoom, 9, 14));
   const spriteImg = SPRITE_MAP[agent.spriteType] ?? SPRITE_MAP["manager"];
 
   const filterStyle = isIdle
@@ -337,28 +344,30 @@ function AgentSprite({ agent, fx, fy, zoom, spriteSize }: {
       {/* Name label */}
       <div style={{
         position:"absolute",
-        bottom: -(labelSize * 2.4),
+        bottom: -(labelSize * 2.6),
         left:"50%", transform:"translateX(-50%)",
         whiteSpace:"nowrap",
         display:"flex", alignItems:"center",
         gap: clamp(4/zoom, 3, 6),
-        padding:`${clamp(3/zoom,2,5)}px ${clamp(8/zoom,5,12)}px`,
-        background:"rgba(8,14,26,0.90)",
-        border:`1px solid ${color}55`,
+        padding:`${clamp(4/zoom,3,6)}px ${clamp(10/zoom,7,14)}px`,
+        background:"rgba(4,8,18,0.92)",
+        border:`1.5px solid ${isBlocked ? "#ef4444" : isActive ? color : color+"88"}`,
         borderRadius: clamp(20/zoom, 10, 24),
+        boxShadow:`0 2px 8px rgba(0,0,0,0.7)`,
         pointerEvents:"none",
       }}>
         <div style={{
-          width: clamp(5/zoom, 4, 7), height: clamp(5/zoom, 4, 7),
+          width: clamp(6/zoom, 5, 8), height: clamp(6/zoom, 5, 8),
           borderRadius:"50%", flexShrink:0,
-          background: isIdle ? "#334155" : isDone ? "#10b981" : isBlocked ? "#ef4444" : color,
-          boxShadow: isActive ? `0 0 ${clamp(4/zoom,3,6)}px ${color}` : "none",
+          background: isIdle ? "#475569" : isDone ? "#10b981" : isBlocked ? "#ef4444" : color,
+          boxShadow: isActive ? `0 0 ${clamp(5/zoom,4,7)}px ${color}` : "none",
           transition:"all 0.3s",
         }}/>
         <span style={{
           fontSize: labelSize,
-          color: isIdle ? "#64748b" : "#e2e8f0",
-          fontFamily:"Inter,sans-serif", fontWeight:600, lineHeight:1,
+          color: "#ffffff",
+          fontFamily:"Inter,sans-serif", fontWeight:700, lineHeight:1,
+          textShadow:"0 1px 3px rgba(0,0,0,0.9)",
         }}>
           {agent.name}
         </span>
