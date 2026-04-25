@@ -1,16 +1,17 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import type { Agent, Project } from "../types";
 
-import managerImg      from "@assets/sprite_manager.png";
-import frontendImg     from "@assets/sprite_frontend.png";
-import backendImg      from "@assets/sprite_backend.png";
-import qaImg           from "@assets/sprite_qa.png";
-import uiuxImg         from "@assets/sprite_uiux.png";
-import devopsImg       from "@assets/sprite_devops.png";
-import dbarchitectImg  from "@assets/sprite_dbarchitect.png";
+import bgImg            from "@assets/sprite_office_floor.png";
+import managerImg       from "@assets/sprite_manager.png";
+import frontendImg      from "@assets/sprite_frontend.png";
+import backendImg       from "@assets/sprite_backend.png";
+import qaImg            from "@assets/sprite_qa.png";
+import uiuxImg          from "@assets/sprite_uiux.png";
+import devopsImg        from "@assets/sprite_devops.png";
+import dbarchitectImg   from "@assets/sprite_dbarchitect.png";
 import datascientistImg from "@assets/sprite_datascientist.png";
-import secengineerImg  from "@assets/sprite_secengineer.png";
-import pmImg           from "@assets/sprite_pm.png";
+import secengineerImg   from "@assets/sprite_secengineer.png";
+import pmImg            from "@assets/sprite_pm.png";
 
 interface Props { agents: Agent[]; project: Project | null; }
 
@@ -21,497 +22,455 @@ const SPRITE_MAP: Record<string, string> = {
   secengineer: secengineerImg, pm: pmImg,
 };
 
-// ─── World constants ──────────────────────────────────────────────────────────
-// The world is a large flat 2-D canvas. The isometric room is drawn in SVG
-// inside it. World size is intentionally larger than any screen — the user
-// scrolls/zooms around.
-const WORLD_W  = 4800;   // world pixels wide
-const WORLD_H  = 3600;   // world pixels tall
+// ─── World & room geometry ────────────────────────────────────────────────────
+// The background PNG (1024×1024) is rendered at BG_SCALE × its natural size.
+// All floor-position math is expressed in WORLD coordinates (BG_SCALE * px).
+const BG_SCALE  = 3.2;          // render the PNG at 3.2× → 3276×3276 px
+const BG_PX     = 1024 * BG_SCALE;  // 3276.8 → ~3277
 
-// Fixed zoom range — initial zoom set to show ~1 screen worth of room detail
-const ZOOM_MIN  = 0.15;
-const ZOOM_MAX  = 3.0;
-const ZOOM_STEP = 0.10;
+// World canvas is larger than the PNG so there's dark space to pan into
+const WORLD_W   = BG_PX * 1.6;
+const WORLD_H   = BG_PX * 1.3;
 
-// Starting zoom: show the room at roughly 1:1 detail on a typical screen
-const ZOOM_INIT = 0.45;
+// Where the PNG sits inside the world (centred horizontally, slightly down)
+const BG_X      = (WORLD_W - BG_PX) / 2;
+const BG_Y      = (WORLD_H - BG_PX) / 2 - 80;
+
+// ── Floor diamond geometry (measured in original 1024px image coordinates) ──
+// Top-tip: (512, 494), Bottom-tip: (512, 858)
+// Left-tip at y≈620: x=172,  Right-tip at y≈620: x=868
+// Wall ridge (back corner of floor): (512, 494) in image
+// We convert these to WORLD coords:  worldX = BG_X + imgX * BG_SCALE
+
+function imgToWorld(ix: number, iy: number): [number, number] {
+  return [BG_X + ix * BG_SCALE, BG_Y + iy * BG_SCALE];
+}
+
+// Key floor landmarks in world coords
+const FLOOR_TOP    = imgToWorld(512, 494);   // back corner (top of diamond)
+const FLOOR_LEFT   = imgToWorld(172, 620);   // left corner
+const FLOOR_RIGHT  = imgToWorld(868, 620);   // right corner
+const FLOOR_BOTTOM = imgToWorld(512, 858);   // front corner (bottom tip)
+
+// ─── Zoom / pan ───────────────────────────────────────────────────────────────
+const ZOOM_MIN  = 0.12;
+const ZOOM_MAX  = 2.5;
+const ZOOM_STEP = 0.09;
 
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
 function fmt(n: number) {
   return n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"K" : String(n);
 }
 
-// ─── Isometric projection helpers ────────────────────────────────────────────
-// We work in "tile" space. The room is COLS×ROWS tiles.
-// Each tile maps to screen via standard isometric transform:
-//   sx = (col - row) * TILE_W/2 + origin_x
-//   sy = (col + row) * TILE_H/2 + origin_y
-// TILE_W:TILE_H ratio = 2:1 gives classic isometric look.
+// ─── Agent positions in world coords ─────────────────────────────────────────
+// We place agents on the floor using barycentric blending of the diamond corners.
+// u = left→right,  v = top→bottom on the floor surface.
+// Safe playable zone avoids the very edges (walls, plants).
+function floorPoint(u: number, v: number): [number, number] {
+  // Bilinear interpolation across the floor diamond
+  // Top half: interpolate between FLOOR_TOP(left) and FLOOR_TOP(right) for u,
+  //           then blend with the mid-left/mid-right edge for v
+  // We treat it as 4 corners: top, left, bottom, right
+  // Parameterise as: point = top*(1-v) * centre + ... 
+  // Simpler: use the two diagonals
+  //   horizontal midline at v=0.5: from FLOOR_LEFT to FLOOR_RIGHT
+  //   at v=0:  converges to FLOOR_TOP
+  //   at v=1:  converges to FLOOR_BOTTOM
+  const topX    = FLOOR_TOP[0],    topY    = FLOOR_TOP[1];
+  const leftX   = FLOOR_LEFT[0],   leftY   = FLOOR_LEFT[1];
+  const rightX  = FLOOR_RIGHT[0],  rightY  = FLOOR_RIGHT[1];
+  const botX    = FLOOR_BOTTOM[0], botY    = FLOOR_BOTTOM[1];
 
-const COLS      = 16;   // floor tiles wide
-const ROWS      = 12;   // floor tiles deep
-const TILE_W    = 160;  // px per tile (isometric width)
-const TILE_H    = 80;   // px per tile (isometric height, = TILE_W/2)
-
-// Room origin in world coordinates — roughly centre-left of world
-const ORIGIN_X  = WORLD_W / 2;
-const ORIGIN_Y  = 600;           // top of back-wall ridge
-
-// Wall height in px
-const WALL_H    = 460;
-
-// Convert tile (col, row) → world (x, y) at floor level
-function tileToWorld(col: number, row: number): [number, number] {
-  const sx = ORIGIN_X + (col - row) * TILE_W / 2;
-  const sy = ORIGIN_Y + (col + row) * TILE_H / 2;
-  return [sx, sy];
+  // Left edge at param v: lerp top→left (v:0→0.5) then left→bottom (v:0.5→1)
+  let lx: number, ly: number, rx: number, ry: number;
+  if (v <= 0.5) {
+    const t = v * 2;
+    lx = topX  + (leftX  - topX)  * t;
+    ly = topY  + (leftY  - topY)  * t;
+    rx = topX  + (rightX - topX)  * t;
+    ry = topY  + (rightY - topY)  * t;
+  } else {
+    const t = (v - 0.5) * 2;
+    lx = leftX  + (botX - leftX)  * t;
+    ly = leftY  + (botY - leftY)  * t;
+    rx = rightX + (botX - rightX) * t;
+    ry = rightY + (botY - rightY) * t;
+  }
+  return [lx + (rx - lx) * u, ly + (ry - ly) * u];
 }
 
-// ─── Sprite sizing ────────────────────────────────────────────────────────────
-// Sprites are sized in world pixels — roughly 1.8 tiles tall
-function spriteWorldPx(count: number): number {
-  // TILE_H * 1.8 ≈ 144px — looks natural on the floor
-  // Shrink slightly for more agents to avoid overlap
-  if (count <= 4)  return TILE_H * 2.2;
-  if (count <= 8)  return TILE_H * 1.9;
-  return TILE_H * 1.65;
-}
-
-// ─── Agent grid positions (in tile space) ────────────────────────────────────
-// Place agents across the floor, leaving edge tiles for walls/plants
-// Safe tile range: col 2..13, row 2..9
+// Grid of agent positions (u,v) — safe zone keeps agents off the very edges
 function computePositions(count: number): [number, number][] {
-  const cols  = count <= 4 ? 2 : count <= 8 ? 3 : 4;
-  const rows  = Math.ceil(count / cols);
+  const cols = count <= 4 ? 2 : count <= 8 ? 3 : 4;
+  const rows = Math.ceil(count / cols);
 
-  // Distribute evenly across the safe floor zone
-  const colMin = 2.5, colMax = 13.5;
-  const rowMin = 1.5, rowMax = 9.5;
+  // Safe zone: u 0.18..0.82, v 0.12..0.82
+  const uMin = 0.18, uMax = 0.82;
+  const vMin = 0.12, vMax = 0.80;
 
   const positions: [number, number][] = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       if (positions.length >= count) break;
-      const ct = cols > 1 ? c / (cols - 1) : 0.5;
-      const rt = rows > 1 ? r / (rows - 1) : 0.5;
+      const uT = cols > 1 ? c / (cols - 1) : 0.5;
+      const vT = rows > 1 ? r / (rows - 1) : 0.5;
       positions.push([
-        colMin + (colMax - colMin) * ct,
-        rowMin + (rowMax - rowMin) * rt,
+        uMin + (uMax - uMin) * uT,
+        vMin + (vMax - vMin) * vT,
       ]);
     }
   }
   return positions;
 }
 
-// ─── SVG isometric room ────────────────────────────────────────────────────────
-function IsometricRoom() {
-  // Floor polygon: four corners of the COLS×ROWS floor grid
-  const [fx0, fy0] = tileToWorld(0,    0);     // back corner (origin)
-  const [fx1, fy1] = tileToWorld(COLS, 0);     // right corner
-  const [fx2, fy2] = tileToWorld(COLS, ROWS);  // front corner
-  const [fx3, fy3] = tileToWorld(0,    ROWS);  // left corner
+// Sprite size in world pixels — proportional to the floor size
+function spriteWorldPx(count: number): number {
+  const floorH = FLOOR_BOTTOM[1] - FLOOR_TOP[1]; // ~1165 world px
+  // Each agent should be roughly 1/7th the floor height for 10 agents
+  const base = floorH * 0.165;
+  if (count <= 4)  return base * 1.15;
+  if (count <= 7)  return base * 1.0;
+  return base * 0.88;
+}
 
-  // Wall tops (same X, shifted up by WALL_H)
-  const wTop = (y: number) => y - WALL_H;
+// ─── Extended room SVG (walls + windows beyond the PNG edges) ─────────────────
+// The PNG shows a corner room. We extend it by drawing matching wall planes
+// to the left and right of the PNG so the space feels larger.
+function ExtendedRoom() {
+  // Wall colour from the PNG walls: approximately #b8bcc4 (left) and #d0d4da (right)
+  // Back ridge in image: approx y=370 at x=512 (in image coords), so world y:
+  const [ridgeX,  ridgeY]  = imgToWorld(512, 370);
+  const [ridgeL]           = imgToWorld(39,  560);   // left wall top-edge at image left
+  const [ridgeR]           = imgToWorld(981, 560);   // right wall top-edge at image right
+  // Floor left tip and right tip
+  const [flLx, flLy] = FLOOR_LEFT;
+  const [flRx, flRy] = FLOOR_RIGHT;
+  // Bottom of image content (below the floor front)
+  const [, botImgY] = imgToWorld(512, 877);
 
-  // Left wall: from back corner → left corner → left corner top → back corner top
-  const leftWall = [
-    [fx0, fy0], [fx3, fy3],
-    [fx3, wTop(fy3)], [fx0, wTop(fy0)],
-  ];
-  // Right wall: from back corner → right corner → right corner top → back corner top
-  const rightWall = [
-    [fx0, fy0], [fx1, fy1],
-    [fx1, wTop(fy1)], [fx0, wTop(fy0)],
-  ];
+  // Left wall extension: from image left edge (col 39) extending further left
+  // The left wall in the PNG goes from top-left down to floor-left.
+  // We project the wall plane further left by mirroring the slope.
+  // Wall slope on left side: dx/dy ≈ (512-39)/(560-370) ≈ 473/190 ≈ 2.49 per y
+  const wallSlope = (512 - 39) / (560 - 370);  // ~2.49
+  const extWidth = BG_PX * 0.7;  // extend this many world px on each side
 
-  const pts = (arr: number[][]) => arr.map(p => p.join(",")).join(" ");
+  // Left extension top edge
+  const lExtTopX = BG_X;
+  const lExtTopY = BG_Y + 370 * BG_SCALE;
+  // Left extension floor edge: same slope going further left
+  const lExtFloorX = flLx - extWidth;
+  const lExtFloorY = flLy + extWidth / wallSlope * 0.4;
 
-  // Floor tile colours — alternating warm wood tones
-  const tileColors = ["#c8813a", "#b8722e"];
+  // Right extension
+  const rExtTopX = BG_X + BG_PX;
+  const rExtTopY = BG_Y + 370 * BG_SCALE;
+  const rExtFloorX = flRx + extWidth;
+  const rExtFloorY = flRy + extWidth / wallSlope * 0.4;
 
-  // Ceiling light positions (in tile space) along back ridge area
-  const lights = [
-    [3, 1], [7, 0.5], [11, 1], [14, 2],
-  ] as [number, number][];
-
-  // Window positions on LEFT wall: col=0, rows 1..10
-  const leftWindows = [
-    { row: 1.5, h: 3 },
-    { row: 5.5, h: 3 },
-  ];
-  // Window positions on RIGHT wall: row=0, cols 2..14
-  const rightWindows = [
-    { col: 2,  w: 3 },
-    { col: 6,  w: 3 },
-    { col: 10, w: 3 },
-  ];
-
-  // City skyline buildings (drawn inside window)
-  function CityBuildings({ x, y, w, h }: { x:number; y:number; w:number; h:number }) {
-    const blds = [
-      { rx:0.05, rw:0.10, rh:0.80 }, { rx:0.17, rw:0.08, rh:0.55 },
-      { rx:0.27, rw:0.12, rh:0.90 }, { rx:0.41, rw:0.09, rh:0.65 },
-      { rx:0.52, rw:0.14, rh:0.75 }, { rx:0.68, rw:0.08, rh:0.50 },
-      { rx:0.78, rw:0.11, rh:0.85 }, { rx:0.90, rw:0.08, rh:0.60 },
-    ];
-    return (
-      <g>
-        {/* Sky gradient */}
-        <defs>
-          <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#0a1628"/>
-            <stop offset="60%" stopColor="#1a2d4a"/>
-            <stop offset="100%" stopColor="#2a4060"/>
-          </linearGradient>
-        </defs>
-        <rect x={x} y={y} width={w} height={h} fill="url(#skyGrad)"/>
-        {/* Stars */}
-        {[0.1,0.3,0.5,0.7,0.9,0.2,0.6,0.8].map((sx,i) => (
-          <circle key={i} cx={x+sx*w} cy={y+(i*0.07+0.05)*h}
-            r={1.5} fill="white" opacity={0.6}/>
-        ))}
-        {/* Buildings */}
-        {blds.map((b,i) => (
-          <g key={i}>
-            <rect
-              x={x + b.rx * w} y={y + h * (1 - b.rh)}
-              width={b.rw * w} height={h * b.rh}
-              fill={`hsl(${220+i*8},${20+i*3}%,${12+i*2}%)`}
-            />
-            {/* Windows on building */}
-            {[0.2,0.45,0.7].map((wy,wi) =>
-              [0.2,0.6].map((wxx,wxi) => (
-                <rect key={`${wi}-${wxi}`}
-                  x={x + (b.rx + b.rw*wxx) * w - 2}
-                  y={y + h*(1-b.rh) + h*b.rh*wy - 2}
-                  width={3} height={4}
-                  fill={Math.random() > 0.4 ? "#f59e0b" : "#1e3050"}
-                  opacity={0.9}
-                />
-              ))
-            )}
-          </g>
-        ))}
-      </g>
-    );
-  }
+  // Wall top: we go up to a ceiling line
+  const ceilY = BG_Y + 144 * BG_SCALE;  // top of image content
 
   return (
     <svg
+      style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
       width={WORLD_W} height={WORLD_H}
-      style={{ position: "absolute", top: 0, left: 0, overflow: "visible" }}
+      overflow="visible"
     >
       <defs>
-        <linearGradient id="leftWallGrad" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#9ca3af"/>
-          <stop offset="100%" stopColor="#c4c9d4"/>
+        {/* Left wall gradient — cool grey, lit from above */}
+        <linearGradient id="lwg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%"   stopColor="#c8ccd4"/>
+          <stop offset="60%"  stopColor="#b0b4bc"/>
+          <stop offset="100%" stopColor="#989ca4"/>
         </linearGradient>
-        <linearGradient id="rightWallGrad" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#d1d5db"/>
-          <stop offset="100%" stopColor="#b8bfc9"/>
+        {/* Right wall gradient — slightly warmer */}
+        <linearGradient id="rwg" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"   stopColor="#d4d8de"/>
+          <stop offset="60%"  stopColor="#c0c4ca"/>
+          <stop offset="100%" stopColor="#a8acb4"/>
         </linearGradient>
-        <linearGradient id="floorGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#d4823a"/>
-          <stop offset="100%" stopColor="#b86a28"/>
+        {/* Floor extension gradient — warm wood */}
+        <linearGradient id="floorExt" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor="#c87030"/>
+          <stop offset="100%" stopColor="#a05020"/>
         </linearGradient>
-        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-          <feDropShadow dx="0" dy="4" stdDeviation="8" floodOpacity="0.4"/>
+        {/* Window sky gradient */}
+        <linearGradient id="nightSky" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor="#06101e"/>
+          <stop offset="50%"  stopColor="#0d1f36"/>
+          <stop offset="100%" stopColor="#162840"/>
+        </linearGradient>
+        {/* Ceiling gradient */}
+        <linearGradient id="ceilGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor="#2a2e38"/>
+          <stop offset="100%" stopColor="#1a1e28"/>
+        </linearGradient>
+        {/* Baseboard highlight */}
+        <linearGradient id="baseGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor="#e8e4dc"/>
+          <stop offset="100%" stopColor="#c8c4bc"/>
+        </linearGradient>
+        {/* Light cone gradient */}
+        <radialGradient id="lightCone" cx="50%" cy="0%" r="100%">
+          <stop offset="0%"   stopColor="rgba(255,240,200,0.18)"/>
+          <stop offset="100%" stopColor="rgba(255,240,200,0)"/>
+        </radialGradient>
+        {/* Spotlight on floor */}
+        <radialGradient id="spotFloor" cx="50%" cy="50%" r="50%">
+          <stop offset="0%"   stopColor="rgba(255,240,180,0.22)"/>
+          <stop offset="100%" stopColor="rgba(255,240,180,0)"/>
+        </radialGradient>
+        <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="12" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
         </filter>
-        <filter id="glow">
+        <filter id="windowGlow" x="-30%" y="-30%" width="160%" height="160%">
           <feGaussianBlur stdDeviation="6" result="blur"/>
           <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
         </filter>
-        {/* Clip paths for windows */}
-        {leftWindows.map((w, i) => {
-          const [wx, wy] = tileToWorld(0, w.row);
-          const [wx2, wy2] = tileToWorld(0, w.row + w.h);
-          const wW = 180, wH = WALL_H * 0.55;
-          return (
-            <clipPath key={`lwc${i}`} id={`lwclip${i}`}>
-              <polygon points={`${wx-wW/2},${wy-WALL_H*0.75} ${wx+wW/2},${wy-WALL_H*0.75} ${wx2+wW/2},${wy2-WALL_H*0.20} ${wx2-wW/2},${wy2-WALL_H*0.20}`}/>
-            </clipPath>
-          );
-        })}
       </defs>
 
-      {/* ── Left wall ── */}
-      <polygon points={pts(leftWall)} fill="url(#leftWallGrad)" opacity="0.97"/>
+      {/* ── LEFT WALL EXTENSION ─────────────────────────────────────────────── */}
+      {/* Main wall plane */}
+      <polygon
+        points={[
+          `${lExtTopX},${ceilY}`,
+          `${BG_X},${ceilY}`,
+          `${flLx},${flLy}`,
+          `${lExtFloorX},${lExtFloorY}`,
+        ].join(" ")}
+        fill="url(#lwg)"
+      />
+      {/* Baseboard on left extension */}
+      <polygon
+        points={[
+          `${flLx},${flLy}`,
+          `${lExtFloorX},${lExtFloorY}`,
+          `${lExtFloorX},${lExtFloorY + 22 * BG_SCALE * 0.3}`,
+          `${flLx},${flLy + 22 * BG_SCALE * 0.3}`,
+        ].join(" ")}
+        fill="url(#baseGrad)"
+        opacity="0.85"
+      />
 
-      {/* Left wall windows with city skyline */}
-      {leftWindows.map((win, i) => {
-        const [wx,  wy]  = tileToWorld(0, win.row);
-        const [wx2, wy2] = tileToWorld(0, win.row + win.h);
-        // Window frame: a skewed quad on the left wall surface
-        const winW = 160, topY = WALL_H * 0.72, botY = WALL_H * 0.22;
-        const p1x = wx - winW/2, p1y = wy - topY;
-        const p2x = wx + winW/2, p2y = wy - topY;
-        const p3x = wx2 + winW/2, p3y = wy2 - botY;
-        const p4x = wx2 - winW/2, p4y = wy2 - botY;
-        const wW = p2x - p1x, wH = (p3y + p4y)/2 - (p1y + p2y)/2;
-        const skyX = Math.min(p1x,p4x), skyY = Math.min(p1y,p2y);
-        const skyW = Math.abs(p2x - p4x) + winW;
-        const skyH = Math.abs(p4y - p2y) + wH;
+      {/* Windows on left extension */}
+      {[0.28, 0.68].map((uf, wi) => {
+        // Window position along the left wall
+        const wx = lExtTopX + (BG_X - lExtTopX) * uf;
+        const wFloorX = lExtFloorX + (flLx - lExtFloorX) * uf;
+        const wFloorY = lExtFloorY + (flLy - lExtFloorY) * uf;
+        const wCeilY  = ceilY;
+        // Interpolate x along the wall surface
+        const wallH = wFloorY - wCeilY;
+        const frameT = 0.15, frameB = 0.72;
+        const fTop  = wCeilY + wallH * frameT;
+        const fBot  = wCeilY + wallH * frameB;
+        const fW    = (BG_X - lExtTopX) * 0.18;
+        // Window as a parallelogram (isometric perspective)
+        const skewX = (wFloorX - wx) / (wFloorY - wCeilY);
+        const p = (y: number) => wx + skewX * (y - wCeilY);
+        const pts = [
+          `${p(fTop) - fW/2},${fTop}`,
+          `${p(fTop) + fW/2},${fTop}`,
+          `${p(fBot) + fW/2},${fBot}`,
+          `${p(fBot) - fW/2},${fBot}`,
+        ].join(" ");
         return (
-          <g key={i}>
-            {/* Sky inside window — approximate with rect clipped */}
-            <polygon points={`${p1x},${p1y} ${p2x},${p2y} ${p3x},${p3y} ${p4x},${p4y}`}
-              fill="#0a1628"/>
-            {/* City silhouette */}
-            <polygon points={`${p1x},${p1y} ${p2x},${p2y} ${p3x},${p3y} ${p4x},${p4y}`}
-              fill="none" stroke="#3b5280" strokeWidth="1" opacity="0.5"/>
-            {/* Buildings as trapezoid-clipped rects */}
-            {[0.08,0.22,0.38,0.54,0.70,0.84].map((bx, bi) => {
-              const bh = [0.7,0.5,0.85,0.55,0.75,0.45][bi] ?? 0.6;
-              const bwFrac = 0.10;
-              // interpolate x,y along the window parallelogram
-              const interp = (t: number) => {
-                const lx = p1x + (p4x - p1x) * t, ly = p1y + (p4y - p1y) * t;
-                const rx = p2x + (p3x - p2x) * t, ry = p2y + (p3y - p2y) * t;
-                return { lx, ly, rx, ry };
-              };
-              const top = interp(1 - bh * 0.85);
-              const bot = interp(1.0);
-              const cx = top.lx + (top.rx - top.lx) * bx;
-              const cy = top.ly + (top.ry - top.ly) * bx;
-              const bxE = top.lx + (top.rx - top.lx) * Math.min(bx + bwFrac, 1);
-              const byE = top.ly + (top.ry - top.ly) * Math.min(bx + bwFrac, 1);
-              const bx2 = bot.lx + (bot.rx - bot.lx) * bx;
-              const by2 = bot.ly + (bot.ry - bot.ly) * bx;
-              const bx2E = bot.lx + (bot.rx - bot.lx) * Math.min(bx + bwFrac, 1);
-              const by2E = bot.ly + (bot.ry - bot.ly) * Math.min(bx + bwFrac, 1);
-              return (
-                <g key={bi}>
-                  <polygon points={`${cx},${cy} ${bxE},${byE} ${bx2E},${by2E} ${bx2},${by2}`}
-                    fill={`hsl(${220+bi*10},25%,${14+bi*2}%)`} opacity="0.95"/>
-                  {/* Lit windows */}
-                  <circle cx={(cx+bxE)/2} cy={(cy+byE+cy+byE)/4 + (by2-cy)*0.3}
-                    r={2.5} fill="#f59e0b" opacity={bi%2===0 ? 0.9 : 0.3}/>
-                </g>
-              );
-            })}
-            {/* Window frame */}
-            <polygon points={`${p1x},${p1y} ${p2x},${p2y} ${p3x},${p3y} ${p4x},${p4y}`}
-              fill="none" stroke="#e2e8f0" strokeWidth="5" opacity="0.8"/>
-            <polygon points={`${p1x},${p1y} ${p2x},${p2y} ${p3x},${p3y} ${p4x},${p4y}`}
-              fill="none" stroke="#94a3b8" strokeWidth="2" opacity="0.6"/>
-            {/* Sill */}
-            <line x1={p4x} y1={p4y} x2={p3x} y2={p3y} stroke="#cbd5e1" strokeWidth="4"/>
-          </g>
-        );
-      })}
-
-      {/* Left wall art / decor */}
-      {(() => {
-        const [ax, ay] = tileToWorld(0, 5);
-        return (
-          <g>
-            <rect x={ax-55} y={ay-WALL_H*0.75} width={110} height={110}
-              fill="#c9a96e" rx="3"/>
-            <rect x={ax-48} y={ay-WALL_H*0.75+7} width={96} height={96}
-              fill="#f0e8d4" rx="2"/>
-            <ellipse cx={ax} cy={ay-WALL_H*0.75+55} rx={32} ry={28}
-              fill="#c87941" opacity="0.85"/>
-            <ellipse cx={ax-10} cy={ay-WALL_H*0.75+68} rx={20} ry={15}
-              fill="#1a0f08" opacity="0.8"/>
-          </g>
-        );
-      })()}
-
-      {/* ── Right wall ── */}
-      <polygon points={pts(rightWall)} fill="url(#rightWallGrad)" opacity="0.97"/>
-
-      {/* Right wall windows with city skyline */}
-      {rightWindows.map((win, i) => {
-        const [wx,  wy]  = tileToWorld(win.col, 0);
-        const [wx2, wy2] = tileToWorld(win.col + win.w, 0);
-        const topY = WALL_H * 0.75, botY = WALL_H * 0.20;
-        const p1x = wx,  p1y = wy - topY;
-        const p2x = wx2, p2y = wy2 - topY;
-        const p3x = wx2, p3y = wy2 - botY;
-        const p4x = wx,  p4y = wy - botY;
-        return (
-          <g key={i}>
-            <polygon points={`${p1x},${p1y} ${p2x},${p2y} ${p3x},${p3y} ${p4x},${p4y}`}
-              fill="#081020"/>
-            {[0.1,0.25,0.45,0.65,0.80].map((bx, bi) => {
-              const bh = [0.8,0.55,0.9,0.6,0.7][bi] ?? 0.65;
-              const wTop = p1y + (p2y - p1y)*bx;
-              const wBot = p4y + (p3y - p4y)*bx;
-              const wH = wBot - wTop;
-              const bTopY = wTop + wH * (1 - bh);
-              const bW = (p2x - p1x) * 0.12;
-              const bLeft = p1x + (p2x - p1x)*bx - bW/2;
-              return (
-                <g key={bi}>
-                  <rect x={bLeft} y={bTopY} width={bW} height={wH * bh}
-                    fill={`hsl(${215+bi*12},22%,${12+bi*3}%)`}/>
-                  <rect x={bLeft+bW*0.2} y={bTopY+wH*0.2} width={bW*0.25} height={5}
-                    fill="#f59e0b" opacity={bi%2===0 ? 0.9 : 0.2}/>
-                </g>
-              );
-            })}
+          <g key={wi} filter="url(#windowGlow)">
+            {/* Sky */}
+            <polygon points={pts} fill="url(#nightSky)"/>
+            {/* City skyline */}
+            <CityView
+              p={[p(fTop)-fW/2, fTop, p(fBot)-fW/2, fBot]}
+              fW={fW} seed={wi * 7}
+            />
             {/* Frame */}
-            <polygon points={`${p1x},${p1y} ${p2x},${p2y} ${p3x},${p3y} ${p4x},${p4y}`}
-              fill="none" stroke="#e2e8f0" strokeWidth="5" opacity="0.8"/>
-            <line x1={p4x} y1={p4y} x2={p3x} y2={p3y} stroke="#cbd5e1" strokeWidth="4"/>
-          </g>
-        );
-      })}
-
-      {/* Right wall art */}
-      {(() => {
-        const [ax, ay] = tileToWorld(10, 0);
-        return (
-          <g>
-            <rect x={ax-55} y={ay-WALL_H*0.72} width={110} height={110}
-              fill="#c9a96e" rx="3"/>
-            <rect x={ax-48} y={ay-WALL_H*0.72+7} width={96} height={96}
-              fill="#f0e8d4" rx="2"/>
-            <circle cx={ax} cy={ay-WALL_H*0.72+45} r={28} fill="#c87941" opacity="0.8"/>
-            <ellipse cx={ax} cy={ay-WALL_H*0.72+72} rx={24} ry={14}
-              fill="#1a0f08" opacity="0.75"/>
-          </g>
-        );
-      })()}
-
-      {/* ── Ceiling / back-wall ridge ── */}
-      <line
-        x1={fx0} y1={fy0 - WALL_H}
-        x2={fx1} y2={fy1 - WALL_H}
-        stroke="#b0b8c6" strokeWidth="3" opacity="0.6"
-      />
-      <line
-        x1={fx0} y1={fy0 - WALL_H}
-        x2={fx3} y2={fy3 - WALL_H}
-        stroke="#b0b8c6" strokeWidth="3" opacity="0.6"
-      />
-
-      {/* Ceiling lights */}
-      {lights.map(([lc, lr], i) => {
-        const [lx, ly] = tileToWorld(lc, lr);
-        const lightY = ly - WALL_H + 30;
-        return (
-          <g key={i} filter="url(#glow)">
-            {/* Fixture */}
-            <rect x={lx-18} y={lightY-8} width={36} height={12}
-              rx="4" fill="#d4d8e0"/>
-            {/* Cone of light */}
-            <polygon
-              points={`${lx-14},${lightY+4} ${lx+14},${lightY+4} ${lx+55},${lightY+WALL_H*0.82} ${lx-55},${lightY+WALL_H*0.82}`}
-              fill="rgba(255,240,200,0.07)"
-            />
-            {/* Bright spot on floor */}
-            <ellipse cx={lx} cy={lightY+WALL_H*0.82}
-              rx={50} ry={20}
-              fill="rgba(255,235,180,0.12)"
+            <polygon points={pts} fill="none"
+              stroke="#dde4ec" strokeWidth={3 * BG_SCALE * 0.15}/>
+            {/* Sill */}
+            <line
+              x1={p(fBot)-fW/2} y1={fBot}
+              x2={p(fBot)+fW/2} y2={fBot}
+              stroke="#e8e4dc" strokeWidth={5 * BG_SCALE * 0.15}
             />
           </g>
         );
       })}
 
-      {/* ── Baseboard / skirting ── */}
-      <polyline
-        points={`${fx0},${fy0} ${fx3},${fy3}`}
-        stroke="#e8e0d0" strokeWidth="5" opacity="0.5"
+      {/* ── RIGHT WALL EXTENSION ────────────────────────────────────────────── */}
+      <polygon
+        points={[
+          `${BG_X + BG_PX},${ceilY}`,
+          `${rExtTopX + extWidth},${ceilY}`,
+          `${rExtFloorX},${rExtFloorY}`,
+          `${flRx},${flRy}`,
+        ].join(" ")}
+        fill="url(#rwg)"
       />
-      <polyline
-        points={`${fx0},${fy0} ${fx1},${fy1}`}
-        stroke="#d8d0c0" strokeWidth="5" opacity="0.4"
+      {/* Baseboard */}
+      <polygon
+        points={[
+          `${flRx},${flRy}`,
+          `${rExtFloorX},${rExtFloorY}`,
+          `${rExtFloorX},${rExtFloorY + 22 * BG_SCALE * 0.3}`,
+          `${flRx},${flRy + 22 * BG_SCALE * 0.3}`,
+        ].join(" ")}
+        fill="url(#baseGrad)"
+        opacity="0.80"
       />
 
-      {/* ── Floor tiles ── */}
-      {Array.from({ length: ROWS }).map((_, row) =>
-        Array.from({ length: COLS }).map((_, col) => {
-          const [x0,y0] = tileToWorld(col,   row);
-          const [x1,y1] = tileToWorld(col+1, row);
-          const [x2,y2] = tileToWorld(col+1, row+1);
-          const [x3,y3] = tileToWorld(col,   row+1);
-          const shade = (col + row) % 2 === 0 ? 0 : 1;
-          // Slight brightness variation for wood-plank feel
-          const brightness = 0.92 + ((col * 7 + row * 11) % 13) * 0.007;
-          const base = shade === 0 ? "#c8783a" : "#b46c2e";
-          return (
-            <polygon key={`${col}-${row}`}
-              points={`${x0},${y0} ${x1},${y1} ${x2},${y2} ${x3},${y3}`}
-              fill={base}
-              opacity={brightness}
-              stroke="#a0581a"
-              strokeWidth="0.5"
-              strokeOpacity="0.4"
+      {/* Windows on right extension */}
+      {[0.25, 0.55, 0.82].map((uf, wi) => {
+        const wallStartX = BG_X + BG_PX;
+        const wallEndX   = rExtTopX + extWidth;
+        const wx = wallStartX + (wallEndX - wallStartX) * uf;
+        const wFloorX = flRx + (rExtFloorX - flRx) * uf;
+        const wFloorY = flRy + (rExtFloorY - flRy) * uf;
+        const wallH   = wFloorY - ceilY;
+        const frameT  = 0.14, frameB = 0.70;
+        const fTop    = ceilY + wallH * frameT;
+        const fBot    = ceilY + wallH * frameB;
+        const fW      = (wallEndX - wallStartX) * 0.20;
+        const skewX   = (wFloorX - wx) / (wFloorY - ceilY);
+        const p = (y: number) => wx + skewX * (y - ceilY);
+        const pts = [
+          `${p(fTop) - fW/2},${fTop}`,
+          `${p(fTop) + fW/2},${fTop}`,
+          `${p(fBot) + fW/2},${fBot}`,
+          `${p(fBot) - fW/2},${fBot}`,
+        ].join(" ");
+        return (
+          <g key={wi} filter="url(#windowGlow)">
+            <polygon points={pts} fill="url(#nightSky)"/>
+            <CityView
+              p={[p(fTop)-fW/2, fTop, p(fBot)-fW/2, fBot]}
+              fW={fW} seed={wi * 13 + 5}
             />
-          );
-        })
-      )}
+            <polygon points={pts} fill="none"
+              stroke="#dde4ec" strokeWidth={3 * BG_SCALE * 0.15}/>
+            <line x1={p(fBot)-fW/2} y1={fBot} x2={p(fBot)+fW/2} y2={fBot}
+              stroke="#e8e4dc" strokeWidth={5 * BG_SCALE * 0.15}/>
+          </g>
+        );
+      })}
 
-      {/* ── Floor edge / front border ── */}
+      {/* ── CEILING EXTENSION (fill gap above PNG on sides) ─────────────────── */}
+      {/* Left ceiling */}
       <polygon
-        points={`${fx3},${fy3} ${fx2},${fy2} ${fx2},${fy2+12} ${fx3},${fy3+12}`}
-        fill="#8a4a18" opacity="0.8"
+        points={[
+          `0,0`,
+          `${BG_X},0`,
+          `${BG_X},${ceilY}`,
+          `0,${ceilY + 200}`,
+        ].join(" ")}
+        fill="url(#ceilGrad)"
       />
+      {/* Right ceiling */}
       <polygon
-        points={`${fx1},${fy1} ${fx2},${fy2} ${fx2},${fy2+12} ${fx1},${fy1+12}`}
-        fill="#9a5420" opacity="0.8"
+        points={[
+          `${BG_X + BG_PX},0`,
+          `${WORLD_W},0`,
+          `${WORLD_W},${ceilY + 200}`,
+          `${BG_X + BG_PX},${ceilY}`,
+        ].join(" ")}
+        fill="url(#ceilGrad)"
       />
 
-      {/* ── Corner plants ── */}
+      {/* ── CEILING LIGHTS (over extended area) ─────────────────────────────── */}
+      {/* Extension ceiling lights */}
       {[
-        tileToWorld(0, ROWS),    // front-left
-        tileToWorld(COLS, 0),   // front-right (actually back-right)
-      ].map(([px, py], i) => (
-        <g key={i}>
-          {/* Pot */}
-          <ellipse cx={px} cy={py - 4} rx={28} ry={10} fill="#f0f0f0"/>
-          <rect x={px-22} y={py-28} width={44} height={28} rx="4" fill="#e8e8e8"/>
-          <ellipse cx={px} cy={py-28} rx={22} ry={8} fill="#f8f8f8"/>
-          {/* Plant leaves */}
-          {[0,60,120,180,240,300].map((deg, li) => {
-            const rad = (deg * Math.PI) / 180;
-            const lx = px + Math.cos(rad) * 42;
-            const ly = py - 80 + Math.sin(rad) * 18;
-            return (
-              <ellipse key={li}
-                cx={(px + lx)/2} cy={(py - 60 + ly)/2 - 15}
-                rx={22} ry={9}
-                fill={li%2===0 ? "#2d6a2d" : "#1e5a1e"}
-                transform={`rotate(${deg-10}, ${(px+lx)/2}, ${(py-60+ly)/2-15})`}
-                opacity="0.9"
-              />
-            );
-          })}
-          {/* Trunk */}
-          <rect x={px-5} y={py-60} width={10} height={35} fill="#5c3d1a" rx="3"/>
+        [lExtTopX + extWidth * 0.3, ceilY + 20],
+        [lExtTopX + extWidth * 0.7, ceilY + 20],
+        [rExtTopX + extWidth * 0.35, ceilY + 20],
+        [rExtTopX + extWidth * 0.70, ceilY + 20],
+      ].map(([lx, ly], i) => (
+        <g key={i} filter="url(#softGlow)">
+          <rect x={lx - 18 * BG_SCALE * 0.3} y={ly - 5 * BG_SCALE * 0.3}
+            width={36 * BG_SCALE * 0.3} height={10 * BG_SCALE * 0.3}
+            rx={4} fill="#d8dce4" opacity="0.9"/>
+          <ellipse cx={lx} cy={ly + 300}
+            rx={140 * BG_SCALE * 0.3} ry={60 * BG_SCALE * 0.3}
+            fill="url(#spotFloor)" opacity="0.7"/>
         </g>
       ))}
 
-      {/* ── Back-corner plant (small) ── */}
-      {(() => {
-        const [px, py] = tileToWorld(0, 0);
-        return (
-          <g>
-            <ellipse cx={px} cy={py-6} rx={18} ry={6} fill="#f0f0f0"/>
-            <rect x={px-14} y={py-20} width={28} height={18} rx="3" fill="#e8e8e8"/>
-            {[0,72,144,216,288].map((deg, li) => {
-              const rad = (deg * Math.PI) / 180;
-              return (
-                <ellipse key={li}
-                  cx={px + Math.cos(rad)*26} cy={py-42+Math.sin(rad)*10}
-                  rx={14} ry={6}
-                  fill={li%2===0 ? "#2d6a2d" : "#1e5a1e"}
-                  transform={`rotate(${deg}, ${px+Math.cos(rad)*26}, ${py-42+Math.sin(rad)*10})`}
-                  opacity="0.85"
-                />
-              );
-            })}
-            <rect x={px-4} y={py-42} width={8} height={24} fill="#5c3d1a" rx="2"/>
-          </g>
-        );
-      })()}
+      {/* ── THE ROOM BACKGROUND PNG (placed on top of extensions) ─────────── */}
+      {/* rendered as a foreignObject so React handles the img import */}
     </svg>
   );
 }
 
-// ─── Progress ring ────────────────────────────────────────────────────────────
+// City skyline drawn inside a window quad
+function CityView({ p, fW, seed }: { p: [number, number, number, number]; fW: number; seed: number }) {
+  const [x0, y0, x1, y1] = p;  // top-left corner and bottom-left corner of window
+  const wH = y1 - y0;
+
+  // Deterministic pseudo-random from seed
+  const rng = (n: number) => Math.abs(Math.sin(seed * 9301 + n * 49297) % 1);
+
+  const buildings = Array.from({ length: 8 }, (_, i) => ({
+    u:    0.04 + i * 0.12 + rng(i) * 0.04,
+    h:    0.45 + rng(i + 10) * 0.45,
+    w:    0.08 + rng(i + 20) * 0.05,
+    hue:  220 + rng(i + 30) * 30,
+    lit:  rng(i + 40) > 0.4,
+    lit2: rng(i + 50) > 0.6,
+    lit3: rng(i + 60) > 0.55,
+  }));
+
+  const stars = Array.from({ length: 12 }, (_, i) => ({
+    u: rng(i + 100),
+    v: rng(i + 110) * 0.55,
+    r: rng(i + 120) > 0.7 ? 2 : 1.2,
+  }));
+
+  // Interpolate a point along the left edge of the window parallelogram
+  const lerp = (v: number): [number, number] => [x0 + (x1 - x0) * v, y0 + (y1 - y0) * v];
+
+  return (
+    <g>
+      {/* Stars */}
+      {stars.map((s, i) => {
+        const [lx, ly] = lerp(s.v);
+        const sx = lx + s.u * fW;
+        return <circle key={i} cx={sx} cy={ly} r={s.r} fill="white" opacity={0.5 + rng(i)*0.4}/>;
+      })}
+      {/* Moon */}
+      {(() => {
+        const [mx, my] = lerp(0.08);
+        return (
+          <g>
+            <circle cx={mx + fW * 0.78} cy={my + wH * 0.12} r={fW * 0.045}
+              fill="#f0e8c8" opacity="0.85"/>
+            <circle cx={mx + fW * 0.80} cy={my + wH * 0.10} r={fW * 0.035}
+              fill="#0d1f36" opacity="0.9"/>
+          </g>
+        );
+      })()}
+      {/* Buildings */}
+      {buildings.map((b, i) => {
+        const [bLx, bLy] = lerp(1.0);
+        const bx = x0 + b.u * fW;
+        const bTop = y1 - wH * b.h;
+        const bW = b.w * fW;
+        const bH = y1 - bTop;
+        return (
+          <g key={i}>
+            <rect x={bx} y={bTop} width={bW} height={bH}
+              fill={`hsl(${b.hue},18%,${11 + (i%4)*2}%)`}/>
+            {/* Lit windows on building */}
+            {b.lit  && <rect x={bx+bW*0.15} y={bTop+bH*0.18} width={bW*0.25} height={bH*0.06} rx={1} fill="#f59e0b" opacity="0.9"/>}
+            {b.lit2 && <rect x={bx+bW*0.55} y={bTop+bH*0.30} width={bW*0.25} height={bH*0.06} rx={1} fill="#f59e0b" opacity="0.7"/>}
+            {b.lit3 && <rect x={bx+bW*0.15} y={bTop+bH*0.50} width={bW*0.25} height={bH*0.06} rx={1} fill="#93c5fd" opacity="0.6"/>}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+// ─── Progress ring ─────────────────────────────────────────────────────────────
 function ProgressRing({ pct, color, size }: { pct:number; color:string; size:number }) {
   const r=(size-8)/2, circ=2*Math.PI*r, dash=(pct/100)*circ;
   return (
@@ -549,8 +508,8 @@ function Sparkline({ data, color, w, h }: { data:number[]; color:string; w:numbe
 function StatsHUD({ project, agents, sparkData }: { project:Project|null; agents:Agent[]; sparkData:number[] }) {
   const active = agents.filter(a => a.status !== "idle").length;
   return (
-    <div className="absolute top-3 right-3 flex flex-col gap-2 pointer-events-none" style={{ width:158, zIndex:50 }}>
-      <div className="rounded-xl p-3" style={{ background:"rgba(8,14,26,0.93)", border:"1px solid #1e3050" }}>
+    <div className="absolute top-3 right-3 flex flex-col gap-2 pointer-events-none" style={{ width:162, zIndex:50 }}>
+      <div className="rounded-xl p-3" style={{ background:"rgba(6,10,20,0.94)", border:"1px solid #1e3050" }}>
         <div style={{ fontSize:8, color:"#64748b", letterSpacing:"0.08em", fontFamily:"Inter",
           textTransform:"uppercase", marginBottom:8 }}>Project Progress</div>
         <div className="flex items-center gap-3">
@@ -566,8 +525,7 @@ function StatsHUD({ project, agents, sparkData }: { project:Project|null; agents
           </div>
         </div>
       </div>
-
-      <div className="rounded-xl p-3" style={{ background:"rgba(8,14,26,0.93)", border:"1px solid #1e3050" }}>
+      <div className="rounded-xl p-3" style={{ background:"rgba(6,10,20,0.94)", border:"1px solid #1e3050" }}>
         <div style={{ fontSize:8, color:"#64748b", letterSpacing:"0.08em", fontFamily:"Inter",
           textTransform:"uppercase", marginBottom:8 }}>Agents · {active}/{agents.length} active</div>
         <div className="flex gap-1.5 flex-wrap">
@@ -582,72 +540,64 @@ function StatsHUD({ project, agents, sparkData }: { project:Project|null; agents
           ))}
         </div>
       </div>
-
       {[
         { label:"Tokens",       value:fmt(project?.tokensUsed??0),                   color:"#f59e0b" },
         { label:"Cost Today",   value:`$${(project?.costToday??0).toFixed(2)}`,       color:"#10b981" },
         { label:"Avg Response", value:`${(project?.avgResponseTime??0).toFixed(1)}s`, color:"#06b6d4" },
       ].map(m => (
         <div key={m.label} className="rounded-xl px-3 py-2 flex items-center justify-between"
-          style={{ background:"rgba(8,14,26,0.93)", border:"1px solid #1e3050" }}>
+          style={{ background:"rgba(6,10,20,0.94)", border:"1px solid #1e3050" }}>
           <span style={{ fontSize:8, color:"#64748b", fontFamily:"Inter", textTransform:"uppercase", letterSpacing:"0.08em" }}>{m.label}</span>
           <span style={{ fontSize:13, color:m.color, fontFamily:"JetBrains Mono,monospace", fontWeight:700 }}>{m.value}</span>
         </div>
       ))}
-
-      <div className="rounded-xl p-3" style={{ background:"rgba(8,14,26,0.93)", border:"1px solid #1e3050" }}>
+      <div className="rounded-xl p-3" style={{ background:"rgba(6,10,20,0.94)", border:"1px solid #1e3050" }}>
         <div style={{ fontSize:8, color:"#64748b", letterSpacing:"0.08em", fontFamily:"Inter",
           textTransform:"uppercase", marginBottom:8 }}>Progress Trend</div>
-        <Sparkline data={sparkData} color="#6366f1" w={130} h={32}/>
+        <Sparkline data={sparkData} color="#6366f1" w={134} h={32}/>
       </div>
     </div>
   );
 }
 
 // ─── Mini-map ──────────────────────────────────────────────────────────────────
-function MiniMap({ pan, zoom, vpW, vpH, agents, tilePositions }: {
+function MiniMap({ pan, zoom, vpW, vpH, agents, uvPositions }: {
   pan:[number,number]; zoom:number; vpW:number; vpH:number;
-  agents:Agent[]; tilePositions:[number,number][];
+  agents:Agent[]; uvPositions:[number,number][];
 }) {
   const W = 130, H = 100;
-  const scaleX = W / WORLD_W;
-  const scaleY = H / WORLD_H;
+  const scaleX = W / WORLD_W, scaleY = H / WORLD_H;
   const vpLeft  = (-pan[0] / zoom) * scaleX;
   const vpTop   = (-pan[1] / zoom) * scaleY;
   const vpRectW = (vpW / zoom) * scaleX;
   const vpRectH = (vpH / zoom) * scaleY;
 
+  // Floor outline in minimap
+  const floorPts = [FLOOR_TOP, FLOOR_RIGHT, FLOOR_BOTTOM, FLOOR_LEFT]
+    .map(([x,y]) => `${x*scaleX},${y*scaleY}`).join(" ");
+
   return (
     <div className="absolute bottom-3 right-3 rounded-xl overflow-hidden pointer-events-none"
       style={{ width:W, height:H, zIndex:50, border:"1px solid #1e3050",
-        background:"rgba(8,14,26,0.92)", boxShadow:"0 4px 20px rgba(0,0,0,0.5)" }}>
+        background:"rgba(6,10,20,0.93)", boxShadow:"0 4px 20px rgba(0,0,0,0.6)" }}>
       <svg width={W} height={H} style={{ position:"absolute", inset:0 }}>
-        {/* Floor outline */}
-        {(() => {
-          const corners = [
-            tileToWorld(0,0), tileToWorld(COLS,0),
-            tileToWorld(COLS,ROWS), tileToWorld(0,ROWS),
-          ].map(([x,y]) => `${x*scaleX},${y*scaleY}`).join(" ");
-          return <polygon points={corners} fill="#b8682a" opacity="0.4" stroke="#c87830" strokeWidth="1"/>;
-        })()}
-        {/* Agents */}
+        <polygon points={floorPts} fill="#b8682a" opacity="0.35" stroke="#c87030" strokeWidth="1"/>
         {agents.map((a, i) => {
-          const pos = tilePositions[i];
-          if (!pos) return null;
-          const [wx, wy] = tileToWorld(pos[0], pos[1]);
+          const uv = uvPositions[i];
+          if (!uv) return null;
+          const [wx, wy] = floorPoint(uv[0], uv[1]);
           const active = a.status !== "idle";
           return (
             <g key={a.id}>
-              {active && <circle cx={wx*scaleX} cy={wy*scaleY} r={5} fill={a.color} opacity={0.2}/>}
+              {active && <circle cx={wx*scaleX} cy={wy*scaleY} r={5} fill={a.color} opacity={0.22}/>}
               <circle cx={wx*scaleX} cy={wy*scaleY} r={3} fill={active ? a.color : "#334155"} stroke={a.color} strokeWidth="1"/>
             </g>
           );
         })}
-        {/* Viewport rect */}
         <rect
-          x={clamp(vpLeft, 0, W-2)} y={clamp(vpTop, 0, H-2)}
-          width={clamp(vpRectW, 2, W - clamp(vpLeft, 0, W))}
-          height={clamp(vpRectH, 2, H - clamp(vpTop, 0, H))}
+          x={clamp(vpLeft,0,W-2)} y={clamp(vpTop,0,H-2)}
+          width={clamp(vpRectW,2,W-clamp(vpLeft,0,W))}
+          height={clamp(vpRectH,2,H-clamp(vpTop,0,H))}
           fill="rgba(99,102,241,0.10)" stroke="#6366f1" strokeWidth="1.5" rx="2"/>
       </svg>
       <div style={{ position:"absolute", bottom:3, left:5,
@@ -660,145 +610,129 @@ function MiniMap({ pan, zoom, vpW, vpH, agents, tilePositions }: {
 
 // ─── Single agent sprite ───────────────────────────────────────────────────────
 function AgentSprite({ agent, wx, wy, spriteSize, zoom }: {
-  agent: Agent; wx:number; wy:number; spriteSize:number; zoom: number;
+  agent:Agent; wx:number; wy:number; spriteSize:number; zoom:number;
 }) {
-  const status   = agent.status;
-  const isActive = status === "working" || status === "thinking";
-  const isDone   = status === "done";
-  const isIdle   = status === "idle";
+  const status    = agent.status;
+  const isActive  = status === "working" || status === "thinking";
+  const isDone    = status === "done";
+  const isIdle    = status === "idle";
   const isBlocked = status === "blocked";
-  const task     = agent.currentTask;
-  const color    = agent.color;
+  const task      = agent.currentTask;
+  const color     = agent.color;
+  const sw        = spriteSize;
 
-  const labelSize = Math.round(clamp(11 / zoom, 9, 15));
+  const labelSize = Math.round(clamp(12 / zoom, 9, 16));
   const spriteImg = SPRITE_MAP[agent.spriteType] ?? SPRITE_MAP["manager"];
 
   const filterStyle = isIdle
-    ? "grayscale(45%) brightness(0.7)"
+    ? "grayscale(40%) brightness(0.72)"
     : isBlocked
     ? "grayscale(20%) brightness(0.75) sepia(0.4) hue-rotate(310deg)"
     : isDone
-    ? `drop-shadow(0 0 ${14/zoom}px ${color}) brightness(1.08)`
+    ? `drop-shadow(0 0 ${16/zoom}px ${color}) brightness(1.1)`
     : isActive
-    ? `drop-shadow(0 0 ${9/zoom}px ${color}88)`
+    ? `drop-shadow(0 0 ${10/zoom}px ${color}99)`
     : "none";
-
-  const sw = spriteSize;
 
   return (
     <div
       data-testid={`sprite-${agent.id}`}
       style={{
-        position: "absolute",
+        position:"absolute",
         left: wx - sw / 2,
         top:  wy - sw,
         width: sw,
-        zIndex: Math.round(wy),   // isometric depth sort
-        transition: "filter 0.4s ease",
+        zIndex: Math.round(wy + 1000),
+        transition:"filter 0.4s ease",
         filter: filterStyle,
       }}
     >
       {/* Floor shadow */}
       <div style={{
-        position:"absolute", bottom:0, left:"50%",
-        transform:"translateX(-50%)",
-        width: sw * 0.55, height: sw * 0.07,
-        background:"radial-gradient(ellipse, rgba(0,0,0,0.55) 0%, transparent 70%)",
+        position:"absolute", bottom:0, left:"50%", transform:"translateX(-50%)",
+        width:sw*0.55, height:sw*0.07,
+        background:"radial-gradient(ellipse, rgba(0,0,0,0.6) 0%, transparent 70%)",
         borderRadius:"50%",
       }}/>
-
       {/* Active glow ring */}
       {isActive && (
         <div style={{
-          position:"absolute", bottom:0, left:"50%",
-          transform:"translateX(-50%)",
-          width: sw * 0.65, height: sw * 0.10,
-          background:`radial-gradient(ellipse, ${color}55 0%, transparent 70%)`,
+          position:"absolute", bottom:0, left:"50%", transform:"translateX(-50%)",
+          width:sw*0.68, height:sw*0.11,
+          background:`radial-gradient(ellipse, ${color}60 0%, transparent 70%)`,
           borderRadius:"50%",
           animation:"glowPulse 2s ease-in-out infinite",
         }}/>
       )}
-
       {/* Blocked indicator */}
       {isBlocked && (
         <div style={{
-          position:"absolute", top: -(clamp(20/zoom,14,26)), right:0,
-          fontSize: clamp(14/zoom,10,18), pointerEvents:"none",
+          position:"absolute", top:-(clamp(20/zoom,14,26)), right:0,
+          fontSize:clamp(14/zoom,10,18), pointerEvents:"none",
           animation:"celebBounce 0.8s ease infinite alternate",
         }}>⛔</div>
       )}
-
       {/* Speech bubble */}
       {task && (isActive || isDone || isBlocked) && (
-        <div style={{
-          position:"absolute",
-          bottom: sw + 4,
-          left:"50%", transform:"translateX(-50%)",
-          whiteSpace:"nowrap", pointerEvents:"none",
-        }}>
+        <div style={{ position:"absolute", bottom:sw+6, left:"50%", transform:"translateX(-50%)", whiteSpace:"nowrap", pointerEvents:"none" }}>
           <div style={{
-            background:"rgba(4,8,18,0.96)", border:`1.5px solid ${isBlocked ? "#ef4444" : color}`,
-            color: isBlocked ? "#ef4444" : color,
+            background:"rgba(4,8,20,0.96)", border:`1.5px solid ${isBlocked?"#ef4444":color}`,
+            color:isBlocked?"#ef4444":color,
             padding:`${clamp(4/zoom,3,7)}px ${clamp(10/zoom,7,15)}px`,
-            borderRadius: clamp(20/zoom, 10, 24),
-            fontSize: clamp(10/zoom, 8, 13),
+            borderRadius:clamp(20/zoom,10,24),
+            fontSize:clamp(10/zoom,8,13),
             fontFamily:"JetBrains Mono,monospace", fontWeight:600,
             boxShadow:`0 2px 14px ${color}44`, lineHeight:1.3,
           }}>
-            {isBlocked ? "⚠ Blocked" : (task.length > 28 ? task.slice(0,28)+"…" : task)}
+            {isBlocked?"⚠ Blocked":(task.length>28?task.slice(0,28)+"…":task)}
           </div>
           <div style={{ display:"flex", justifyContent:"center", marginTop:-1 }}>
             <div style={{ width:0, height:0,
               borderLeft:`${clamp(4/zoom,3,6)}px solid transparent`,
               borderRight:`${clamp(4/zoom,3,6)}px solid transparent`,
-              borderTop:`${clamp(5/zoom,4,7)}px solid ${isBlocked ? "#ef4444" : color}`,
+              borderTop:`${clamp(5/zoom,4,7)}px solid ${isBlocked?"#ef4444":color}`,
             }}/>
           </div>
         </div>
       )}
-
       {/* Sprite image */}
       <img src={spriteImg} alt={agent.name}
         style={{ width:"100%", display:"block", userSelect:"none" }} draggable={false}/>
-
       {/* Name label */}
       <div style={{
         position:"absolute",
-        bottom: -(labelSize * 2.8),
+        bottom:-(labelSize * 2.8),
         left:"50%", transform:"translateX(-50%)",
         whiteSpace:"nowrap",
         display:"flex", alignItems:"center",
-        gap: clamp(4/zoom, 3, 6),
-        padding:`${clamp(4/zoom,3,6)}px ${clamp(10/zoom,8,14)}px`,
-        background:"rgba(4,8,18,0.95)",
-        border:`1.5px solid ${isBlocked ? "#ef4444" : isActive ? color : color+"99"}`,
-        borderRadius: clamp(20/zoom, 10, 24),
-        boxShadow:"0 2px 10px rgba(0,0,0,0.8)",
+        gap:clamp(4/zoom,3,6),
+        padding:`${clamp(4/zoom,3,7)}px ${clamp(10/zoom,8,15)}px`,
+        background:"rgba(4,8,20,0.95)",
+        border:`1.5px solid ${isBlocked?"#ef4444":isActive?color:color+"99"}`,
+        borderRadius:clamp(20/zoom,10,24),
+        boxShadow:"0 2px 12px rgba(0,0,0,0.85)",
         pointerEvents:"none",
       }}>
         <div style={{
-          width: clamp(7/zoom, 5, 9), height: clamp(7/zoom, 5, 9),
+          width:clamp(7/zoom,5,9), height:clamp(7/zoom,5,9),
           borderRadius:"50%", flexShrink:0,
-          background: isIdle ? "#475569" : isDone ? "#10b981" : isBlocked ? "#ef4444" : color,
-          boxShadow: isActive ? `0 0 ${clamp(5/zoom,4,8)}px ${color}` : "none",
+          background:isIdle?"#475569":isDone?"#10b981":isBlocked?"#ef4444":color,
+          boxShadow:isActive?`0 0 ${clamp(5/zoom,4,8)}px ${color}`:"none",
           transition:"all 0.3s",
         }}/>
         <span style={{
-          fontSize: labelSize,
-          color: "#ffffff",
+          fontSize:labelSize, color:"#ffffff",
           fontFamily:"Inter,sans-serif", fontWeight:700, lineHeight:1,
           textShadow:"0 1px 4px rgba(0,0,0,1)",
         }}>
           {agent.name}
         </span>
       </div>
-
-      {/* Done celebration */}
+      {/* Done */}
       {isDone && (
         <div style={{
-          position:"absolute", right:0, top: -(clamp(26/zoom, 18, 32)),
-          fontSize: clamp(16/zoom, 10, 20),
-          pointerEvents:"none",
+          position:"absolute", right:0, top:-(clamp(26/zoom,18,32)),
+          fontSize:clamp(16/zoom,10,20), pointerEvents:"none",
           animation:"celebBounce 0.6s ease infinite alternate",
         }}>🎉</div>
       )}
@@ -807,35 +741,32 @@ function AgentSprite({ agent, wx, wy, spriteSize, zoom }: {
 }
 
 // ─── Delegation arcs ───────────────────────────────────────────────────────────
-function DelegationArcs({ agents, tilePositions, spriteSize }: {
-  agents: Agent[]; tilePositions:[number,number][]; spriteSize:number;
+function DelegationArcs({ agents, uvPositions, spriteSize }: {
+  agents:Agent[]; uvPositions:[number,number][]; spriteSize:number;
 }) {
-  const managerPos = tilePositions[0];
-  if (!managerPos) return null;
-  const [mx, my] = tileToWorld(managerPos[0], managerPos[1]);
+  const mUV = uvPositions[0];
+  if (!mUV) return null;
+  const [mx, my] = floorPoint(mUV[0], mUV[1]);
   const mcy = my - spriteSize / 2;
-
-  const activeAgents = agents.slice(1).filter(a => a.status === "working" || a.status === "thinking");
-
+  const activeAgents = agents.slice(1).filter(a => a.status==="working"||a.status==="thinking");
   return (
     <svg style={{ position:"absolute", top:0, left:0, width:WORLD_W, height:WORLD_H,
       pointerEvents:"none", zIndex:5 }} overflow="visible">
-      {activeAgents.map((a) => {
+      {activeAgents.map(a => {
         const aIdx = agents.indexOf(a);
-        const aPos = tilePositions[aIdx];
-        if (!aPos) return null;
-        const [ax, ay] = tileToWorld(aPos[0], aPos[1]);
+        const aUV  = uvPositions[aIdx];
+        if (!aUV) return null;
+        const [ax, ay] = floorPoint(aUV[0], aUV[1]);
         const acy = ay - spriteSize / 2;
         const dx = ax - mx, dy = acy - mcy;
-        const cx = mx + dx * 0.5, cy = mcy + dy * 0.5 - 100;
+        const cx = mx + dx*0.5, cy = mcy + dy*0.5 - 120;
         return (
           <g key={a.id}>
             <path d={`M ${mx} ${mcy} Q ${cx} ${cy} ${ax} ${acy}`}
-              fill="none" stroke={a.color} strokeWidth="2.5" strokeDasharray="10 7"
+              fill="none" stroke={a.color} strokeWidth="2.5" strokeDasharray="12 8"
               opacity="0.55"
-              style={{ animation:"dashFlow 1.5s linear infinite" }}
-            />
-            <circle cx={ax} cy={acy} r={7} fill={a.color} opacity={0.28}
+              style={{ animation:"dashFlow 1.5s linear infinite" }}/>
+            <circle cx={ax} cy={acy} r={8} fill={a.color} opacity={0.25}
               style={{ animation:"glowPulse 2s ease-in-out infinite" }}/>
           </g>
         );
@@ -849,22 +780,22 @@ function ZoomControls({ onIn, onOut, onReset, zoom }: { onIn:()=>void; onOut:()=
   return (
     <div className="absolute bottom-3 left-3 flex flex-col gap-1" style={{ zIndex:50 }}>
       {[
-        { label:"+", action:onIn,    tip:"Zoom in"   },
+        { label:"+", action:onIn,    tip:"Zoom in"    },
         { label:"⌂", action:onReset, tip:"Reset view" },
-        { label:"−", action:onOut,   tip:"Zoom out"  },
+        { label:"−", action:onOut,   tip:"Zoom out"   },
       ].map(b => (
         <button key={b.label} onClick={b.action} title={b.tip} style={{
           width:32, height:32, borderRadius:8,
-          background:"rgba(8,14,26,0.92)", border:"1px solid #1e3050",
+          background:"rgba(6,10,20,0.93)", border:"1px solid #1e3050",
           color:"#94a3b8", fontSize:16, fontWeight:700, cursor:"pointer",
           display:"flex", alignItems:"center", justifyContent:"center",
         }}
-          onMouseEnter={e => (e.currentTarget.style.borderColor = "#6366f1")}
-          onMouseLeave={e => (e.currentTarget.style.borderColor = "#1e3050")}
+          onMouseEnter={e => (e.currentTarget.style.borderColor="#6366f1")}
+          onMouseLeave={e => (e.currentTarget.style.borderColor="#1e3050")}
         >{b.label}</button>
       ))}
       <div style={{ textAlign:"center", marginTop:1, fontSize:9, color:"#475569", fontFamily:"JetBrains Mono,monospace" }}>
-        {Math.round(zoom * 100)}%
+        {Math.round(zoom*100)}%
       </div>
     </div>
   );
@@ -872,13 +803,13 @@ function ZoomControls({ onIn, onOut, onReset, zoom }: { onIn:()=>void; onOut:()=
 
 function DragHint() {
   const [show, setShow] = useState(true);
-  useEffect(() => { const t = setTimeout(() => setShow(false), 5000); return () => clearTimeout(t); }, []);
+  useEffect(() => { const t = setTimeout(()=>setShow(false), 5000); return ()=>clearTimeout(t); }, []);
   if (!show) return null;
   return (
     <div className="absolute pointer-events-none" style={{
-      bottom: 50, left:"50%", transform:"translateX(-50%)",
-      zIndex:60, background:"rgba(8,14,26,0.88)", border:"1px solid #1e3050",
-      borderRadius:12, padding:"8px 16px",
+      bottom:50, left:"50%", transform:"translateX(-50%)",
+      zIndex:60, background:"rgba(6,10,20,0.90)", border:"1px solid #1e3050",
+      borderRadius:12, padding:"8px 18px",
       fontSize:11, color:"#94a3b8", fontFamily:"Inter",
       display:"flex", alignItems:"center", gap:8,
       animation:"fadeOut 0.5s ease 4.5s forwards",
@@ -891,37 +822,31 @@ function DragHint() {
 
 // ─── Main component ────────────────────────────────────────────────────────────
 export default function IsometricOffice({ agents, project }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef  = useRef<HTMLDivElement>(null);
   const [vpDims, setVpDims]       = useState({ w:1200, h:700 });
-  const [pan, setPan]             = useState<[number,number]>([0, 0]);
-  const [zoom, setZoom]           = useState(ZOOM_INIT);
+  const [pan, setPan]             = useState<[number,number]>([0,0]);
+  const [zoom, setZoom]           = useState(0.35);
   const [sparkData, setSparkData] = useState<number[]>([0,0,0,0,0]);
   const initialFitDone            = useRef(false);
 
-  const dragRef    = useRef<{ sx:number; sy:number; sp:[number,number] }|null>(null);
+  const dragRef    = useRef<{sx:number;sy:number;sp:[number,number]}|null>(null);
   const isDragging = useRef(false);
 
-  // Tile positions for each agent
-  const tilePositions = computePositions(agents.length);
-  const SPRITE_SIZE   = spriteWorldPx(agents.length);
+  const uvPositions = computePositions(agents.length);
+  const SPRITE_SIZE = spriteWorldPx(agents.length);
 
-  // Clamp pan so you can't drag the room entirely off-screen
   const clampPan = useCallback((px:number, py:number, z:number): [number,number] => {
     const pad = 200;
     return [
-      clamp(px, -(WORLD_W * z - pad), vpDims.w - pad),
-      clamp(py, -(WORLD_H * z - pad), vpDims.h - pad),
+      clamp(px, -(WORLD_W*z - pad), vpDims.w - pad),
+      clamp(py, -(WORLD_H*z - pad), vpDims.h - pad),
     ];
   }, [vpDims]);
 
-  // Compute a pan that centres the floor in the viewport at zoom z
-  const floorCentrePan = useCallback((z: number): [number,number] => {
-    // Floor centre in world coords
-    const [fcx, fcy] = tileToWorld(COLS/2, ROWS/2);
-    return [
-      vpDims.w/2 - fcx * z,
-      vpDims.h/2 - fcy * z,
-    ];
+  // Centre the floor in the viewport
+  const floorCentredPan = useCallback((z: number): [number,number] => {
+    const [fcx, fcy] = floorPoint(0.5, 0.5);
+    return [vpDims.w/2 - fcx*z, vpDims.h/2 - fcy*z];
   }, [vpDims]);
 
   useEffect(() => {
@@ -931,13 +856,11 @@ export default function IsometricOffice({ agents, project }: Props) {
       setVpDims({ w, h });
       if (!initialFitDone.current) {
         initialFitDone.current = true;
-        // Choose zoom so the floor width fills ~80% of viewport width
-        const [floorLeft]  = tileToWorld(0, ROWS/2);
-        const [floorRight] = tileToWorld(COLS, ROWS/2);
-        const floorWidthWorld = floorRight - floorLeft;
-        const fz = clamp((w * 0.80) / floorWidthWorld, ZOOM_MIN, ZOOM_MAX);
+        // Zoom so the floor diamond fills ~85% of the viewport width
+        const floorWidth = FLOOR_RIGHT[0] - FLOOR_LEFT[0];
+        const fz = clamp((w * 0.85) / floorWidth, ZOOM_MIN, ZOOM_MAX);
         setZoom(fz);
-        const [fcx, fcy] = tileToWorld(COLS/2, ROWS/2);
+        const [fcx, fcy] = floorPoint(0.5, 0.45);
         setPan([w/2 - fcx*fz, h/2 - fcy*fz]);
       }
     });
@@ -953,54 +876,54 @@ export default function IsometricOffice({ agents, project }: Props) {
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
     isDragging.current = false;
-    dragRef.current = { sx: e.clientX, sy: e.clientY, sp: pan };
+    dragRef.current = { sx:e.clientX, sy:e.clientY, sp:pan };
     e.preventDefault();
   }, [pan]);
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {
     if (!dragRef.current) return;
     const dx = e.clientX - dragRef.current.sx, dy = e.clientY - dragRef.current.sy;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) isDragging.current = true;
+    if (Math.abs(dx)>3||Math.abs(dy)>3) isDragging.current = true;
     if (!isDragging.current) return;
-    setPan(clampPan(dragRef.current.sp[0] + dx, dragRef.current.sp[1] + dy, zoom));
+    setPan(clampPan(dragRef.current.sp[0]+dx, dragRef.current.sp[1]+dy, zoom));
   }, [zoom, clampPan]);
 
   const onMouseUp = useCallback(() => { dragRef.current = null; }, []);
 
-  const touchRef = useRef<{ sx:number; sy:number; sp:[number,number]; d0?:number; z0?:number }|null>(null);
+  const touchRef = useRef<{sx:number;sy:number;sp:[number,number];d0?:number;z0?:number}|null>(null);
   const onTouchStart = useCallback((e: React.TouchEvent) => {
-    if (e.touches.length === 1) touchRef.current = { sx:e.touches[0].clientX, sy:e.touches[0].clientY, sp:pan };
-    else if (e.touches.length === 2) {
-      const d = Math.hypot(e.touches[1].clientX-e.touches[0].clientX, e.touches[1].clientY-e.touches[0].clientY);
-      touchRef.current = { sx:0, sy:0, sp:pan, d0:d, z0:zoom };
+    if (e.touches.length===1) touchRef.current={sx:e.touches[0].clientX,sy:e.touches[0].clientY,sp:pan};
+    else if (e.touches.length===2) {
+      const d=Math.hypot(e.touches[1].clientX-e.touches[0].clientX,e.touches[1].clientY-e.touches[0].clientY);
+      touchRef.current={sx:0,sy:0,sp:pan,d0:d,z0:zoom};
     }
-  }, [pan, zoom]);
+  }, [pan,zoom]);
 
   const onTouchMove = useCallback((e: React.TouchEvent) => {
     e.preventDefault();
     if (!touchRef.current) return;
-    if (e.touches.length === 1 && !touchRef.current.d0) {
+    if (e.touches.length===1&&!touchRef.current.d0) {
       setPan(clampPan(touchRef.current.sp[0]+(e.touches[0].clientX-touchRef.current.sx),
-        touchRef.current.sp[1]+(e.touches[0].clientY-touchRef.current.sy), zoom));
-    } else if (e.touches.length === 2 && touchRef.current.d0) {
-      const d = Math.hypot(e.touches[1].clientX-e.touches[0].clientX, e.touches[1].clientY-e.touches[0].clientY);
-      setZoom(clamp((touchRef.current.z0??zoom) * (d/touchRef.current.d0), ZOOM_MIN, ZOOM_MAX));
+        touchRef.current.sp[1]+(e.touches[0].clientY-touchRef.current.sy),zoom));
+    } else if (e.touches.length===2&&touchRef.current.d0) {
+      const d=Math.hypot(e.touches[1].clientX-e.touches[0].clientX,e.touches[1].clientY-e.touches[0].clientY);
+      setZoom(clamp((touchRef.current.z0??zoom)*(d/touchRef.current.d0),ZOOM_MIN,ZOOM_MAX));
     }
-  }, [zoom, clampPan]);
+  }, [zoom,clampPan]);
 
   const onTouchEnd = useCallback(() => { touchRef.current = null; }, []);
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
-    const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
+    const delta = e.deltaY>0 ? -ZOOM_STEP : ZOOM_STEP;
     setZoom(z => {
-      const nz = clamp(z + delta, ZOOM_MIN, ZOOM_MAX);
+      const nz = clamp(z+delta, ZOOM_MIN, ZOOM_MAX);
       const rect = containerRef.current?.getBoundingClientRect();
       if (rect) {
-        const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-        setPan(([px, py]) => {
-          const wx = (mx - px) / z, wy = (my - py) / z;
-          return clampPan(mx - wx*nz, my - wy*nz, nz);
+        const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+        setPan(([px,py]) => {
+          const wx=(mx-px)/z, wy=(my-py)/z;
+          return clampPan(mx-wx*nz, my-wy*nz, nz);
         });
       }
       return nz;
@@ -1008,12 +931,10 @@ export default function IsometricOffice({ agents, project }: Props) {
   }, [clampPan]);
 
   const handleReset = useCallback(() => {
-    const [floorLeft]  = tileToWorld(0, ROWS/2);
-    const [floorRight] = tileToWorld(COLS, ROWS/2);
-    const floorWidthWorld = floorRight - floorLeft;
-    const fz = clamp((vpDims.w * 0.80) / floorWidthWorld, ZOOM_MIN, ZOOM_MAX);
+    const floorWidth = FLOOR_RIGHT[0] - FLOOR_LEFT[0];
+    const fz = clamp((vpDims.w*0.85)/floorWidth, ZOOM_MIN, ZOOM_MAX);
     setZoom(fz);
-    const [fcx, fcy] = tileToWorld(COLS/2, ROWS/2);
+    const [fcx, fcy] = floorPoint(0.5, 0.45);
     setPan([vpDims.w/2 - fcx*fz, vpDims.h/2 - fcy*fz]);
   }, [vpDims]);
 
@@ -1021,7 +942,7 @@ export default function IsometricOffice({ agents, project }: Props) {
     <div
       ref={containerRef}
       className="w-full h-full relative overflow-hidden"
-      style={{ background:"linear-gradient(160deg,#060c16 0%,#09121e 100%)", cursor:"grab", userSelect:"none" }}
+      style={{ background:"#060c16", cursor:"grab", userSelect:"none" }}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
@@ -1045,33 +966,49 @@ export default function IsometricOffice({ agents, project }: Props) {
           to   { opacity:0; }
         }
         @keyframes dashFlow {
-          to { stroke-dashoffset: -34; }
+          to { stroke-dashoffset: -40; }
         }
       `}</style>
 
-      {/* ═══ Pannable world ═════════════════════════════════════════════════════ */}
+      {/* ═══ Pannable world ══════════════════════════════════════════════════ */}
       <div style={{
         position:"absolute", left:pan[0], top:pan[1],
         width:WORLD_W, height:WORLD_H,
         transformOrigin:"0 0", transform:`scale(${zoom})`, willChange:"transform",
       }}>
-        {/* SVG room — walls, floor, windows, lights, plants */}
-        <IsometricRoom />
 
-        {/* Delegation arcs */}
-        <DelegationArcs agents={agents} tilePositions={tilePositions} spriteSize={SPRITE_SIZE} />
+        {/* ── SVG extended walls + windows (behind the PNG) ── */}
+        <ExtendedRoom />
 
-        {/* Agent sprites */}
+        {/* ── Original room PNG — the beautiful background ── */}
+        <img
+          src={bgImg}
+          alt="office"
+          draggable={false}
+          style={{
+            position:"absolute",
+            left: BG_X,
+            top:  BG_Y,
+            width:  BG_PX,
+            height: BG_PX,
+            userSelect:"none",
+            filter:"brightness(0.96) contrast(1.02) saturate(1.05)",
+          }}
+        />
+
+        {/* ── Delegation arcs ── */}
+        <DelegationArcs agents={agents} uvPositions={uvPositions} spriteSize={SPRITE_SIZE}/>
+
+        {/* ── Agent sprites (on top of PNG) ── */}
         {agents.map((agent, i) => {
-          const pos = tilePositions[i];
-          if (!pos) return null;
-          const [wx, wy] = tileToWorld(pos[0], pos[1]);
+          const uv = uvPositions[i];
+          if (!uv) return null;
+          const [wx, wy] = floorPoint(uv[0], uv[1]);
           return (
             <AgentSprite
               key={agent.id}
               agent={agent}
-              wx={wx}
-              wy={wy}
+              wx={wx} wy={wy}
               spriteSize={SPRITE_SIZE}
               zoom={zoom}
             />
@@ -1079,26 +1016,24 @@ export default function IsometricOffice({ agents, project }: Props) {
         })}
       </div>
 
-      {/* ═══ Fixed HUD overlays ═════════════════════════════════════════════════ */}
+      {/* ═══ Fixed HUD overlays ══════════════════════════════════════════════ */}
       <StatsHUD project={project} agents={agents} sparkData={sparkData}/>
       <MiniMap pan={pan} zoom={zoom} vpW={vpDims.w} vpH={vpDims.h}
-        agents={agents} tilePositions={tilePositions}/>
+        agents={agents} uvPositions={uvPositions}/>
       <ZoomControls
         onIn={() => {
-          const nz = clamp(zoom + ZOOM_STEP*2, ZOOM_MIN, ZOOM_MAX);
+          const nz = clamp(zoom+ZOOM_STEP*2, ZOOM_MIN, ZOOM_MAX);
           setPan(([px,py]) => {
             const cx=vpDims.w/2, cy=vpDims.h/2;
-            const wx=(cx-px)/zoom, wy=(cy-py)/zoom;
-            return clampPan(cx-wx*nz, cy-wy*nz, nz);
+            return clampPan(cx-(cx-px)/zoom*nz, cy-(cy-py)/zoom*nz, nz);
           });
           setZoom(nz);
         }}
         onOut={() => {
-          const nz = clamp(zoom - ZOOM_STEP*2, ZOOM_MIN, ZOOM_MAX);
+          const nz = clamp(zoom-ZOOM_STEP*2, ZOOM_MIN, ZOOM_MAX);
           setPan(([px,py]) => {
             const cx=vpDims.w/2, cy=vpDims.h/2;
-            const wx=(cx-px)/zoom, wy=(cy-py)/zoom;
-            return clampPan(cx-wx*nz, cy-wy*nz, nz);
+            return clampPan(cx-(cx-px)/zoom*nz, cy-(cy-py)/zoom*nz, nz);
           });
           setZoom(nz);
         }}
@@ -1110,7 +1045,7 @@ export default function IsometricOffice({ agents, project }: Props) {
       <div className="absolute pointer-events-none" style={{ bottom:42, left:3, zIndex:50 }}>
         {project ? (
           <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl"
-            style={{ background:"rgba(8,14,26,0.92)", border:"1px solid #1e3050", maxWidth:240 }}>
+            style={{ background:"rgba(6,10,20,0.93)", border:"1px solid #1e3050", maxWidth:240 }}>
             <div className="relative flex-shrink-0">
               <div className="w-2 h-2 rounded-full bg-emerald-400"/>
               <div className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-60"/>
@@ -1119,13 +1054,13 @@ export default function IsometricOffice({ agents, project }: Props) {
               <div style={{ fontSize:8, color:"#64748b", textTransform:"uppercase",
                 letterSpacing:"0.08em", fontFamily:"Inter" }}>Active Project</div>
               <div style={{ fontSize:11, color:"white", fontWeight:600, fontFamily:"Inter" }}>
-                {project.name.length>26 ? project.name.slice(0,26)+"…" : project.name}
+                {project.name.length>26?project.name.slice(0,26)+"…":project.name}
               </div>
             </div>
           </div>
         ) : (
           <div className="px-3 py-2 rounded-xl"
-            style={{ background:"rgba(8,14,26,0.75)", border:"1px solid #1e3050" }}>
+            style={{ background:"rgba(6,10,20,0.78)", border:"1px solid #1e3050" }}>
             <span style={{ fontSize:11, color:"#475569", fontFamily:"Inter" }}>
               Click "New Project" to start
             </span>
