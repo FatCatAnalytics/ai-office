@@ -403,116 +403,6 @@ const AGENT_DOT_COLORS: Record<string, string> = {
   done:     "#06b6d4",
 };
 
-function LeftSidebar({ agents, onNavClick }: {
-  agents: Agent[];
-  onNavClick?: (label: string) => void;
-}) {
-  return (
-    <div className="flex flex-col border-r border-slate-800 bg-slate-900 flex-shrink-0"
-      style={{ width: 160 }}>
-      {/* Logo */}
-      <div className="flex items-center gap-2 px-4 py-4 border-b border-slate-800">
-        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
-          style={{ background: "linear-gradient(135deg, #06b6d4, #8b5cf6)" }}>
-          <Bot size={14} color="white" />
-        </div>
-        <span className="text-sm font-bold text-slate-100 leading-none">AI Office</span>
-      </div>
-
-      {/* Nav */}
-      <nav className="px-2 py-3 space-y-0.5">
-        {NAV_ITEMS.map(item => (
-          <button key={item.label}
-            onClick={() => onNavClick?.(item.label)}
-            className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-medium transition-all text-left ${
-              item.active
-                ? "bg-cyan-500/12 text-cyan-400 border border-cyan-500/20"
-                : "text-slate-500 hover:text-slate-300 hover:bg-slate-800/60"
-            }`}>
-            <item.icon size={13} />
-            {item.label}
-          </button>
-        ))}
-      </nav>
-
-      {/* Teams & Agents */}
-      <div className="flex-1 overflow-y-auto custom-scroll">
-        <div className="px-3 pt-2 pb-1">
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-            Teams & Agents
-          </div>
-          <div className="space-y-0.5">
-            {agents.map(agent => {
-              const dotColor = AGENT_DOT_COLORS[agent.status] ?? "#475569";
-              const isActive = agent.status !== "idle";
-              return (
-                <div key={agent.id} className="flex items-center gap-2 px-1.5 py-1.5 rounded-lg hover:bg-slate-800/40 transition-colors">
-                  <div className="relative flex-shrink-0">
-                    <div className="w-2 h-2 rounded-full" style={{ background: dotColor }} />
-                    {isActive && (
-                      <div className="absolute inset-0 rounded-full animate-ping" style={{ background: dotColor, opacity: 0.4 }} />
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium text-slate-300 truncate leading-tight" style={{ fontSize: 10 }}>
-                      {agent.name}
-                    </div>
-                    <div className="text-slate-500 leading-tight truncate" style={{ fontSize: 9 }}>
-                      {STATUS_LABELS[agent.status]}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Add Agent */}
-        <div className="px-3 py-2">
-          <button className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg border border-dashed border-slate-700 text-slate-500 hover:border-cyan-500/40 hover:text-cyan-400 transition-all text-xs">
-            <Plus size={12} />
-            Add New Agent
-          </button>
-        </div>
-      </div>
-
-      {/* Mini-map placeholder */}
-      <div className="mx-2 mb-2 rounded-lg border border-slate-800 overflow-hidden"
-        style={{ height: 70, background: "rgba(6,10,20,0.8)" }}>
-        <div className="flex items-center justify-between px-2 pt-1 pb-0.5">
-          <span className="text-slate-600 uppercase tracking-wider" style={{ fontSize: 7 }}>Mini Map</span>
-        </div>
-        <div className="relative mx-2 mb-2 rounded" style={{ background: "#0c1624", height: 48 }}>
-          {/* Simple agent dots for sidebar minimap */}
-          <svg width="100%" height="100%" viewBox="0 0 120 44" style={{ position: "absolute", inset: 0 }}>
-            {/* Floor outline */}
-            <polygon points="60,8 104,26 60,38 16,26" fill="#b8682a" opacity="0.25" stroke="#c87030" strokeWidth="0.8" />
-            {/* Agent dots */}
-            {agents.map((a, i) => {
-              const cols = 4, rows = Math.ceil(agents.length / cols);
-              const col = i % cols, row = Math.floor(i / cols);
-              const u = cols > 1 ? col / (cols - 1) : 0.5;
-              const v = rows > 1 ? row / (rows - 1) : 0.5;
-              // Simple floor interpolation for sidebar map
-              const tx = 60 + (u - 0.5) * 80;
-              const ty = 8 + v * 30;
-              const active = a.status !== "idle";
-              return (
-                <circle key={a.id}
-                  cx={tx} cy={ty} r={2.5}
-                  fill={active ? a.color : "#334155"}
-                  stroke={a.color} strokeWidth="0.8"
-                  opacity={0.9}
-                />
-              );
-            })}
-          </svg>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Top stats bar ─────────────────────────────────────────────────────────────
 function TopStatsBar({ agents, project, tasks }: { agents: Agent[]; project: Project | null; tasks: Task[] }) {
   const totalAgents   = agents.length || 18;
@@ -791,9 +681,6 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
 
       {/* ── Main 3-column layout ── */}
       <div className="flex flex-1 overflow-hidden">
-
-        {/* LEFT sidebar */}
-        <LeftSidebar agents={agents} />
 
         {/* CENTRE: canvas */}
         <main className="flex-1 flex flex-col overflow-hidden">
