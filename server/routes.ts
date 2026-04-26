@@ -190,10 +190,17 @@ function runManagerOrchestration(projectId: number) {
   const manager = agents.find((a) => a.id === "manager");
   if (!manager) return;
 
+  // Check agent mode — "live" will use real AI calls (Stage 3); simulation uses mocks
+  const agentMode = storage.getSetting("agent_mode") ?? "simulation";
+  const anthropicKey = storage.getSetting("anthropic_api_key");
+  const isLiveMode = agentMode === "live" && !!anthropicKey;
+
   // Phase 0: Manager starts planning
   setAgentStatus("manager", "thinking", "Analysing project requirements");
   emitEvent(projectId, "manager", manager.name, "received project",
-    `Analysing "${project.name}" — breaking down into tasks for the team`, "info");
+    isLiveMode
+      ? `[LIVE] Connecting to Anthropic — analysing "${project.name}" with real AI...`
+      : `[SIM] Analysing "${project.name}" — breaking down into tasks for the team`, "info");
 
   storage.updateProject(projectId, { status: "planning" });
   broadcast({ type: "project_update", projectId, status: "planning" });
@@ -590,6 +597,10 @@ export function registerRoutes(httpServer: Server, app: Express) {
     const entries = Object.entries(req.body);
     for (const [key, value] of entries) {
       storage.setSetting(key, String(value));
+      // Broadcast mode changes immediately so UI updates
+      if (key === "agent_mode") {
+        broadcast({ type: "mode_update", agentMode: String(value) });
+      }
     }
     res.json({ ok: true });
   });

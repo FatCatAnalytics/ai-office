@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { apiRequest } from "@/lib/queryClient";
 import type { Agent, AgentEvent, Project, Task } from "../types";
 import {
@@ -591,11 +591,30 @@ interface DashboardProps {
   connected: boolean;
   showModal: boolean;
   setShowModal: (v: boolean) => void;
+  agentMode: "simulation" | "live";
+  setAgentMode: (m: "simulation" | "live") => void;
 }
 
 // ─── Main dashboard ─────────────────────────────────────────────────────────────
-export default function OfficeDashboard({ agents, events, project, tasks, connected, showModal, setShowModal }: DashboardProps) {
+export default function OfficeDashboard({ agents, events, project, tasks, connected, showModal, setShowModal, agentMode, setAgentMode }: DashboardProps) {
   const [activeView, setActiveView] = useState<"sims" | "board">("sims");
+
+  // Sync agentMode from server on mount
+  useEffect(() => {
+    apiRequest("GET", "/api/settings")
+      .then(r => r.json())
+      .then((s: Record<string, string>) => {
+        const m = s["agent_mode"];
+        if (m === "live" || m === "simulation") setAgentMode(m);
+      })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleModeToggle = async (mode: "simulation" | "live") => {
+    setAgentMode(mode);
+    await apiRequest("PATCH", "/api/settings", { agent_mode: mode }).catch(() => {});
+  };
 
   const handleSubmitProject = async (name: string, desc: string, priority: string, deadline?: string) => {
     const body: Record<string, unknown> = { name, description: desc, priority };
@@ -648,6 +667,31 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
             <span className="text-slate-400 font-semibold font-mono">{idleCount}</span><span className="text-slate-600">idle</span>
             {blockedCount > 0 && <><span className="text-rose-400 font-semibold font-mono">{blockedCount}</span><span className="text-slate-600">blocked</span></>}
           </div>
+
+          {/* Simulation / Live toggle */}
+          <div className="flex items-center rounded-lg overflow-hidden border border-slate-700 text-xs font-semibold" data-testid="mode-toggle">
+            <button
+              onClick={() => handleModeToggle("simulation")}
+              data-testid="mode-simulation"
+              className="px-3 py-1.5 transition-colors"
+              style={agentMode === "simulation"
+                ? { background: "#f59e0b22", color: "#f59e0b", borderRight: "1px solid #374151" }
+                : { background: "transparent", color: "#6b7280", borderRight: "1px solid #374151" }
+              }>
+              SIM
+            </button>
+            <button
+              onClick={() => handleModeToggle("live")}
+              data-testid="mode-live"
+              className="px-3 py-1.5 transition-colors"
+              style={agentMode === "live"
+                ? { background: "#10b98122", color: "#10b981" }
+                : { background: "transparent", color: "#6b7280" }
+              }>
+              LIVE
+            </button>
+          </div>
+
           <button
             onClick={() => setShowModal(true)}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"

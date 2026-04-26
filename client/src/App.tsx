@@ -26,7 +26,7 @@ const STATUS_DOT: Record<string, string> = {
 
 // ─── Shared shell around all routes ──────────────────────────────────────────
 function AppShell() {
-  const { agents, events, project, tasks, connected } = useWebSocket();
+  const { agents, events, project, tasks, connected, agentMode, setAgentMode } = useWebSocket();
   const [showModal, setShowModal] = useState(false);
   const [location] = useLocation();
 
@@ -136,6 +136,7 @@ function AppShell() {
             <OfficeDashboard
               agents={agents} events={events} project={project} tasks={tasks}
               connected={connected} showModal={showModal} setShowModal={setShowModal}
+              agentMode={agentMode} setAgentMode={setAgentMode}
             />
           </Route>
           <Route path="/board">

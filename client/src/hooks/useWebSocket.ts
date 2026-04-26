@@ -15,6 +15,7 @@ export function useWebSocket() {
   const [project, setProject] = useState<Project | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [connected, setConnected] = useState(false);
+  const [agentMode, setAgentMode] = useState<"simulation" | "live">("simulation");
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -95,6 +96,12 @@ export function useWebSocket() {
                 prev.map((t) => (t.id === msg.task.id ? { ...t, ...msg.task } : t))
               );
               break;
+
+            case "mode_update":
+              if (msg.agentMode === "simulation" || msg.agentMode === "live") {
+                setAgentMode(msg.agentMode);
+              }
+              break;
           }
         } catch {
           // ignore parse errors
@@ -113,5 +120,5 @@ export function useWebSocket() {
     };
   }, [connect]);
 
-  return { agents, events, project, tasks, connected };
+  return { agents, events, project, tasks, connected, agentMode, setAgentMode };
 }
