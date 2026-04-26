@@ -138,7 +138,9 @@ function AppShell() {
               connected={connected} showModal={showModal} setShowModal={setShowModal}
             />
           </Route>
-          <Route path="/board" component={TaskBoardPage}/>
+          <Route path="/board">
+            <TaskBoardPage tasks={tasks} project={project} agents={agents}/>
+          </Route>
           <Route path="/agents" component={AgentsPage}/>
           <Route path="/settings" component={SettingsPage}/>
         </Switch>

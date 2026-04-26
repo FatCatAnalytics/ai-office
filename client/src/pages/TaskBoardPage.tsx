@@ -137,29 +137,45 @@ function KanbanColumn({ status, tasks, agents, onReassign }: {
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
-export default function TaskBoardPage() {
+interface TaskBoardProps {
+  tasks: Task[];
+  project: Project | null;
+  agents: Agent[];
+}
+
+export default function TaskBoardPage({ tasks: liveTasks, project: liveProject, agents: liveAgents }: TaskBoardProps) {
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
 
+  // Fall back to REST for projects list (for the selector dropdown)
   const { data: projects = [] } = useQuery<Project[]>({ queryKey: ["/api/projects"] });
-  const { data: agents = [] } = useQuery<Agent[]>({ queryKey: ["/api/agents"] });
 
+  // Use live WebSocket data — agents and tasks update in real time
+  const agents = liveAgents.length > 0 ? liveAgents : [];
+
+  // Active project: prefer WS live project, allow override via selector
   const activeProject = selectedProjectId
-    ? projects.find(p => p.id === selectedProjectId)
-    : projects.find(p => p.status === "active" || p.status === "planning") ?? projects[0];
+    ? projects.find(p => p.id === selectedProjectId) ?? liveProject
+    : liveProject ?? projects.find(p => p.status === "active" || p.status === "planning") ?? projects[0];
 
-  const { data: tasks = [], isLoading } = useQuery<Task[]>({
-    queryKey: ["/api/tasks", activeProject?.id],
-    queryFn: () => apiRequest("GET", activeProject ? `/api/projects/${activeProject.id}/tasks` : "/api/tasks").then(r => r.json()),
-    enabled: !!activeProject,
-    refetchInterval: 3000,
+  // Tasks: use live WS tasks (already filtered by active project on server)
+  // If user selects a different project via dropdown, fall back to REST fetch
+  const { data: fetchedTasks = [], isFetching } = useQuery<Task[]>({
+    queryKey: ["/api/tasks", selectedProjectId],
+    queryFn: () => apiRequest("GET", `/api/projects/${selectedProjectId}/tasks`).then(r => r.json()),
+    enabled: !!selectedProjectId && selectedProjectId !== liveProject?.id,
   });
+
+  const tasks = (selectedProjectId && selectedProjectId !== liveProject?.id)
+    ? fetchedTasks
+    : liveTasks;
+
+  const isLoading = isFetching && tasks.length === 0;
 
   const reassignMut = useMutation({
     mutationFn: ({ taskId, agentId }: { taskId: number; agentId: string }) =>
       apiRequest("POST", `/api/tasks/${taskId}/reassign`, { assignedTo: agentId }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
     },
   });
 
