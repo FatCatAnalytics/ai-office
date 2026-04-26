@@ -610,8 +610,8 @@ function OfficeRoom() {
         </filter>
       </defs>
 
-      {/* ── Background / ceiling above walls ── */}
-      <rect x={0} y={0} width={WORLD_W} height={ORIGIN_Y + 20} fill="#1a1f2e"/>
+      {/* ── Background — covers entire area above + behind walls ── */}
+      <rect x={0} y={0} width={WORLD_W} height={WORLD_H} fill="#1a1f2e"/>
 
       {/* ── Left wall ── warm cream */}
       <polygon points={pts(leftWall)} fill="url(#leftWallG)"/>
