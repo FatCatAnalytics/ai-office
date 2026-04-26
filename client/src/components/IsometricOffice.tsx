@@ -84,49 +84,49 @@ const ZONES: Zone[] = [
     id: "manager", label: "Manager Agent",
     col: 10, row: 1, w: 5, d: 4,
     color: "#a855f7",
-    desks: [[2, 1]],
+    desks: [[2, 2]],            // centre of 5w x 4d
   },
   {
     id: "frontend", label: "Frontend Dev Team",
     col: 1, row: 6, w: 6, d: 5,
     color: "#3b82f6",
-    desks: [[1,1],[3,1],[1,3],[3,3]],
+    desks: [[1,2],[3,2],[1,4],[3,4]],   // centred rows in 6w x 5d
   },
   {
     id: "backend", label: "Backend Dev Team",
     col: 9, row: 6, w: 6, d: 5,
     color: "#10b981",
-    desks: [[1,1],[3,1],[1,3],[3,3]],
+    desks: [[1,2],[3,2],[1,4],[3,4]],
   },
   {
     id: "qa", label: "QA Team",
     col: 17, row: 6, w: 5, d: 5,
     color: "#f59e0b",
-    desks: [[1,1],[2,3],[3,1]],
+    desks: [[1,2],[3,2],[2,4]],
   },
   {
     id: "uiux", label: "UI/UX Design Team",
     col: 1, row: 13, w: 6, d: 5,
     color: "#ec4899",
-    desks: [[1,1],[3,1],[2,3]],
+    desks: [[1,2],[3,2],[2,4]],
   },
   {
     id: "devops", label: "DevOps Team",
     col: 9, row: 13, w: 6, d: 5,
     color: "#06b6d4",
-    desks: [[1,1],[3,1],[1,3],[3,3]],
+    desks: [[1,2],[3,2],[1,4],[3,4]],
   },
   {
     id: "data", label: "Data Team",
     col: 17, row: 13, w: 5, d: 5,
     color: "#8b5cf6",
-    desks: [[1,1],[3,1],[2,3]],
+    desks: [[1,2],[3,2],[2,4]],
   },
   {
     id: "hotdesk", label: "Hot Desk Zone",
     col: 2, row: 19, w: 9, d: 4,
     color: "#64748b",
-    desks: [[1,1],[3,1],[5,1],[7,1],[2,3],[4,3],[6,3]],
+    desks: [[1,2],[3,2],[5,2],[7,2],[2,4],[4,4],[6,4]],
   },
 ];
 
