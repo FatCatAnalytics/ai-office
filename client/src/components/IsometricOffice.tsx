@@ -1,7 +1,16 @@
+/**
+ * IsometricOffice — full SVG isometric office floor
+ *
+ * Coordinate system:
+ *   iso(col, row) → screen (x, y)
+ *   x = (col - row) * TW/2 + ORIGIN_X
+ *   y = (col + row) * TH/2 + ORIGIN_Y
+ *
+ * The "world" is a large 2D canvas. The user pans/zooms freely.
+ */
 import { useEffect, useState, useRef, useCallback } from "react";
 import type { Agent, Project } from "../types";
 
-import bgImg            from "@assets/sprite_office_floor.png";
 import managerImg       from "@assets/sprite_manager.png";
 import frontendImg      from "@assets/sprite_frontend.png";
 import backendImg       from "@assets/sprite_backend.png";
@@ -22,388 +31,585 @@ const SPRITE_MAP: Record<string, string> = {
   secengineer: secengineerImg, pm: pmImg,
 };
 
-// ─── World & room geometry ────────────────────────────────────────────────────
-// The PNG (1024×1024) is rendered at a FIXED large size in world space.
-// We do NOT tile — just one PNG, centred in the world.
-const BG_SCALE = 2400 / 1024;   // ~2.34375
-const BG_PX    = 2400;           // rendered size in world px
+// ─── Isometric grid constants ─────────────────────────────────────────────────
+const TW = 120;   // tile width  (screen px per tile)
+const TH = 60;    // tile height (TW/2 = classic 2:1 isometric)
 
-const WORLD_W  = 5000;
-const WORLD_H  = 4000;
-const BG_X     = (WORLD_W - BG_PX) / 2;         // 1300
-const BG_Y     = (WORLD_H - BG_PX) / 2 - 100;   // 700
+// Office grid size
+const COLS = 24;
+const ROWS = 20;
 
-// ── Floor diamond in world coords ──
-// Pixel coords from image analysis, scaled up by BG_SCALE and offset by BG_X/BG_Y
-const FLOOR_TOP:    [number, number] = [BG_X + 512 * BG_SCALE, BG_Y + 494 * BG_SCALE];
-const FLOOR_LEFT:   [number, number] = [BG_X + 172 * BG_SCALE, BG_Y + 620 * BG_SCALE];
-const FLOOR_RIGHT:  [number, number] = [BG_X + 868 * BG_SCALE, BG_Y + 620 * BG_SCALE];
-const FLOOR_BOTTOM: [number, number] = [BG_X + 512 * BG_SCALE, BG_Y + 858 * BG_SCALE];
+// Wall height above floor
+const WALL_H = 220;
+
+// World canvas size (large so user can pan)
+const WORLD_W = 3600;
+const WORLD_H = 2400;
+
+// Grid origin in world coords — floor top-back corner lands here
+const ORIGIN_X = 1300;
+const ORIGIN_Y = 280;
+
+function iso(col: number, row: number): [number, number] {
+  return [
+    ORIGIN_X + (col - row) * TW / 2,
+    ORIGIN_Y + (col + row) * TH / 2,
+  ];
+}
 
 // ─── Zoom / pan ───────────────────────────────────────────────────────────────
-const ZOOM_MIN  = 0.10;
-const ZOOM_MAX  = 3.0;
-const ZOOM_STEP = 0.09;
+const ZOOM_MIN  = 0.18;
+const ZOOM_MAX  = 2.5;
+const ZOOM_STEP = 0.08;
 
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
 function fmt(n: number) {
-  return n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(n);
+  return n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"K" : String(n);
 }
 
-// ─── Bilinear floor interpolation ────────────────────────────────────────────
-// u=0..1 left-to-right, v=0..1 top-to-front on the floor diamond.
-// We treat the diamond as two triangles (top half and bottom half).
-function floorPoint(u: number, v: number): [number, number] {
-  const topX   = FLOOR_TOP[0],    topY   = FLOOR_TOP[1];
-  const leftX  = FLOOR_LEFT[0],   leftY  = FLOOR_LEFT[1];
-  const rightX = FLOOR_RIGHT[0],  rightY = FLOOR_RIGHT[1];
-  const botX   = FLOOR_BOTTOM[0], botY   = FLOOR_BOTTOM[1];
-
-  // Left edge at param v: top→left for v:0→0.5, left→bottom for v:0.5→1
-  // Right edge at param v: top→right for v:0→0.5, right→bottom for v:0.5→1
-  let lx: number, ly: number, rx: number, ry: number;
-  if (v <= 0.5) {
-    const t = v * 2;
-    lx = topX  + (leftX  - topX)  * t;
-    ly = topY  + (leftY  - topY)  * t;
-    rx = topX  + (rightX - topX)  * t;
-    ry = topY  + (rightY - topY)  * t;
-  } else {
-    const t = (v - 0.5) * 2;
-    lx = leftX  + (botX - leftX)  * t;
-    ly = leftY  + (botY - leftY)  * t;
-    rx = rightX + (botX - rightX) * t;
-    ry = rightY + (botY - rightY) * t;
-  }
-  return [lx + (rx - lx) * u, ly + (ry - ly) * u];
+// ─── Team zone definitions ────────────────────────────────────────────────────
+// Each zone: anchor tile (col, row), width in cols, depth in rows
+interface Zone {
+  id: string;
+  label: string;
+  col: number; row: number;
+  w: number;   d: number;
+  color: string;
+  // Desk positions within zone (relative tile offsets)
+  desks: [number, number][];
 }
 
-// ─── Agent grid positions ─────────────────────────────────────────────────────
-// Safe zone u: 0.18..0.82, v: 0.15..0.78 — keeps all agents on the floor
-function computePositions(count: number): [number, number][] {
-  const cols = count <= 4 ? 2 : count <= 9 ? 3 : 4;
-  const rows = Math.ceil(count / cols);
+const ZONES: Zone[] = [
+  {
+    id: "manager", label: "Manager Agent",
+    col: 10, row: 1, w: 5, d: 4,
+    color: "#a855f7",
+    desks: [[2, 1]],
+  },
+  {
+    id: "frontend", label: "Frontend Dev Team",
+    col: 1, row: 6, w: 6, d: 5,
+    color: "#3b82f6",
+    desks: [[1,1],[3,1],[1,3],[3,3]],
+  },
+  {
+    id: "backend", label: "Backend Dev Team",
+    col: 9, row: 6, w: 6, d: 5,
+    color: "#10b981",
+    desks: [[1,1],[3,1],[1,3],[3,3]],
+  },
+  {
+    id: "qa", label: "QA Team",
+    col: 17, row: 6, w: 5, d: 5,
+    color: "#f59e0b",
+    desks: [[1,1],[2,3],[3,1]],
+  },
+  {
+    id: "uiux", label: "UI/UX Design Team",
+    col: 1, row: 13, w: 6, d: 5,
+    color: "#ec4899",
+    desks: [[1,1],[3,1],[2,3]],
+  },
+  {
+    id: "devops", label: "DevOps Team",
+    col: 9, row: 13, w: 6, d: 5,
+    color: "#06b6d4",
+    desks: [[1,1],[3,1],[1,3],[3,3]],
+  },
+  {
+    id: "data", label: "Data Team",
+    col: 17, row: 13, w: 5, d: 5,
+    color: "#8b5cf6",
+    desks: [[1,1],[3,1],[2,3]],
+  },
+  {
+    id: "hotdesk", label: "Hot Desk Zone",
+    col: 2, row: 19, w: 9, d: 4,
+    color: "#64748b",
+    desks: [[1,1],[3,1],[5,1],[7,1],[2,3],[4,3],[6,3]],
+  },
+];
 
-  const uMin = 0.18, uMax = 0.82;
-  const vMin = 0.15, vMax = 0.78;
+// Future Expansion zone (separate — just an outline, no desks)
+const EXPANSION = { col: 13, row: 19, w: 10, d: 6 };
 
-  const positions: [number, number][] = [];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (positions.length >= count) break;
-      const uT = cols > 1 ? c / (cols - 1) : 0.5;
-      const vT = rows > 1 ? r / (rows - 1) : 0.5;
-      positions.push([
-        uMin + (uMax - uMin) * uT,
-        vMin + (vMax - vMin) * vT,
-      ]);
+// Meeting area (lounge)
+const LOUNGE = { col: 21, row: 2, w: 3, d: 5 };
+
+// ─── Desk slot coordinates per agent type → zone + desk index ────────────────
+// Maps agent spriteType → [zoneId, deskIndex]
+const AGENT_DESK_MAP: Record<string, [string, number]> = {
+  manager:      ["manager",  0],
+  frontend:     ["frontend", 0],
+  backend:      ["backend",  0],
+  qa:           ["qa",       0],
+  uiux:         ["uiux",     0],
+  devops:       ["devops",   0],
+  dbarchitect:  ["backend",  1],
+  datascientist:["data",     0],
+  secengineer:  ["devops",   1],
+  pm:           ["frontend", 1],
+};
+
+function getAgentDeskPos(agent: Agent): [number, number] | null {
+  const entry = AGENT_DESK_MAP[agent.spriteType];
+  if (!entry) return null;
+  const [zoneId, deskIdx] = entry;
+  const zone = ZONES.find(z => z.id === zoneId);
+  if (!zone) return null;
+  const desk = zone.desks[deskIdx % zone.desks.length];
+  if (!desk) return null;
+  return iso(zone.col + desk[0], zone.row + desk[1]);
+}
+
+// ─── SVG floor tile ───────────────────────────────────────────────────────────
+function tilePoly(col: number, row: number): string {
+  const [x0, y0] = iso(col,   row);
+  const [x1, y1] = iso(col+1, row);
+  const [x2, y2] = iso(col+1, row+1);
+  const [x3, y3] = iso(col,   row+1);
+  return `${x0},${y0} ${x1},${y1} ${x2},${y2} ${x3},${y3}`;
+}
+
+// Zone outline polygon (the boundary of a rectangular zone)
+function zonePoly(col: number, row: number, w: number, d: number): string {
+  const [x0, y0] = iso(col,   row);
+  const [x1, y1] = iso(col+w, row);
+  const [x2, y2] = iso(col+w, row+d);
+  const [x3, y3] = iso(col,   row+d);
+  return `${x0},${y0} ${x1},${y1} ${x2},${y2} ${x3},${y3}`;
+}
+
+// Zone label position (top-front of zone)
+function zoneLabel(col: number, row: number, w: number): [number, number] {
+  const [cx, cy] = iso(col + w/2, row);
+  return [cx, cy - 14];
+}
+
+// ─── SVG Office Room ──────────────────────────────────────────────────────────
+function OfficeRoom() {
+  // Floor corners
+  const [fx0, fy0] = iso(0,    0);      // back corner
+  const [fx1, fy1] = iso(COLS, 0);      // right corner
+  const [fx2, fy2] = iso(COLS, ROWS);   // front corner
+  const [fx3, fy3] = iso(0,    ROWS);   // left corner
+
+  // Wall tops
+  const wt = (y: number) => y - WALL_H;
+
+  // Left wall corners (back → left → left-top → back-top)
+  const leftWall  = [[fx0,fy0],[fx3,fy3],[fx3,wt(fy3)],[fx0,wt(fy0)]];
+  // Right wall corners (back → right → right-top → back-top)
+  const rightWall = [[fx0,fy0],[fx1,fy1],[fx1,wt(fy1)],[fx0,wt(fy0)]];
+  const pts = (a: number[][]) => a.map(p=>p.join(",")).join(" ");
+
+  // Ceiling line (just the ridge)
+  // Window positions on right wall: col 4, 8, 14, 18 at row=0
+  const rightWindows = [4, 8, 14, 18];
+  // Window positions on left wall: row 4, 10, 16 at col=0
+  const leftWindows  = [4, 10, 16];
+
+  // Floor: render every tile with alternating wood pattern
+  const floorTiles = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      // Warm wood tones, slight checker variation
+      const v = ((c + r) % 2 === 0) ? 0 : 1;
+      const lum = 48 + v*4 + ((c*3+r*7) % 8);
+      floorTiles.push(
+        <polygon key={`t${c}-${r}`}
+          points={tilePoly(c, r)}
+          fill={`hsl(28,${52+v*4}%,${lum}%)`}
+          stroke="rgba(0,0,0,0.06)" strokeWidth="0.5"
+        />
+      );
     }
   }
-  return positions;
-}
 
-// Fixed sprite size: 200px in world space — looks good at any agent count
-const SPRITE_SIZE = 200;
+  // Zone carpet / area fills (subtle coloured floor areas)
+  const zoneAreas = ZONES.map(z => (
+    <polygon key={`za-${z.id}`}
+      points={zonePoly(z.col, z.row, z.w, z.d)}
+      fill={z.color}
+      opacity="0.06"
+    />
+  ));
 
-// ─── Progress ring ─────────────────────────────────────────────────────────────
-function ProgressRing({ pct, color, size }: { pct: number; color: string; size: number }) {
-  const r = (size - 8) / 2, circ = 2 * Math.PI * r, dash = (pct / 100) * circ;
-  return (
-    <svg width={size} height={size}>
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#1e3050" strokeWidth="5" />
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth="5"
-        strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
-        transform={`rotate(-90 ${size / 2} ${size / 2})`}
-        style={{ transition: "stroke-dasharray 0.6s ease" }} />
-      <text x={size / 2} y={size / 2 + 5} textAnchor="middle" fill="white"
-        fontSize="13" fontFamily="JetBrains Mono,monospace" fontWeight="bold">{pct}%</text>
-    </svg>
+  // Zone dashed outlines
+  const zoneOutlines = ZONES.map(z => (
+    <polygon key={`zo-${z.id}`}
+      points={zonePoly(z.col, z.row, z.w, z.d)}
+      fill="none"
+      stroke={z.color}
+      strokeWidth="2.5"
+      strokeDasharray="10 6"
+      opacity="0.85"
+    />
+  ));
+
+  // Zone labels
+  const zoneLabels = ZONES.map(z => {
+    const [lx, ly] = zoneLabel(z.col, z.row, z.w);
+    return (
+      <g key={`zl-${z.id}`}>
+        <rect x={lx-52} y={ly-13} width={104} height={20} rx="10"
+          fill="rgba(8,14,26,0.82)" />
+        <text x={lx} y={ly+2}
+          textAnchor="middle" fill={z.color}
+          fontSize="11" fontFamily="Inter,sans-serif" fontWeight="700"
+          letterSpacing="0.04em">
+          {z.label}
+        </text>
+      </g>
+    );
+  });
+
+  // Future expansion zone
+  const [ex, ey] = zoneLabel(EXPANSION.col, EXPANSION.row, EXPANSION.w);
+  const expansionEl = (
+    <g>
+      <polygon
+        points={zonePoly(EXPANSION.col, EXPANSION.row, EXPANSION.w, EXPANSION.d)}
+        fill="rgba(99,102,241,0.04)"
+        stroke="#6366f1"
+        strokeWidth="2"
+        strokeDasharray="14 8"
+        opacity="0.5"
+      />
+      <text x={ex} y={ey+2} textAnchor="middle"
+        fill="#6366f1" fontSize="12" fontFamily="Inter,sans-serif"
+        fontWeight="600" opacity="0.7" letterSpacing="0.06em">
+        FUTURE EXPANSION ZONE
+      </text>
+      {/* Plus icon */}
+      {(() => {
+        const [cx, cy] = iso(EXPANSION.col + EXPANSION.w/2, EXPANSION.row + EXPANSION.d/2);
+        return (
+          <g>
+            <circle cx={cx} cy={cy} r={20} fill="rgba(99,102,241,0.15)"
+              stroke="#6366f1" strokeWidth="1.5" opacity="0.6"/>
+            <text x={cx} y={cy+6} textAnchor="middle"
+              fill="#6366f1" fontSize="22" fontFamily="Inter,sans-serif" opacity="0.7">+</text>
+          </g>
+        );
+      })()}
+    </g>
   );
-}
 
-function Sparkline({ data, color, w, h }: { data: number[]; color: string; w: number; h: number }) {
-  if (data.length < 2) return <div style={{ width: w, height: h, background: "#0c1624", borderRadius: 4 }} />;
-  const max = Math.max(...data), min = Math.min(...data), range = max - min || 1;
-  const pts = data.map((v, i) => {
-    const x = 4 + (i / (data.length - 1)) * (w - 8);
-    const y = h - 4 - ((v - min) / range) * (h - 8);
-    return `${x},${y}`;
-  }).join(" ");
-  const lastPt = pts.split(" ").pop()!.split(",");
-  return (
-    <svg width={w} height={h} style={{ display: "block" }}>
-      <rect x={0} y={0} width={w} height={h} rx={4} fill="#0c1624" />
-      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.8" opacity="0.9" />
-      <circle cx={lastPt[0]} cy={lastPt[1]} r={3} fill={color} />
-    </svg>
-  );
-}
+  // Hot desk "+" icons
+  const hotZone = ZONES.find(z => z.id === "hotdesk")!;
+  const emptyDesks = hotZone.desks.slice(4).map((d, i) => {
+    const [dx, dy] = iso(hotZone.col + d[0], hotZone.row + d[1]);
+    return (
+      <g key={`hd${i}`}>
+        <circle cx={dx} cy={dy-20} r={16} fill="rgba(100,116,139,0.2)"
+          stroke="#64748b" strokeWidth="1.5" strokeDasharray="5 3"/>
+        <text x={dx} y={dy-14} textAnchor="middle"
+          fill="#64748b" fontSize="18" fontFamily="Inter,sans-serif">+</text>
+      </g>
+    );
+  });
 
-// ─── Stats HUD (top-right overlay) ─────────────────────────────────────────────
-function StatsHUD({ project, agents, sparkData }: { project: Project | null; agents: Agent[]; sparkData: number[] }) {
-  const active = agents.filter(a => a.status !== "idle").length;
-  return (
-    <div className="absolute top-3 right-3 flex flex-col gap-2 pointer-events-none" style={{ width: 162, zIndex: 50 }}>
-      <div className="rounded-xl p-3" style={{ background: "rgba(6,10,20,0.94)", border: "1px solid #1e3050" }}>
-        <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.08em", fontFamily: "Inter",
-          textTransform: "uppercase", marginBottom: 8 }}>Project Progress</div>
-        <div className="flex items-center gap-3">
-          <ProgressRing pct={project?.progress ?? 0} color="#6366f1" size={52} />
-          <div>
-            <div style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>
-              {project?.tasksCompleted ?? 0}/{project?.tasksTotal ?? 0} tasks
-            </div>
-            <div style={{ fontSize: 9, marginTop: 3, fontFamily: "monospace",
-              color: project?.status === "completed" ? "#10b981" : project ? "#f59e0b" : "#475569" }}>
-              {project?.status === "completed" ? "✓ Done" : project?.status === "planning" ? "● Planning" : project ? "● Running" : "○ Idle"}
-            </div>
-          </div>
-        </div>
-      </div>
-      <div className="rounded-xl p-3" style={{ background: "rgba(6,10,20,0.94)", border: "1px solid #1e3050" }}>
-        <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.08em", fontFamily: "Inter",
-          textTransform: "uppercase", marginBottom: 8 }}>Agents · {active}/{agents.length} active</div>
-        <div className="flex gap-1.5 flex-wrap">
-          {agents.map(a => (
-            <div key={a.id} title={`${a.name} — ${a.status}`} style={{
-              width: 11, height: 11, borderRadius: "50%",
-              background: a.status === "idle" ? "#1e3050" : a.color,
-              border: `1.5px solid ${a.color}`,
-              boxShadow: a.status !== "idle" ? `0 0 5px ${a.color}` : "none",
-              transition: "all 0.3s",
-            }} />
-          ))}
-        </div>
-      </div>
-      {[
-        { label: "Tokens",       value: fmt(project?.tokensUsed ?? 0),                   color: "#f59e0b" },
-        { label: "Cost Today",   value: `$${(project?.costToday ?? 0).toFixed(2)}`,       color: "#10b981" },
-        { label: "Avg Response", value: `${(project?.avgResponseTime ?? 0).toFixed(1)}s`, color: "#06b6d4" },
-      ].map(m => (
-        <div key={m.label} className="rounded-xl px-3 py-2 flex items-center justify-between"
-          style={{ background: "rgba(6,10,20,0.94)", border: "1px solid #1e3050" }}>
-          <span style={{ fontSize: 8, color: "#64748b", fontFamily: "Inter", textTransform: "uppercase", letterSpacing: "0.08em" }}>{m.label}</span>
-          <span style={{ fontSize: 13, color: m.color, fontFamily: "JetBrains Mono,monospace", fontWeight: 700 }}>{m.value}</span>
-        </div>
-      ))}
-      <div className="rounded-xl p-3" style={{ background: "rgba(6,10,20,0.94)", border: "1px solid #1e3050" }}>
-        <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.08em", fontFamily: "Inter",
-          textTransform: "uppercase", marginBottom: 8 }}>Progress Trend</div>
-        <Sparkline data={sparkData} color="#6366f1" w={134} h={32} />
-      </div>
-    </div>
-  );
-}
+  // Lounge (sofas + coffee table)
+  const loungeEl = (() => {
+    const [lx, ly] = iso(LOUNGE.col + 1, LOUNGE.row + 1);
+    return (
+      <g>
+        {/* Rug */}
+        <polygon
+          points={zonePoly(LOUNGE.col, LOUNGE.row, LOUNGE.w, LOUNGE.d)}
+          fill="rgba(139,92,246,0.08)"
+          stroke="rgba(139,92,246,0.3)" strokeWidth="1.5"
+        />
+        {/* Sofa back */}
+        <ellipse cx={lx-20} cy={ly+10} rx={40} ry={14}
+          fill="#4a3f35" opacity="0.9"/>
+        <ellipse cx={lx-20} cy={ly+4} rx={34} ry={10}
+          fill="#5c4f44" opacity="0.9"/>
+        {/* Coffee table */}
+        <ellipse cx={lx+25} cy={ly+20} rx={22} ry={10}
+          fill="#7c6a55" opacity="0.85"/>
+        <ellipse cx={lx+25} cy={ly+16} rx={18} ry={8}
+          fill="#8c7a65" opacity="0.9"/>
+      </g>
+    );
+  })();
 
-// ─── Mini-map (bottom-right overlay) ───────────────────────────────────────────
-function MiniMap({ pan, zoom, vpW, vpH, agents, uvPositions }: {
-  pan: [number, number]; zoom: number; vpW: number; vpH: number;
-  agents: Agent[]; uvPositions: [number, number][];
-}) {
-  const W = 130, H = 100;
-  const scaleX = W / WORLD_W, scaleY = H / WORLD_H;
-  const vpLeft  = (-pan[0] / zoom) * scaleX;
-  const vpTop   = (-pan[1] / zoom) * scaleY;
-  const vpRectW = (vpW / zoom) * scaleX;
-  const vpRectH = (vpH / zoom) * scaleY;
+  // Plants (corners and scattered)
+  const plantPositions = [
+    [0, 0], [COLS, 0], [0, ROWS], [COLS, ROWS],
+    [0, ROWS/2], [COLS, ROWS/2],
+    [5, 5], [19, 5], [5, 17], [19, 17],
+  ] as [number,number][];
 
-  // Floor diamond outline in minimap coords
-  const floorPts = [FLOOR_TOP, FLOOR_RIGHT, FLOOR_BOTTOM, FLOOR_LEFT]
-    .map(([x, y]) => `${x * scaleX},${y * scaleY}`).join(" ");
-
-  return (
-    <div className="absolute bottom-3 right-3 rounded-xl overflow-hidden pointer-events-none"
-      style={{ width: W, height: H, zIndex: 50, border: "1px solid #1e3050",
-        background: "rgba(6,10,20,0.93)", boxShadow: "0 4px 20px rgba(0,0,0,0.6)" }}>
-      <svg width={W} height={H} style={{ position: "absolute", inset: 0 }}>
-        <polygon points={floorPts} fill="#b8682a" opacity="0.35" stroke="#c87030" strokeWidth="1" />
-        {agents.map((a, i) => {
-          const uv = uvPositions[i];
-          if (!uv) return null;
-          const [wx, wy] = floorPoint(uv[0], uv[1]);
-          const active = a.status !== "idle";
+  const plants = plantPositions.map(([pc, pr], i) => {
+    const [px, py] = iso(pc, pr);
+    const size = [0,1,2,3].includes(i) ? 1 : 0.7;
+    return (
+      <g key={`pl${i}`}>
+        {/* Pot */}
+        <ellipse cx={px} cy={py} rx={12*size} ry={5*size} fill="#e8e8e8" opacity="0.9"/>
+        <rect x={px-10*size} y={py-16*size} width={20*size} height={16*size}
+          rx={3} fill="#f0f0f0" opacity="0.85"/>
+        {/* Leaves */}
+        {[0,60,120,180,240,300].map((deg, li) => {
+          const rad = deg * Math.PI / 180;
           return (
-            <g key={a.id}>
-              {active && <circle cx={wx * scaleX} cy={wy * scaleY} r={5} fill={a.color} opacity={0.22} />}
-              <circle cx={wx * scaleX} cy={wy * scaleY} r={3}
-                fill={active ? a.color : "#334155"} stroke={a.color} strokeWidth="1" />
-            </g>
+            <ellipse key={li}
+              cx={px + Math.cos(rad)*26*size}
+              cy={py - 30*size + Math.sin(rad)*10*size}
+              rx={16*size} ry={7*size}
+              fill={li%2===0 ? "#2d6a2d" : "#1e5c1e"}
+              transform={`rotate(${deg-15},${px+Math.cos(rad)*26*size},${py-30*size+Math.sin(rad)*10*size})`}
+              opacity="0.92"
+            />
           );
         })}
-        <rect
-          x={clamp(vpLeft, 0, W - 2)} y={clamp(vpTop, 0, H - 2)}
-          width={clamp(vpRectW, 2, W - clamp(vpLeft, 0, W))}
-          height={clamp(vpRectH, 2, H - clamp(vpTop, 0, H))}
-          fill="rgba(99,102,241,0.10)" stroke="#6366f1" strokeWidth="1.5" rx="2" />
-      </svg>
-      <div style={{ position: "absolute", bottom: 3, left: 5,
-        fontSize: 7, color: "#475569", fontFamily: "Inter", letterSpacing: "0.06em", textTransform: "uppercase" }}>
-        map
-      </div>
-    </div>
+        <rect x={px-4*size} y={py-34*size} width={8*size} height={22*size}
+          rx={2} fill="#5c3d1a" opacity="0.8"/>
+      </g>
+    );
+  });
+
+  // Big screen on back wall (between left+right walls, near top)
+  const [scx, scy] = iso(COLS/2, 0);
+  const screenW = 200, screenH = 110;
+  const screenEl = (
+    <g>
+      {/* Screen frame */}
+      <rect x={scx-screenW/2} y={scy-WALL_H+20}
+        width={screenW} height={screenH}
+        rx="8" fill="#1a1f2e" stroke="#2a3650" strokeWidth="3"/>
+      {/* Screen content — project dashboard */}
+      <rect x={scx-screenW/2+6} y={scy-WALL_H+26}
+        width={screenW-12} height={screenH-12}
+        rx="4" fill="#0d1520"/>
+      {/* Bars on screen */}
+      {[0,1,2,3,4].map(i => (
+        <rect key={i}
+          x={scx-screenW/2+12+i*34} y={scy-WALL_H+60}
+          width={24} height={30+i*8}
+          rx="2"
+          fill={["#6366f1","#3b82f6","#10b981","#f59e0b","#ec4899"][i]}
+          opacity="0.9"
+        />
+      ))}
+      <text x={scx} y={scy-WALL_H+40}
+        textAnchor="middle" fill="#94a3b8"
+        fontSize="8" fontFamily="Inter,sans-serif" letterSpacing="0.08em">
+        PROJECT DASHBOARD
+      </text>
+      {/* Screen glow */}
+      <rect x={scx-screenW/2} y={scy-WALL_H+20}
+        width={screenW} height={screenH}
+        rx="8" fill="none"
+        stroke="#6366f1" strokeWidth="1" opacity="0.4"/>
+    </g>
   );
-}
 
-// ─── Single agent sprite ───────────────────────────────────────────────────────
-function AgentSprite({ agent, wx, wy, spriteSize, zoom }: {
-  agent: Agent; wx: number; wy: number; spriteSize: number; zoom: number;
-}) {
-  const status    = agent.status;
-  const isActive  = status === "working" || status === "thinking";
-  const isDone    = status === "done";
-  const isIdle    = status === "idle";
-  const isBlocked = status === "blocked";
-  const task      = agent.currentTask;
-  const color     = agent.color;
-  const sw        = spriteSize;
+  // Ceiling spotlights
+  const spotlightCols = [3, 7, 12, 17, 21];
+  const spotlightRow  = 0;
+  const spotlights = spotlightCols.map((c, i) => {
+    const [lx, ly] = iso(c, spotlightRow);
+    const lY = ly - WALL_H + 10;
+    return (
+      <g key={i}>
+        <circle cx={lx} cy={lY} r={6} fill="#dde2ea" opacity="0.95"/>
+        <ellipse cx={lx} cy={lY+WALL_H*0.9}
+          rx={55} ry={22}
+          fill="rgba(255,242,200,0.10)"/>
+        <polygon
+          points={`${lx-6},${lY+4} ${lx+6},${lY+4} ${lx+50},${lY+WALL_H*0.88} ${lx-50},${lY+WALL_H*0.88}`}
+          fill="rgba(255,242,200,0.055)"/>
+      </g>
+    );
+  });
 
-  const labelSize = Math.round(clamp(12 / zoom, 9, 16));
-  const spriteImg = SPRITE_MAP[agent.spriteType] ?? SPRITE_MAP["manager"];
+  // Windows on right wall
+  const rightWindowEls = rightWindows.map((wc, i) => {
+    const [wx, wy] = iso(wc, 0);
+    const [wx2, wy2] = iso(wc+2, 0);
+    const wTop = wy - WALL_H + 30, wBot = wy - WALL_H*0.25;
+    const p1x=wx, p1y=wTop, p2x=wx2, p2y=wTop+(wy2-wy),
+          p3x=wx2, p3y=wBot+(wy2-wy)*0.5, p4x=wx, p4y=wBot;
+    const pts2 = `${p1x},${p1y} ${p2x},${p2y} ${p3x},${p3y} ${p4x},${p4y}`;
+    return (
+      <g key={i}>
+        <polygon points={pts2} fill="#081828" opacity="0.92"/>
+        {/* City silhouette */}
+        {[0.1,0.28,0.48,0.68,0.85].map((bx,bi) => {
+          const bh = [0.6,0.85,0.55,0.75,0.65][bi];
+          const bLeft = p1x+(p2x-p1x)*bx, bRight = p1x+(p2x-p1x)*(bx+0.12);
+          const bTop  = p4y + (p1y-p4y)*(1-bh*0.8);
+          return (
+            <polygon key={bi}
+              points={`${bLeft},${bTop} ${bRight},${bTop+(p2y-p1y)*0.1} ${bRight},${p4y+12} ${bLeft},${p4y+8}`}
+              fill={`hsl(220,20%,${9+bi*2}%)`} opacity="0.95"/>
+          );
+        })}
+        <polygon points={pts2} fill="none"
+          stroke="#dde8f0" strokeWidth="4" opacity="0.75"/>
+        <polygon points={pts2} fill="none"
+          stroke="#8fb0d0" strokeWidth="1.5" opacity="0.4"/>
+        {/* Sill */}
+        <line x1={p4x} y1={p4y} x2={p3x} y2={p3y}
+          stroke="#d8e4f0" strokeWidth="5"/>
+      </g>
+    );
+  });
 
-  const filterStyle = isIdle
-    ? "grayscale(40%) brightness(0.72)"
-    : isBlocked
-    ? "grayscale(20%) brightness(0.75) sepia(0.4) hue-rotate(310deg)"
-    : isDone
-    ? `drop-shadow(0 0 ${16 / zoom}px ${color}) brightness(1.1)`
-    : isActive
-    ? `drop-shadow(0 0 ${10 / zoom}px ${color}99)`
-    : "none";
+  // Windows on left wall
+  const leftWindowEls = leftWindows.map((wr, i) => {
+    const [wx, wy] = iso(0, wr);
+    const [wx2, wy2] = iso(0, wr+2);
+    const wTop = wy - WALL_H + 30, wBot = wy - WALL_H*0.25;
+    const p1x=wx, p1y=wTop, p2x=wx2, p2y=wTop+(wy2-wy),
+          p3x=wx2, p3y=wBot+(wy2-wy)*0.5, p4x=wx, p4y=wBot;
+    const pts2 = `${p1x},${p1y} ${p2x},${p2y} ${p3x},${p3y} ${p4x},${p4y}`;
+    return (
+      <g key={i}>
+        <polygon points={pts2} fill="#081828" opacity="0.92"/>
+        {[0.1,0.35,0.6,0.82].map((bx,bi) => {
+          const bh = [0.7,0.5,0.8,0.6][bi];
+          const bLeft = p1x+(p2x-p1x)*bx, bRight = p1x+(p2x-p1x)*(bx+0.14);
+          const bTop  = p4y + (p1y-p4y)*(1-bh*0.8);
+          return (
+            <polygon key={bi}
+              points={`${bLeft},${bTop} ${bRight},${bTop+(p2y-p1y)*0.08} ${bRight},${p4y+10} ${bLeft},${p4y+6}`}
+              fill={`hsl(220,18%,${10+bi*2}%)`} opacity="0.95"/>
+          );
+        })}
+        <polygon points={pts2} fill="none"
+          stroke="#dde8f0" strokeWidth="4" opacity="0.75"/>
+        <line x1={p4x} y1={p4y} x2={p3x} y2={p3y}
+          stroke="#d8e4f0" strokeWidth="5"/>
+      </g>
+    );
+  });
 
   return (
-    <div
-      data-testid={`sprite-${agent.id}`}
-      style={{
-        position: "absolute",
-        left: wx - sw / 2,
-        top:  wy - sw,
-        width: sw,
-        zIndex: Math.round(wy + 1000),
-        transition: "filter 0.4s ease",
-        filter: filterStyle,
-      }}
+    <svg
+      width={WORLD_W} height={WORLD_H}
+      style={{ position:"absolute", top:0, left:0, overflow:"visible" }}
     >
-      {/* Floor shadow */}
-      <div style={{
-        position: "absolute", bottom: 0, left: "50%", transform: "translateX(-50%)",
-        width: sw * 0.55, height: sw * 0.07,
-        background: "radial-gradient(ellipse, rgba(0,0,0,0.6) 0%, transparent 70%)",
-        borderRadius: "50%",
-      }} />
-      {/* Active glow ring */}
-      {isActive && (
-        <div style={{
-          position: "absolute", bottom: 0, left: "50%", transform: "translateX(-50%)",
-          width: sw * 0.68, height: sw * 0.11,
-          background: `radial-gradient(ellipse, ${color}60 0%, transparent 70%)`,
-          borderRadius: "50%",
-          animation: "glowPulse 2s ease-in-out infinite",
-        }} />
-      )}
-      {/* Blocked indicator */}
-      {isBlocked && (
-        <div style={{
-          position: "absolute", top: -(clamp(20 / zoom, 14, 26)), right: 0,
-          fontSize: clamp(14 / zoom, 10, 18), pointerEvents: "none",
-          animation: "celebBounce 0.8s ease infinite alternate",
-        }}>⛔</div>
-      )}
-      {/* Speech bubble */}
-      {task && (isActive || isDone || isBlocked) && (
-        <div style={{ position: "absolute", bottom: sw + 6, left: "50%", transform: "translateX(-50%)", whiteSpace: "nowrap", pointerEvents: "none" }}>
-          <div style={{
-            background: "rgba(4,8,20,0.96)", border: `1.5px solid ${isBlocked ? "#ef4444" : color}`,
-            color: isBlocked ? "#ef4444" : color,
-            padding: `${clamp(4 / zoom, 3, 7)}px ${clamp(10 / zoom, 7, 15)}px`,
-            borderRadius: clamp(20 / zoom, 10, 24),
-            fontSize: clamp(10 / zoom, 8, 13),
-            fontFamily: "JetBrains Mono,monospace", fontWeight: 600,
-            boxShadow: `0 2px 14px ${color}44`, lineHeight: 1.3,
-          }}>
-            {isBlocked ? "⚠ Blocked" : (task.length > 28 ? task.slice(0, 28) + "…" : task)}
-          </div>
-          <div style={{ display: "flex", justifyContent: "center", marginTop: -1 }}>
-            <div style={{ width: 0, height: 0,
-              borderLeft: `${clamp(4 / zoom, 3, 6)}px solid transparent`,
-              borderRight: `${clamp(4 / zoom, 3, 6)}px solid transparent`,
-              borderTop: `${clamp(5 / zoom, 4, 7)}px solid ${isBlocked ? "#ef4444" : color}`,
-            }} />
-          </div>
-        </div>
-      )}
-      {/* Sprite image */}
-      <img src={spriteImg} alt={agent.name}
-        style={{ width: "100%", display: "block", userSelect: "none" }} draggable={false} />
-      {/* Name label */}
-      <div style={{
-        position: "absolute",
-        bottom: -(labelSize * 2.8),
-        left: "50%", transform: "translateX(-50%)",
-        whiteSpace: "nowrap",
-        display: "flex", alignItems: "center",
-        gap: clamp(4 / zoom, 3, 6),
-        padding: `${clamp(4 / zoom, 3, 7)}px ${clamp(10 / zoom, 8, 15)}px`,
-        background: "rgba(4,8,20,0.95)",
-        border: `1.5px solid ${isBlocked ? "#ef4444" : isActive ? color : color + "99"}`,
-        borderRadius: clamp(20 / zoom, 10, 24),
-        boxShadow: "0 2px 12px rgba(0,0,0,0.85)",
-        pointerEvents: "none",
-      }}>
-        <div style={{
-          width: clamp(7 / zoom, 5, 9), height: clamp(7 / zoom, 5, 9),
-          borderRadius: "50%", flexShrink: 0,
-          background: isIdle ? "#475569" : isDone ? "#10b981" : isBlocked ? "#ef4444" : color,
-          boxShadow: isActive ? `0 0 ${clamp(5 / zoom, 4, 8)}px ${color}` : "none",
-          transition: "all 0.3s",
-        }} />
-        <span style={{
-          fontSize: labelSize, color: "#ffffff",
-          fontFamily: "Inter,sans-serif", fontWeight: 700, lineHeight: 1,
-          textShadow: "0 1px 4px rgba(0,0,0,1)",
-        }}>
-          {agent.name}
-        </span>
-      </div>
-      {/* Done emoji */}
-      {isDone && (
-        <div style={{
-          position: "absolute", right: 0, top: -(clamp(26 / zoom, 18, 32)),
-          fontSize: clamp(16 / zoom, 10, 20), pointerEvents: "none",
-          animation: "celebBounce 0.6s ease infinite alternate",
-        }}>🎉</div>
-      )}
-    </div>
+      <defs>
+        <linearGradient id="leftWallG" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"   stopColor="#8e949e"/>
+          <stop offset="100%" stopColor="#b8bec8"/>
+        </linearGradient>
+        <linearGradient id="rightWallG" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"   stopColor="#c8cdd5"/>
+          <stop offset="100%" stopColor="#a8adb8"/>
+        </linearGradient>
+        <linearGradient id="ceilG" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor="#22283a"/>
+          <stop offset="100%" stopColor="#161c2c"/>
+        </linearGradient>
+        <filter id="softShadow">
+          <feDropShadow dx="0" dy="3" stdDeviation="5" floodOpacity="0.35"/>
+        </filter>
+      </defs>
+
+      {/* ── Background / ceiling above walls ── */}
+      <rect x={0} y={0} width={WORLD_W} height={ORIGIN_Y + 20} fill="#161c2c"/>
+
+      {/* ── Left wall ── */}
+      <polygon points={pts(leftWall)} fill="url(#leftWallG)"/>
+      {leftWindowEls}
+      {/* Left-wall baseboard */}
+      <polygon
+        points={`${fx0},${fy0} ${fx3},${fy3} ${fx3},${fy3+10} ${fx0},${fy0+10}`}
+        fill="#e8e4dc" opacity="0.6"/>
+
+      {/* ── Right wall ── */}
+      <polygon points={pts(rightWall)} fill="url(#rightWallG)"/>
+      {rightWindowEls}
+      {/* Right-wall baseboard */}
+      <polygon
+        points={`${fx0},${fy0} ${fx1},${fy1} ${fx1},${fy1+10} ${fx0},${fy0+10}`}
+        fill="#e8e4dc" opacity="0.5"/>
+
+      {/* ── Big screen on back wall ── */}
+      {screenEl}
+
+      {/* ── Ceiling spotlights ── */}
+      {spotlights}
+
+      {/* ── Floor tiles ── */}
+      {floorTiles}
+
+      {/* ── Zone carpet fills ── */}
+      {zoneAreas}
+
+      {/* ── Lounge area ── */}
+      {loungeEl}
+
+      {/* ── Plants ── */}
+      {plants}
+
+      {/* ── Zone dashed outlines ── */}
+      {zoneOutlines}
+
+      {/* ── Zone labels ── */}
+      {zoneLabels}
+
+      {/* ── Future expansion ── */}
+      {expansionEl}
+
+      {/* ── Hot desk empty placeholders ── */}
+      {hotZone && hotDesks()}
+    </svg>
   );
+
+  function hotDesks() {
+    // Empty desks in hot-desk zone (shown as dashed circles with +)
+    const hz = ZONES.find(z => z.id === "hotdesk")!;
+    return hz.desks.map((d, i) => {
+      const [dx, dy] = iso(hz.col + d[0], hz.row + d[1]);
+      const occupied = i < 2; // first 2 slots occupied by real agents at runtime
+      if (occupied) return null;
+      return (
+        <g key={`hd-empty-${i}`}>
+          <ellipse cx={dx} cy={dy-8} rx={28} ry={12}
+            fill="rgba(100,116,139,0.12)"
+            stroke="#475569" strokeWidth="1.5" strokeDasharray="6 4"/>
+          <text x={dx} y={dy-3} textAnchor="middle"
+            fill="#64748b" fontSize="16" fontFamily="Inter,sans-serif" opacity="0.8">+</text>
+        </g>
+      );
+    }).filter(Boolean);
+  }
 }
 
-// ─── Delegation arcs ───────────────────────────────────────────────────────────
-function DelegationArcs({ agents, uvPositions, spriteSize }: {
-  agents: Agent[]; uvPositions: [number, number][]; spriteSize: number;
-}) {
-  const mUV = uvPositions[0];
-  if (!mUV) return null;
-  const [mx, my] = floorPoint(mUV[0], mUV[1]);
-  const mcy = my - spriteSize / 2;
-  const activeAgents = agents.slice(1).filter(a => a.status === "working" || a.status === "thinking");
+// ─── Delegation / communication arcs ─────────────────────────────────────────
+function CommArcs({ agents }: { agents: Agent[] }) {
+  const mgr = agents.find(a => a.spriteType === "manager");
+  if (!mgr) return null;
+  const mPos = getAgentDeskPos(mgr);
+  if (!mPos) return null;
+
+  const active = agents.filter(a =>
+    a.spriteType !== "manager" &&
+    (a.status === "working" || a.status === "thinking")
+  );
+
   return (
-    <svg style={{ position: "absolute", top: 0, left: 0, width: WORLD_W, height: WORLD_H,
-      pointerEvents: "none", zIndex: 5 }} overflow="visible">
-      {activeAgents.map(a => {
-        const aIdx = agents.indexOf(a);
-        const aUV  = uvPositions[aIdx];
-        if (!aUV) return null;
-        const [ax, ay] = floorPoint(aUV[0], aUV[1]);
-        const acy = ay - spriteSize / 2;
-        const dx = ax - mx, dy = acy - mcy;
-        const cx = mx + dx * 0.5, cy = mcy + dy * 0.5 - 120;
+    <svg style={{ position:"absolute", top:0, left:0, width:WORLD_W, height:WORLD_H,
+      pointerEvents:"none", zIndex:10 }} overflow="visible">
+      {active.map(a => {
+        const aPos = getAgentDeskPos(a);
+        if (!aPos) return null;
+        const [mx, my] = mPos, [ax, ay] = aPos;
+        const cy = (my + ay) / 2 - 80;
         return (
           <g key={a.id}>
-            <path d={`M ${mx} ${mcy} Q ${cx} ${cy} ${ax} ${acy}`}
-              fill="none" stroke={a.color} strokeWidth="2.5" strokeDasharray="12 8"
-              opacity="0.55"
-              style={{ animation: "dashFlow 1.5s linear infinite" }} />
-            <circle cx={ax} cy={acy} r={8} fill={a.color} opacity={0.25}
-              style={{ animation: "glowPulse 2s ease-in-out infinite" }} />
+            <path
+              d={`M ${mx} ${my-40} Q ${(mx+ax)/2} ${cy} ${ax} ${ay-40}`}
+              fill="none" stroke={a.color} strokeWidth="2"
+              strokeDasharray="8 5" opacity="0.55"
+              style={{ animation:"dashFlow 2s linear infinite" }}
+            />
           </g>
         );
       })}
@@ -411,297 +617,407 @@ function DelegationArcs({ agents, uvPositions, spriteSize }: {
   );
 }
 
-// ─── Zoom controls (bottom-left overlay) ──────────────────────────────────────
-function ZoomControls({ onIn, onOut, onReset, zoom }: { onIn: () => void; onOut: () => void; onReset: () => void; zoom: number }) {
+// ─── Minimap ──────────────────────────────────────────────────────────────────
+function MiniMap({ pan, zoom, vpW, vpH, agents }: {
+  pan:[number,number]; zoom:number; vpW:number; vpH:number; agents:Agent[];
+}) {
+  const W=130, H=100;
+  const sx = W/WORLD_W, sy = H/WORLD_H;
+  const [fx0,fy0]=iso(0,0);   const [fx1,fy1]=iso(COLS,0);
+  const [fx2,fy2]=iso(COLS,ROWS); const [fx3,fy3]=iso(0,ROWS);
+  const floorPts = [[fx0,fy0],[fx1,fy1],[fx2,fy2],[fx3,fy3]]
+    .map(([x,y])=>`${x*sx},${y*sy}`).join(" ");
+  const vpL=clamp((-pan[0]/zoom)*sx,0,W), vpT=clamp((-pan[1]/zoom)*sy,0,H);
+  const vpW2=clamp((vpW/zoom)*sx,2,W), vpH2=clamp((vpH/zoom)*sy,2,H);
+
   return (
-    <div className="absolute bottom-3 left-3 flex flex-col gap-1" style={{ zIndex: 50 }}>
-      {[
-        { label: "+", action: onIn,    tip: "Zoom in"    },
-        { label: "⌂", action: onReset, tip: "Reset view" },
-        { label: "−", action: onOut,   tip: "Zoom out"   },
-      ].map(b => (
-        <button key={b.label} onClick={b.action} title={b.tip} style={{
-          width: 32, height: 32, borderRadius: 8,
-          background: "rgba(6,10,20,0.93)", border: "1px solid #1e3050",
-          color: "#94a3b8", fontSize: 16, fontWeight: 700, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}
-          onMouseEnter={e => (e.currentTarget.style.borderColor = "#6366f1")}
-          onMouseLeave={e => (e.currentTarget.style.borderColor = "#1e3050")}
-        >{b.label}</button>
-      ))}
-      <div style={{ textAlign: "center", marginTop: 1, fontSize: 9, color: "#475569", fontFamily: "JetBrains Mono,monospace" }}>
-        {Math.round(zoom * 100)}%
+    <div className="absolute bottom-3 right-3 rounded-xl overflow-hidden pointer-events-none"
+      style={{ width:W,height:H,zIndex:50,border:"1px solid #1e3050",
+        background:"rgba(6,10,20,0.93)",boxShadow:"0 4px 20px rgba(0,0,0,0.6)" }}>
+      <svg width={W} height={H}>
+        <polygon points={floorPts} fill="#b86828" opacity="0.3" stroke="#c87030" strokeWidth="1"/>
+        {ZONES.map(z => {
+          const [zx,zy]=iso(z.col+z.w/2, z.row+z.d/2);
+          return <circle key={z.id} cx={zx*sx} cy={zy*sy} r={3}
+            fill={z.color} opacity="0.5"/>;
+        })}
+        {agents.map(a => {
+          const pos = getAgentDeskPos(a);
+          if (!pos) return null;
+          return <circle key={a.id} cx={pos[0]*sx} cy={pos[1]*sy} r={3.5}
+            fill={a.status==="idle"?"#334155":a.color}
+            stroke={a.color} strokeWidth="1"/>;
+        })}
+        <rect x={vpL} y={vpT} width={vpW2} height={vpH2}
+          fill="rgba(99,102,241,0.10)" stroke="#6366f1" strokeWidth="1.5" rx="2"/>
+      </svg>
+      <div style={{ position:"absolute",bottom:3,left:5,fontSize:7,color:"#475569",
+        fontFamily:"Inter",letterSpacing:"0.06em",textTransform:"uppercase" }}>map</div>
+    </div>
+  );
+}
+
+// ─── Agent sprite ─────────────────────────────────────────────────────────────
+const SPRITE_PX = 160; // world px
+
+function AgentSprite({ agent, zoom }: { agent: Agent; zoom: number }) {
+  const pos = getAgentDeskPos(agent);
+  if (!pos) return null;
+  const [wx, wy] = pos;
+
+  const isActive  = agent.status === "working" || agent.status === "thinking";
+  const isDone    = agent.status === "done";
+  const isIdle    = agent.status === "idle";
+  const isBlocked = agent.status === "blocked";
+  const color     = agent.color;
+  const task      = agent.currentTask;
+
+  const labelSz = Math.round(clamp(12/zoom, 9, 15));
+  const img = SPRITE_MAP[agent.spriteType] ?? SPRITE_MAP["manager"];
+
+  const filterStyle = isIdle
+    ? "grayscale(40%) brightness(0.7)"
+    : isBlocked
+    ? "grayscale(20%) sepia(0.4) hue-rotate(310deg) brightness(0.75)"
+    : isActive
+    ? `drop-shadow(0 0 ${10/zoom}px ${color}aa)`
+    : "none";
+
+  return (
+    <div style={{
+      position:"absolute",
+      left: wx - SPRITE_PX/2,
+      top:  wy - SPRITE_PX,
+      width: SPRITE_PX,
+      zIndex: Math.round(wy + 500),
+      filter: filterStyle,
+      transition:"filter 0.4s",
+    }}>
+      {/* Floor shadow */}
+      <div style={{
+        position:"absolute", bottom:0, left:"50%", transform:"translateX(-50%)",
+        width:SPRITE_PX*0.55, height:SPRITE_PX*0.07,
+        background:"radial-gradient(ellipse,rgba(0,0,0,0.55) 0%,transparent 70%)",
+        borderRadius:"50%",
+      }}/>
+
+      {/* Active glow ring */}
+      {isActive && (
+        <div style={{
+          position:"absolute", bottom:0, left:"50%", transform:"translateX(-50%)",
+          width:SPRITE_PX*0.7, height:SPRITE_PX*0.10,
+          background:`radial-gradient(ellipse,${color}55 0%,transparent 70%)`,
+          borderRadius:"50%", animation:"glowPulse 2s ease-in-out infinite",
+        }}/>
+      )}
+
+      {/* Blocked badge */}
+      {isBlocked && (
+        <div style={{
+          position:"absolute", top:-(clamp(22/zoom,14,28)), right:0,
+          fontSize:clamp(14/zoom,10,18), animation:"bounce 0.8s infinite alternate",
+        }}>⛔</div>
+      )}
+
+      {/* Speech bubble */}
+      {task && (isActive || isDone || isBlocked) && (
+        <div style={{
+          position:"absolute", bottom:SPRITE_PX+4,
+          left:"50%", transform:"translateX(-50%)",
+          whiteSpace:"nowrap", pointerEvents:"none",
+        }}>
+          <div style={{
+            background:"rgba(4,8,20,0.96)",
+            border:`1.5px solid ${isBlocked?"#ef4444":color}`,
+            color:isBlocked?"#ef4444":color,
+            padding:`${clamp(4/zoom,3,7)}px ${clamp(10/zoom,7,14)}px`,
+            borderRadius:clamp(18/zoom,10,22),
+            fontSize:clamp(10/zoom,8,13),
+            fontFamily:"JetBrains Mono,monospace", fontWeight:600,
+            boxShadow:`0 2px 12px ${color}44`,
+          }}>
+            {isBlocked?"⚠ Blocked":(task.length>26?task.slice(0,26)+"…":task)}
+          </div>
+          <div style={{display:"flex",justifyContent:"center",marginTop:-1}}>
+            <div style={{width:0,height:0,
+              borderLeft:`${clamp(4/zoom,3,6)}px solid transparent`,
+              borderRight:`${clamp(4/zoom,3,6)}px solid transparent`,
+              borderTop:`${clamp(5/zoom,4,7)}px solid ${isBlocked?"#ef4444":color}`,
+            }}/>
+          </div>
+        </div>
+      )}
+
+      {/* Sprite */}
+      <img src={img} alt={agent.name}
+        style={{width:"100%",display:"block",userSelect:"none"}} draggable={false}/>
+
+      {/* Name label */}
+      <div style={{
+        position:"absolute",
+        bottom:-(labelSz*2.8),
+        left:"50%", transform:"translateX(-50%)",
+        whiteSpace:"nowrap",
+        display:"flex", alignItems:"center",
+        gap:clamp(4/zoom,3,5),
+        padding:`${clamp(4/zoom,3,6)}px ${clamp(9/zoom,7,13)}px`,
+        background:"rgba(4,8,20,0.95)",
+        border:`1.5px solid ${isBlocked?"#ef4444":isActive?color:color+"99"}`,
+        borderRadius:clamp(18/zoom,10,22),
+        boxShadow:"0 2px 10px rgba(0,0,0,0.85)",
+        pointerEvents:"none",
+      }}>
+        <div style={{
+          width:clamp(7/zoom,5,8), height:clamp(7/zoom,5,8),
+          borderRadius:"50%", flexShrink:0,
+          background:isIdle?"#475569":isDone?"#10b981":isBlocked?"#ef4444":color,
+          boxShadow:isActive?`0 0 ${clamp(5/zoom,4,7)}px ${color}`:"none",
+          transition:"all 0.3s",
+        }}/>
+        <span style={{
+          fontSize:labelSz, color:"#fff",
+          fontFamily:"Inter,sans-serif", fontWeight:700, lineHeight:1,
+          textShadow:"0 1px 4px rgba(0,0,0,1)",
+        }}>{agent.name}</span>
       </div>
+
+      {isDone && (
+        <div style={{
+          position:"absolute", right:0, top:-(clamp(26/zoom,18,32)),
+          fontSize:clamp(16/zoom,10,20), animation:"bounce 0.6s infinite alternate",
+        }}>🎉</div>
+      )}
+    </div>
+  );
+}
+
+// ─── Zoom controls ─────────────────────────────────────────────────────────────
+function ZoomControls({ onIn,onOut,onReset,zoom }: {
+  onIn:()=>void; onOut:()=>void; onReset:()=>void; zoom:number;
+}) {
+  return (
+    <div className="absolute bottom-3 left-3 flex flex-col gap-1" style={{zIndex:50}}>
+      {[{l:"+",fn:onIn,tip:"Zoom in"},{l:"⌂",fn:onReset,tip:"Reset"},{l:"−",fn:onOut,tip:"Zoom out"}]
+        .map(b=>(
+          <button key={b.l} onClick={b.fn} title={b.tip} style={{
+            width:32,height:32,borderRadius:8,
+            background:"rgba(6,10,20,0.93)",border:"1px solid #1e3050",
+            color:"#94a3b8",fontSize:16,fontWeight:700,cursor:"pointer",
+            display:"flex",alignItems:"center",justifyContent:"center",
+          }}
+            onMouseEnter={e=>(e.currentTarget.style.borderColor="#6366f1")}
+            onMouseLeave={e=>(e.currentTarget.style.borderColor="#1e3050")}
+          >{b.l}</button>
+        ))}
+      <div style={{textAlign:"center",marginTop:1,fontSize:9,color:"#475569",fontFamily:"monospace"}}>
+        {Math.round(zoom*100)}%
+      </div>
+    </div>
+  );
+}
+
+// ─── Main export ──────────────────────────────────────────────────────────────
+export default function IsometricOffice({ agents, project }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [vpDims, setVpDims] = useState({ w:1200, h:700 });
+  const [pan,  setPan]      = useState<[number,number]>([0,0]);
+  const [zoom, setZoom]     = useState(0.38);
+  const initDone            = useRef(false);
+
+  const dragRef    = useRef<{sx:number;sy:number;sp:[number,number]}|null>(null);
+  const isDragging = useRef(false);
+  const touchRef   = useRef<{sx:number;sy:number;sp:[number,number];d0?:number;z0?:number}|null>(null);
+
+  const clampPan = useCallback((px:number,py:number,z:number):[number,number]=>{
+    const pad=150;
+    return [
+      clamp(px,-(WORLD_W*z-pad),vpDims.w-pad),
+      clamp(py,-(WORLD_H*z-pad),vpDims.h-pad),
+    ];
+  },[vpDims]);
+
+  useEffect(()=>{
+    const obs = new ResizeObserver(entries=>{
+      const e=entries[0]; if(!e) return;
+      const w=e.contentRect.width, h=e.contentRect.height;
+      setVpDims({w,h});
+      if(!initDone.current){
+        initDone.current=true;
+        // Floor width in world px: right corner x - left corner x
+        const [floorRx]=iso(COLS,0); const [floorLx]=iso(0,ROWS);
+        const floorW = floorRx - floorLx;
+        const fz = clamp(w*0.88/floorW, ZOOM_MIN, ZOOM_MAX);
+        // Centre on floor mid-point
+        const [fcx,fcy]=iso(COLS/2,ROWS/2);
+        setPan([w/2-fcx*fz, h/2-fcy*fz]);
+        setZoom(fz);
+      }
+    });
+    if(containerRef.current) obs.observe(containerRef.current);
+    return ()=>obs.disconnect();
+  },[]);
+
+  const onMouseDown = useCallback((e:React.MouseEvent)=>{
+    if(e.button!==0) return;
+    isDragging.current=false;
+    dragRef.current={sx:e.clientX,sy:e.clientY,sp:pan};
+    e.preventDefault();
+  },[pan]);
+
+  const onMouseMove = useCallback((e:React.MouseEvent)=>{
+    if(!dragRef.current) return;
+    const dx=e.clientX-dragRef.current.sx, dy=e.clientY-dragRef.current.sy;
+    if(Math.abs(dx)>3||Math.abs(dy)>3) isDragging.current=true;
+    if(!isDragging.current) return;
+    setPan(clampPan(dragRef.current.sp[0]+dx, dragRef.current.sp[1]+dy, zoom));
+  },[zoom,clampPan]);
+
+  const onMouseUp = useCallback(()=>{ dragRef.current=null; },[]);
+
+  const onTouchStart = useCallback((e:React.TouchEvent)=>{
+    if(e.touches.length===1)
+      touchRef.current={sx:e.touches[0].clientX,sy:e.touches[0].clientY,sp:pan};
+    else if(e.touches.length===2){
+      const d=Math.hypot(e.touches[1].clientX-e.touches[0].clientX,e.touches[1].clientY-e.touches[0].clientY);
+      touchRef.current={sx:0,sy:0,sp:pan,d0:d,z0:zoom};
+    }
+  },[pan,zoom]);
+
+  const onTouchMove = useCallback((e:React.TouchEvent)=>{
+    e.preventDefault();
+    if(!touchRef.current) return;
+    if(e.touches.length===1&&!touchRef.current.d0)
+      setPan(clampPan(touchRef.current.sp[0]+(e.touches[0].clientX-touchRef.current.sx),
+        touchRef.current.sp[1]+(e.touches[0].clientY-touchRef.current.sy),zoom));
+    else if(e.touches.length===2&&touchRef.current.d0){
+      const d=Math.hypot(e.touches[1].clientX-e.touches[0].clientX,e.touches[1].clientY-e.touches[0].clientY);
+      setZoom(clamp((touchRef.current.z0??zoom)*(d/touchRef.current.d0),ZOOM_MIN,ZOOM_MAX));
+    }
+  },[zoom,clampPan]);
+
+  const onTouchEnd = useCallback(()=>{ touchRef.current=null; },[]);
+
+  const onWheel = useCallback((e:React.WheelEvent)=>{
+    e.preventDefault();
+    const delta=e.deltaY>0?-ZOOM_STEP:ZOOM_STEP;
+    setZoom(z=>{
+      const nz=clamp(z+delta,ZOOM_MIN,ZOOM_MAX);
+      const rect=containerRef.current?.getBoundingClientRect();
+      if(rect){
+        const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+        setPan(([px,py])=>{
+          const wx=(mx-px)/z, wy=(my-py)/z;
+          return clampPan(mx-wx*nz, my-wy*nz, nz);
+        });
+      }
+      return nz;
+    });
+  },[clampPan]);
+
+  const handleReset = useCallback(()=>{
+    const [floorRx]=iso(COLS,0); const [floorLx]=iso(0,ROWS);
+    const floorW=floorRx-floorLx;
+    const fz=clamp(vpDims.w*0.88/floorW,ZOOM_MIN,ZOOM_MAX);
+    const [fcx,fcy]=iso(COLS/2,ROWS/2);
+    setPan([vpDims.w/2-fcx*fz,vpDims.h/2-fcy*fz]);
+    setZoom(fz);
+  },[vpDims]);
+
+  // Active project banner
+  const hasProject = !!project;
+
+  return (
+    <div ref={containerRef} className="w-full h-full relative overflow-hidden"
+      style={{background:"#060c16",cursor:dragRef.current?"grabbing":"grab",userSelect:"none"}}
+      onMouseDown={onMouseDown} onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
+      onWheel={onWheel}
+      onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+    >
+      <style>{`
+        @keyframes glowPulse{0%,100%{opacity:.4;transform:translateX(-50%) scaleX(1)}50%{opacity:.9;transform:translateX(-50%) scaleX(1.45)}}
+        @keyframes bounce{from{transform:translateY(0)}to{transform:translateY(-7px)}}
+        @keyframes dashFlow{to{stroke-dashoffset:-40}}
+        @keyframes fadeOut{from{opacity:1}to{opacity:0}}
+      `}</style>
+
+      {/* ═══ Pannable world ══════════════════════════════════════════════════ */}
+      <div style={{
+        position:"absolute", left:pan[0], top:pan[1],
+        width:WORLD_W, height:WORLD_H,
+        transformOrigin:"0 0", transform:`scale(${zoom})`, willChange:"transform",
+      }}>
+        {/* SVG room: floor, walls, zones, windows, lights, plants */}
+        <OfficeRoom/>
+
+        {/* Communication arcs */}
+        <CommArcs agents={agents}/>
+
+        {/* Agent sprites — sorted by Y for correct depth */}
+        {[...agents]
+          .sort((a,b)=>{
+            const pa=getAgentDeskPos(a); const pb=getAgentDeskPos(b);
+            return (pa?.[1]??0)-(pb?.[1]??0);
+          })
+          .map(agent=>(
+            <AgentSprite key={agent.id} agent={agent} zoom={zoom}/>
+          ))
+        }
+      </div>
+
+      {/* ═══ Fixed HUD ════════════════════════════════════════════════════════ */}
+      <MiniMap pan={pan} zoom={zoom} vpW={vpDims.w} vpH={vpDims.h} agents={agents}/>
+      <ZoomControls onIn={()=>{
+        const nz=clamp(zoom+ZOOM_STEP*2,ZOOM_MIN,ZOOM_MAX);
+        setPan(([px,py])=>{const cx=vpDims.w/2,cy=vpDims.h/2;return clampPan(cx-(cx-px)/zoom*nz,cy-(cy-py)/zoom*nz,nz);});
+        setZoom(nz);
+      }} onOut={()=>{
+        const nz=clamp(zoom-ZOOM_STEP*2,ZOOM_MIN,ZOOM_MAX);
+        setPan(([px,py])=>{const cx=vpDims.w/2,cy=vpDims.h/2;return clampPan(cx-(cx-px)/zoom*nz,cy-(cy-py)/zoom*nz,nz);});
+        setZoom(nz);
+      }} onReset={handleReset} zoom={zoom}/>
+
+      {/* Project banner */}
+      {hasProject && (
+        <div className="absolute pointer-events-none"
+          style={{bottom:42,left:3,zIndex:50}}>
+          <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl"
+            style={{background:"rgba(6,10,20,0.93)",border:"1px solid #1e3050",maxWidth:260}}>
+            <div className="relative flex-shrink-0">
+              <div className="w-2 h-2 rounded-full bg-emerald-400"/>
+              <div className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-60"/>
+            </div>
+            <div>
+              <div style={{fontSize:8,color:"#64748b",textTransform:"uppercase",
+                letterSpacing:"0.08em",fontFamily:"Inter"}}>Active Project</div>
+              <div style={{fontSize:11,color:"white",fontWeight:600,fontFamily:"Inter"}}>
+                {project!.name.length>28?project!.name.slice(0,28)+"…":project!.name}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Drag hint */}
+      <DragHint/>
     </div>
   );
 }
 
 function DragHint() {
-  const [show, setShow] = useState(true);
-  useEffect(() => { const t = setTimeout(() => setShow(false), 5000); return () => clearTimeout(t); }, []);
-  if (!show) return null;
+  const [show,setShow]=useState(true);
+  useEffect(()=>{const t=setTimeout(()=>setShow(false),5000);return()=>clearTimeout(t);},[]);
+  if(!show) return null;
   return (
     <div className="absolute pointer-events-none" style={{
-      bottom: 50, left: "50%", transform: "translateX(-50%)",
-      zIndex: 60, background: "rgba(6,10,20,0.90)", border: "1px solid #1e3050",
-      borderRadius: 12, padding: "8px 18px",
-      fontSize: 11, color: "#94a3b8", fontFamily: "Inter",
-      display: "flex", alignItems: "center", gap: 8,
-      animation: "fadeOut 0.5s ease 4.5s forwards",
+      bottom:50,left:"50%",transform:"translateX(-50%)",zIndex:60,
+      background:"rgba(6,10,20,0.90)",border:"1px solid #1e3050",
+      borderRadius:12,padding:"8px 18px",fontSize:11,color:"#94a3b8",
+      fontFamily:"Inter",display:"flex",alignItems:"center",gap:8,
+      animation:"fadeOut 0.5s ease 4.5s forwards",
     }}>
-      <span style={{ fontSize: 16 }}>✋</span>
-      Drag to pan · Scroll or pinch to zoom
-    </div>
-  );
-}
-
-// ─── Main component ────────────────────────────────────────────────────────────
-export default function IsometricOffice({ agents, project }: Props) {
-  const containerRef  = useRef<HTMLDivElement>(null);
-  const [vpDims, setVpDims]       = useState({ w: 1200, h: 700 });
-  const [pan, setPan]             = useState<[number, number]>([0, 0]);
-  const [zoom, setZoom]           = useState(0.30);
-  const [sparkData, setSparkData] = useState<number[]>([0, 0, 0, 0, 0]);
-  const initialFitDone            = useRef(false);
-
-  const dragRef    = useRef<{ sx: number; sy: number; sp: [number, number] } | null>(null);
-  const isDragging = useRef(false);
-
-  const uvPositions = computePositions(agents.length);
-
-  const clampPan = useCallback((px: number, py: number, z: number): [number, number] => {
-    const pad = 200;
-    return [
-      clamp(px, -(WORLD_W * z - pad), vpDims.w - pad),
-      clamp(py, -(WORLD_H * z - pad), vpDims.h - pad),
-    ];
-  }, [vpDims]);
-
-  const getInitialFit = useCallback((w: number, h: number): { zoom: number; pan: [number, number] } => {
-    // Zoom so the floor diamond width fills ~88% of viewport width
-    const floorWidth = FLOOR_RIGHT[0] - FLOOR_LEFT[0];
-    const fz = clamp((w * 0.88) / floorWidth, ZOOM_MIN, ZOOM_MAX);
-    // Centre on the floor's midpoint
-    const [fcx, fcy] = floorPoint(0.5, 0.45);
-    return {
-      zoom: fz,
-      pan:  [w / 2 - fcx * fz, h / 2 - fcy * fz],
-    };
-  }, []);
-
-  useEffect(() => {
-    const obs = new ResizeObserver(entries => {
-      const e = entries[0]; if (!e) return;
-      const w = e.contentRect.width, h = e.contentRect.height;
-      setVpDims({ w, h });
-      if (!initialFitDone.current) {
-        initialFitDone.current = true;
-        const { zoom: fz, pan: fp } = getInitialFit(w, h);
-        setZoom(fz);
-        setPan(fp);
-      }
-    });
-    if (containerRef.current) obs.observe(containerRef.current);
-    return () => obs.disconnect();
-  }, [getInitialFit]);
-
-  useEffect(() => {
-    if (project?.progress !== undefined)
-      setSparkData(d => [...d.slice(-9), project.progress]);
-  }, [project?.progress]);
-
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    isDragging.current = false;
-    dragRef.current = { sx: e.clientX, sy: e.clientY, sp: pan };
-    e.preventDefault();
-  }, [pan]);
-
-  const onMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!dragRef.current) return;
-    const dx = e.clientX - dragRef.current.sx, dy = e.clientY - dragRef.current.sy;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) isDragging.current = true;
-    if (!isDragging.current) return;
-    setPan(clampPan(dragRef.current.sp[0] + dx, dragRef.current.sp[1] + dy, zoom));
-  }, [zoom, clampPan]);
-
-  const onMouseUp = useCallback(() => { dragRef.current = null; }, []);
-
-  const touchRef = useRef<{ sx: number; sy: number; sp: [number, number]; d0?: number; z0?: number } | null>(null);
-  const onTouchStart = useCallback((e: React.TouchEvent) => {
-    if (e.touches.length === 1) touchRef.current = { sx: e.touches[0].clientX, sy: e.touches[0].clientY, sp: pan };
-    else if (e.touches.length === 2) {
-      const d = Math.hypot(e.touches[1].clientX - e.touches[0].clientX, e.touches[1].clientY - e.touches[0].clientY);
-      touchRef.current = { sx: 0, sy: 0, sp: pan, d0: d, z0: zoom };
-    }
-  }, [pan, zoom]);
-
-  const onTouchMove = useCallback((e: React.TouchEvent) => {
-    e.preventDefault();
-    if (!touchRef.current) return;
-    if (e.touches.length === 1 && !touchRef.current.d0) {
-      setPan(clampPan(touchRef.current.sp[0] + (e.touches[0].clientX - touchRef.current.sx),
-        touchRef.current.sp[1] + (e.touches[0].clientY - touchRef.current.sy), zoom));
-    } else if (e.touches.length === 2 && touchRef.current.d0) {
-      const d = Math.hypot(e.touches[1].clientX - e.touches[0].clientX, e.touches[1].clientY - e.touches[0].clientY);
-      setZoom(clamp((touchRef.current.z0 ?? zoom) * (d / touchRef.current.d0), ZOOM_MIN, ZOOM_MAX));
-    }
-  }, [zoom, clampPan]);
-
-  const onTouchEnd = useCallback(() => { touchRef.current = null; }, []);
-
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
-    setZoom(z => {
-      const nz = clamp(z + delta, ZOOM_MIN, ZOOM_MAX);
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (rect) {
-        const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-        setPan(([px, py]) => {
-          const wx = (mx - px) / z, wy = (my - py) / z;
-          return clampPan(mx - wx * nz, my - wy * nz, nz);
-        });
-      }
-      return nz;
-    });
-  }, [clampPan]);
-
-  const handleReset = useCallback(() => {
-    const { zoom: fz, pan: fp } = getInitialFit(vpDims.w, vpDims.h);
-    setZoom(fz);
-    setPan(fp);
-  }, [vpDims, getInitialFit]);
-
-  return (
-    <div
-      ref={containerRef}
-      className="w-full h-full relative overflow-hidden"
-      style={{ background: "#060c16", cursor: "grab", userSelect: "none" }}
-      onMouseDown={onMouseDown}
-      onMouseMove={onMouseMove}
-      onMouseUp={onMouseUp}
-      onMouseLeave={onMouseUp}
-      onWheel={onWheel}
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
-    >
-      <style>{`
-        @keyframes glowPulse {
-          0%,100% { opacity:0.4; transform:translateX(-50%) scaleX(1); }
-          50%      { opacity:0.9; transform:translateX(-50%) scaleX(1.45); }
-        }
-        @keyframes celebBounce {
-          from { transform:translateY(0); }
-          to   { transform:translateY(-8px); }
-        }
-        @keyframes fadeOut {
-          from { opacity:1; }
-          to   { opacity:0; }
-        }
-        @keyframes dashFlow {
-          to { stroke-dashoffset: -40; }
-        }
-      `}</style>
-
-      {/* ═══ Pannable world ══════════════════════════════════════════════════ */}
-      <div style={{
-        position: "absolute", left: pan[0], top: pan[1],
-        width: WORLD_W, height: WORLD_H,
-        transformOrigin: "0 0", transform: `scale(${zoom})`, willChange: "transform",
-      }}>
-
-        {/* ── SINGLE background PNG — fixed size, no tiling ── */}
-        <img
-          src={bgImg}
-          alt="office"
-          draggable={false}
-          style={{
-            position: "absolute",
-            left: BG_X,
-            top:  BG_Y,
-            width:  BG_PX,
-            height: BG_PX,
-            userSelect: "none",
-            imageRendering: "auto",
-          }}
-        />
-
-        {/* ── Delegation arcs ── */}
-        <DelegationArcs agents={agents} uvPositions={uvPositions} spriteSize={SPRITE_SIZE} />
-
-        {/* ── Agent sprites (on top of PNG) ── */}
-        {agents.map((agent, i) => {
-          const uv = uvPositions[i];
-          if (!uv) return null;
-          const [wx, wy] = floorPoint(uv[0], uv[1]);
-          return (
-            <AgentSprite
-              key={agent.id}
-              agent={agent}
-              wx={wx} wy={wy}
-              spriteSize={SPRITE_SIZE}
-              zoom={zoom}
-            />
-          );
-        })}
-      </div>
-
-      {/* ═══ Fixed HUD overlays ══════════════════════════════════════════════ */}
-      <StatsHUD project={project} agents={agents} sparkData={sparkData} />
-      <MiniMap pan={pan} zoom={zoom} vpW={vpDims.w} vpH={vpDims.h}
-        agents={agents} uvPositions={uvPositions} />
-      <ZoomControls
-        onIn={() => {
-          const nz = clamp(zoom + ZOOM_STEP * 2, ZOOM_MIN, ZOOM_MAX);
-          setPan(([px, py]) => {
-            const cx = vpDims.w / 2, cy = vpDims.h / 2;
-            return clampPan(cx - (cx - px) / zoom * nz, cy - (cy - py) / zoom * nz, nz);
-          });
-          setZoom(nz);
-        }}
-        onOut={() => {
-          const nz = clamp(zoom - ZOOM_STEP * 2, ZOOM_MIN, ZOOM_MAX);
-          setPan(([px, py]) => {
-            const cx = vpDims.w / 2, cy = vpDims.h / 2;
-            return clampPan(cx - (cx - px) / zoom * nz, cy - (cy - py) / zoom * nz, nz);
-          });
-          setZoom(nz);
-        }}
-        onReset={handleReset}
-        zoom={zoom}
-      />
-
-      {/* Project banner (bottom-left) */}
-      <div className="absolute pointer-events-none" style={{ bottom: 42, left: 3, zIndex: 50 }}>
-        {project ? (
-          <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl"
-            style={{ background: "rgba(6,10,20,0.93)", border: "1px solid #1e3050", maxWidth: 240 }}>
-            <div className="relative flex-shrink-0">
-              <div className="w-2 h-2 rounded-full bg-emerald-400" />
-              <div className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-60" />
-            </div>
-            <div>
-              <div style={{ fontSize: 8, color: "#64748b", textTransform: "uppercase",
-                letterSpacing: "0.08em", fontFamily: "Inter" }}>Active Project</div>
-              <div style={{ fontSize: 11, color: "white", fontWeight: 600, fontFamily: "Inter" }}>
-                {project.name.length > 26 ? project.name.slice(0, 26) + "…" : project.name}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="px-3 py-2 rounded-xl"
-            style={{ background: "rgba(6,10,20,0.78)", border: "1px solid #1e3050" }}>
-            <span style={{ fontSize: 11, color: "#475569", fontFamily: "Inter" }}>
-              Click "New Project" to start
-            </span>
-          </div>
-        )}
-      </div>
-
-      <DragHint />
+      <span style={{fontSize:16}}>✋</span>
+      Drag to pan · Scroll to zoom
     </div>
   );
 }
