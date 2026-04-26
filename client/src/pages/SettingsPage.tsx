@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Settings, Key, CheckCircle2, AlertTriangle, Save, Eye, EyeOff, Loader2, Zap, Globe } from "lucide-react";
+import { Settings, Key, CheckCircle2, AlertTriangle, Save, Eye, EyeOff, Loader2, Zap, Globe, Sparkles, RefreshCw, Boxes } from "lucide-react";
+import type { Model } from "../types";
 
 interface ProviderConfig {
   key: string;
@@ -214,6 +215,150 @@ function Stage3Indicator({ settings }: { settings: Record<string, string> }) {
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
+// ── Models registry panel ────────────────────────────────────────────────────
+
+function ModelsPanel() {
+  const { data: models = [], isLoading } = useQuery<Model[]>({
+    queryKey: ["/api/models"],
+  });
+
+  const refreshMut = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/models/refresh").then((r) => r.json()),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/models"] }),
+  });
+
+  const ackMut = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/models/acknowledge"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/models"] }),
+  });
+
+  const tierMut = useMutation({
+    mutationFn: ({ id, tier }: { id: string; tier: string }) =>
+      apiRequest("PATCH", `/api/models/${encodeURIComponent(id)}`, { tier }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/models"] }),
+  });
+
+  const enabledMut = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      apiRequest("PATCH", `/api/models/${encodeURIComponent(id)}`, { enabled }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/models"] }),
+  });
+
+  // Refetch when daily refresh broadcasts.
+  useEffect(() => {
+    const onRefreshed = () => queryClient.invalidateQueries({ queryKey: ["/api/models"] });
+    window.addEventListener("aioffice:models_refreshed", onRefreshed);
+    return () => window.removeEventListener("aioffice:models_refreshed", onRefreshed);
+  }, []);
+
+  const newCount = models.filter((m) => m.isNew).length;
+  const grouped = models.reduce<Record<string, Model[]>>((acc, m) => {
+    (acc[m.provider] ||= []).push(m);
+    return acc;
+  }, {});
+  const providers = Object.keys(grouped).sort();
+  const lastChecked = models.reduce((max, m) => Math.max(max, m.lastCheckedAt), 0);
+
+  return (
+    <div data-testid="settings-models-panel">
+      <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+        <Boxes size={11} /> Models registry
+        {newCount > 0 && (
+          <span className="ml-1 px-1.5 py-0.5 rounded-full bg-violet-500/20 text-violet-200 text-[9px] font-bold flex items-center gap-1"
+                data-testid="badge-new-models">
+            <Sparkles size={9} /> {newCount} new
+          </span>
+        )}
+      </h3>
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900/40">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-800">
+          <button
+            onClick={() => refreshMut.mutate()}
+            disabled={refreshMut.isPending}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/25 disabled:opacity-50"
+            data-testid="button-models-refresh"
+          >
+            {refreshMut.isPending ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+            Check now
+          </button>
+          {newCount > 0 && (
+            <button
+              onClick={() => ackMut.mutate()}
+              disabled={ackMut.isPending}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs text-slate-300 border border-slate-700 hover:bg-slate-800 disabled:opacity-50"
+              data-testid="button-models-acknowledge"
+            >
+              <CheckCircle2 size={11} /> Mark all seen
+            </button>
+          )}
+          <span className="ml-auto text-[10px] text-slate-500 font-mono">
+            {lastChecked ? `last checked ${new Date(lastChecked).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}` : "not yet checked"}
+          </span>
+        </div>
+
+        {isLoading ? (
+          <div className="px-3 py-6 text-xs text-slate-500 flex items-center gap-2 justify-center">
+            <Loader2 size={12} className="animate-spin" /> loading models…
+          </div>
+        ) : models.length === 0 ? (
+          <div className="px-3 py-6 text-xs text-slate-500 text-center">
+            No models discovered yet. Add provider keys above and press “Check now”.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-800">
+            {providers.map((provider) => (
+              <div key={provider} className="p-3">
+                <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-2">{provider}</div>
+                <div className="space-y-1">
+                  {grouped[provider]
+                    .slice()
+                    .sort((a, b) => a.modelId.localeCompare(b.modelId))
+                    .map((m) => (
+                      <div
+                        key={m.id}
+                        className="flex items-center gap-2 py-1"
+                        data-testid={`model-row-${m.id}`}
+                      >
+                        <span className="font-mono text-xs text-slate-200 truncate flex-1">{m.modelId}</span>
+                        {m.isNew ? (
+                          <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-200 text-[9px] font-bold flex items-center gap-1">
+                            <Sparkles size={8} /> NEW
+                          </span>
+                        ) : null}
+                        <select
+                          value={m.tier}
+                          onChange={(e) => tierMut.mutate({ id: m.id, tier: e.target.value })}
+                          className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300"
+                          data-testid={`select-tier-${m.id}`}
+                        >
+                          <option value="low">low</option>
+                          <option value="medium">medium</option>
+                          <option value="high">high</option>
+                        </select>
+                        <button
+                          onClick={() => enabledMut.mutate({ id: m.id, enabled: !m.enabled })}
+                          className={`text-[10px] px-2 py-0.5 rounded border ${
+                            m.enabled
+                              ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
+                              : "bg-slate-800 text-slate-500 border-slate-700"
+                          }`}
+                          data-testid={`button-toggle-${m.id}`}
+                        >
+                          {m.enabled ? "on" : "off"}
+                        </button>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const { data: settings = {}, isLoading } = useQuery<Record<string, string>>({
     queryKey: ["/api/settings"],
@@ -266,6 +411,9 @@ export default function SettingsPage() {
             ))}
           </div>
         </div>
+
+        {/* Models registry */}
+        <ModelsPanel />
 
         {/* Info */}
         <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-xs text-slate-500 leading-relaxed space-y-1">

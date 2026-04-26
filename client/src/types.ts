@@ -79,6 +79,40 @@ export interface Task {
   updatedAt: number;
 }
 
+export interface Model {
+  id: string;
+  provider: string;
+  modelId: string;
+  displayName: string;
+  contextWindow: number | null;
+  costPer1kIn: number | null;
+  costPer1kOut: number | null;
+  tier: "low" | "medium" | "high" | string;
+  enabled: number;     // 0 | 1
+  isNew: number;       // 0 | 1
+  discoveredAt: number;
+  lastCheckedAt: number;
+}
+
+export interface CoverageItem {
+  ask: string;
+  met: boolean;
+  evidence?: string;
+}
+
+export interface QaReview {
+  id: number;
+  projectId: number;
+  signedOff: number;     // 0 | 1
+  recommendation: "ship" | "fix-and-resume" | "replan" | string;
+  summary: string;
+  coverage: string;      // JSON-encoded CoverageItem[]
+  issues: string;        // JSON-encoded string[]
+  modelUsed: string;
+  costUsd: number;
+  createdAt: number;
+}
+
 export const MODEL_CATALOG: Record<string, { label: string; models: string[] }> = {
   anthropic: {
     label: "Anthropic",

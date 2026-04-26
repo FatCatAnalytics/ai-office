@@ -21,6 +21,8 @@
 import { storage } from "./storage";
 import { streamCompletion, calculateCost, settingKeyForProvider, type Provider, type LLMMessage } from "./llm";
 import { renderPdf, renderXlsx, type RenderMeta } from "./renderers";
+import { routeForComplexity, routeForCriticalCall, normaliseComplexity, type Complexity } from "./modelRouter";
+import { reviewProjectQA } from "./qaReviewer";
 import type { Agent, Task, Project } from "@shared/schema";
 
 export interface LiveOrchestratorDeps {
@@ -120,11 +122,14 @@ function recordUsage(
   projectId: number,
   tokensIn: number,
   tokensOut: number,
-  deps: LiveOrchestratorDeps
+  deps: LiveOrchestratorDeps,
+  override?: { provider: Provider; modelId: string }
 ): number {
-  const costUsd = calculateCost(agent.modelId, tokensIn, tokensOut);
+  const provider = override?.provider ?? (agent.provider as Provider);
+  const modelId = override?.modelId ?? agent.modelId;
+  const costUsd = calculateCost(modelId, tokensIn, tokensOut);
   storage.recordTokenUsage({
-    provider: agent.provider, modelId: agent.modelId, agentId: agent.id,
+    provider, modelId, agentId: agent.id,
     projectId, tokensIn, tokensOut, costUsd,
   });
   deps.broadcast({ type: "budget_update", summary: storage.getBudgetSummary() });
@@ -272,6 +277,7 @@ interface PlannedTask {
   assignedTo: string;
   priority: "critical" | "high" | "normal" | "low";
   dependsOn: string[]; // planner-local keys
+  complexity: Complexity; // low | medium | high — drives cost-aware routing
 }
 
 function buildManagerPrompt(project: Project, subAgents: Agent[]): LLMMessage[] {
@@ -295,8 +301,15 @@ You must respond with ONLY a JSON array — no prose, no markdown fences. Each e
   "description": "<one paragraph describing what should be done and what the deliverable looks like>",
   "assignedTo": "<exact agent id from the team list>",
   "priority": "critical" | "high" | "normal" | "low",
+  "complexity": "low" | "medium" | "high",
   "dependsOn": ["t1", "t3", ...] (keys of tasks that must finish first; empty array if independent)
 }
+
+Complexity guidance (used for cost routing — cost optimisation matters):
+- "low"    → mechanical: formatting, extraction, summarisation, boilerplate, file conversion, simple lookups.
+- "medium" → standard knowledge work: drafting, normal coding, structured analysis, ordinary research.
+- "high"   → reasoning-heavy: architecture, multi-step logic, security review, complex algorithms, ambiguous problems.
+Most tasks are "medium". Use "high" sparingly — only when the task genuinely needs a top-tier model.
 
 Planning rules:
 - Maximize parallelism. Tasks that can run independently MUST have empty dependsOn arrays so they execute concurrently.
@@ -349,7 +362,9 @@ function validatePlan(parsed: unknown, validAgentIds: Set<string>): PlannedTask[
       .map(d => String(d).trim())
       .filter(d => d.length > 0 && d !== key);
 
-    cleaned.push({ key, title, description, assignedTo, priority, dependsOn });
+    const complexity = normaliseComplexity(t.complexity);
+
+    cleaned.push({ key, title, description, assignedTo, priority, dependsOn, complexity });
   }
 
   // Drop dangling dep references (refer to non-existent keys)
@@ -521,8 +536,21 @@ async function runWorkerTask(
   priorOutputs: PriorOutput[],
   deps: LiveOrchestratorDeps
 ): Promise<string> {
-  const { apiKey, provider } = resolveAgentKey(agent);
   const sharedContext = buildSharedContext(priorOutputs);
+
+  // ── Cost-aware routing ──
+  // The planner tagged each task with a complexity tier (low/medium/high).
+  // Route to the cheapest model that meets the tier; fall back to the agent's
+  // own configured model if no preferred provider has a key.
+  const complexity = (task.complexity as Complexity) ?? "medium";
+  const routed = routeForComplexity(complexity, agent);
+  const apiKey = storage.getSetting(settingKeyForProvider(routed.provider));
+  if (!apiKey) {
+    throw new Error(`No API key configured for ${routed.provider} (needed for ${complexity}-tier task)`);
+  }
+
+  // Persist the actual model used so the dashboard reflects routing decisions.
+  storage.updateTask(task.id, { modelUsed: routed.modelId });
 
   const messages: LLMMessage[] = [
     {
@@ -538,24 +566,24 @@ async function runWorkerTask(
   deps.setAgentStatus(agent.id, "working", task.title);
   deps.emitEvent(
     project.id, agent.id, agent.name, "started task",
-    `[LIVE] ${provider}/${agent.modelId} — ${task.title}`, "info"
+    `[LIVE] ${routed.provider}/${routed.modelId} — ${task.title} (${complexity})`, "info"
   );
 
   const stream = makeStreamCoalescer(project.id, agent, task.title, deps);
   let result;
   try {
     result = await streamCompletion(
-      { provider, modelId: agent.modelId, apiKey, messages, maxTokens: 3072, temperature: 0.7 },
+      { provider: routed.provider, modelId: routed.modelId, apiKey, messages, maxTokens: 3072, temperature: 0.7 },
       { onDelta: (d) => stream.push(d) }
     );
   } finally {
     stream.end();
   }
 
-  const cost = recordUsage(agent, project.id, result.tokensIn, result.tokensOut, deps);
+  const cost = recordUsage(agent, project.id, result.tokensIn, result.tokensOut, deps, { provider: routed.provider, modelId: routed.modelId });
   deps.emitEvent(
     project.id, agent.id, agent.name, "model response",
-    `${result.tokensIn.toLocaleString()} in / ${result.tokensOut.toLocaleString()} out · $${cost.toFixed(4)}`,
+    `${result.tokensIn.toLocaleString()} in / ${result.tokensOut.toLocaleString()} out · $${cost.toFixed(4)} · ${routed.modelId}`,
     "info"
   );
   return result.text;
@@ -668,6 +696,7 @@ export async function runLiveOrchestration(
         priority: planned.priority,
         dependsOn: JSON.stringify(dependsOnIds),
         waveIndex: wIdx,
+        complexity: planned.complexity,
       });
       keyToTaskId.set(planned.key, created.id);
       keyToTask.set(planned.key, created);
@@ -677,7 +706,7 @@ export async function runLiveOrchestration(
       const depLabel = dependsOnIds.length > 0 ? ` (after ${dependsOnIds.length} dep${dependsOnIds.length > 1 ? "s" : ""})` : "";
       deps.emitEvent(
         projectId, "manager", manager.name, "assigned task",
-        `→ ${assignee?.name ?? planned.assignedTo}: "${planned.title}" [wave ${wIdx + 1}]${depLabel}`, "info"
+        `→ ${assignee?.name ?? planned.assignedTo}: "${planned.title}" [wave ${wIdx + 1}, ${planned.complexity}]${depLabel}`, "info"
       );
       deps.broadcast({ type: "task_created", task: created });
     }
@@ -771,6 +800,7 @@ export async function runLiveOrchestration(
               priority: planned.priority,
               dependsOn: JSON.stringify(depIds),
               waveIndex: wIdx,
+              complexity: planned.complexity,
             });
             newKeyToId.set(planned.key, created.id);
             newKeyToTask.set(planned.key, created);
@@ -798,28 +828,81 @@ export async function runLiveOrchestration(
     }
   }
 
-  // ── Phase 4: Wrap up ─────────────────────────────────────────────────
+  // ── Phase 4: QA sign-off (only when every task finished cleanly) ──
   const total = allCreated.length;
-  const finalStatus = allFailures.length === 0 && completedCount === total ? "completed" : "blocked";
-  storage.updateProject(projectId, {
-    status: finalStatus,
-    progress: Math.round((completedCount / Math.max(1, total)) * 100),
-  });
-  deps.broadcast({ type: "project_update", projectId, status: finalStatus });
+  const allDone = allFailures.length === 0 && completedCount === total;
 
-  if (finalStatus === "completed") {
-    deps.emitEvent(
-      projectId, "manager", manager.name, "project complete",
-      `All ${completedCount} tasks delivered across ${waves.length} wave${waves.length > 1 ? "s" : ""} ✓`,
-      "success"
-    );
-    deps.setAgentStatus("manager", "done", "All tasks complete");
-    setTimeout(() => deps.setAgentStatus("manager", "idle", null), 3000);
+  if (allDone) {
+    await runQaSignOff(projectId, agents, deps);
   } else {
+    storage.updateProject(projectId, {
+      status: "blocked",
+      progress: Math.round((completedCount / Math.max(1, total)) * 100),
+    });
+    deps.broadcast({ type: "project_update", projectId, status: "blocked" });
     deps.emitEvent(
       projectId, "manager", manager.name, "project incomplete",
       `${completedCount}/${total} tasks completed — review blocked tasks`, "warning"
     );
+    deps.setAgentStatus("manager", "idle", null);
+  }
+}
+
+// ─── QA sign-off helper ─────────────────────────────────────────────────────
+// Runs the QA agent against the original brief + delivered outputs. The verdict
+// drives the project's final status: signed-off → "completed", otherwise the
+// project goes "blocked" and the user can hit Resume after addressing issues.
+async function runQaSignOff(
+  projectId: number,
+  agents: Agent[],
+  deps: LiveOrchestratorDeps
+): Promise<void> {
+  const project = storage.getProject(projectId);
+  if (!project) return;
+  const qaAgent = agents.find(a => a.id === "qa");
+  const manager = agents.find(a => a.id === "manager")!;
+  if (!qaAgent) {
+    // No QA agent configured — just mark complete without sign-off.
+    storage.updateProject(projectId, { status: "completed", progress: 100 });
+    deps.broadcast({ type: "project_update", projectId, status: "completed" });
+    return;
+  }
+
+  storage.updateProject(projectId, { status: "qa_review" });
+  deps.broadcast({ type: "project_update", projectId, status: "qa_review" });
+  deps.emitEvent(projectId, "qa", qaAgent.name, "qa review", "Reviewing deliverables against original brief…", "info");
+  deps.setAgentStatus("qa", "thinking", "Reviewing project");
+
+  try {
+    const verdict = await reviewProjectQA(project, qaAgent, deps, recordUsage);
+    const finalStatus = verdict.signedOff ? "completed" : "blocked";
+    storage.updateProject(projectId, { status: finalStatus, progress: 100 });
+    deps.broadcast({ type: "project_update", projectId, status: finalStatus });
+    deps.broadcast({ type: "qa_review", projectId, verdict });
+
+    deps.emitEvent(
+      projectId, "qa", qaAgent.name,
+      verdict.signedOff ? "signed off" : "flagged issues",
+      verdict.signedOff
+        ? `✓ Project signed off — ${verdict.summary.slice(0, 140)}`
+        : `✗ ${verdict.issues.length} issue${verdict.issues.length !== 1 ? "s" : ""} — recommendation: ${verdict.recommendation}`,
+      verdict.signedOff ? "success" : "warning"
+    );
+    deps.setAgentStatus("qa", verdict.signedOff ? "done" : "idle", null);
+    if (verdict.signedOff) {
+      deps.emitEvent(projectId, "manager", manager.name, "project complete", "All deliverables signed off by QA ✓", "success");
+      deps.setAgentStatus("manager", "done", "All tasks complete");
+      setTimeout(() => deps.setAgentStatus("manager", "idle", null), 3000);
+    } else {
+      deps.setAgentStatus("manager", "idle", null);
+    }
+  } catch (e) {
+    const reason = (e as Error)?.message ?? String(e);
+    deps.emitEvent(projectId, "qa", qaAgent.name, "qa failed", reason, "error");
+    // QA failure shouldn't sink a successful run — mark complete without sign-off.
+    storage.updateProject(projectId, { status: "completed", progress: 100 });
+    deps.broadcast({ type: "project_update", projectId, status: "completed" });
+    deps.setAgentStatus("qa", "idle", null);
     deps.setAgentStatus("manager", "idle", null);
   }
 }
@@ -944,22 +1027,16 @@ export async function resumeLiveOrchestration(
     deps.broadcast({ type: "project_update", projectId, progress, tasksCompleted: completedCount, tokensUsed, costToday });
   }
 
-  // Wrap up.
-  const finalStatus = allFailures.length === 0 && completedCount >= total ? "completed" : "blocked";
-  storage.updateProject(projectId, {
-    status: finalStatus,
-    progress: Math.round((completedCount / Math.max(1, total)) * 100),
-  });
-  deps.broadcast({ type: "project_update", projectId, status: finalStatus });
-
-  if (finalStatus === "completed") {
-    deps.emitEvent(
-      projectId, "manager", manager.name, "project complete",
-      `Resume succeeded — ${completedCount}/${total} tasks delivered ✓`, "success"
-    );
-    deps.setAgentStatus("manager", "done", "All tasks complete");
-    setTimeout(() => deps.setAgentStatus("manager", "idle", null), 3000);
+  // Wrap up — if everything finished cleanly, run QA sign-off; otherwise block.
+  const allDone = allFailures.length === 0 && completedCount >= total;
+  if (allDone) {
+    await runQaSignOff(projectId, agents, deps);
   } else {
+    storage.updateProject(projectId, {
+      status: "blocked",
+      progress: Math.round((completedCount / Math.max(1, total)) * 100),
+    });
+    deps.broadcast({ type: "project_update", projectId, status: "blocked" });
     deps.emitEvent(
       projectId, "manager", manager.name, "resume incomplete",
       `${completedCount}/${total} tasks completed after resume — review blocked tasks`, "warning"

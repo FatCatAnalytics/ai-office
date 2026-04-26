@@ -132,6 +132,16 @@ export function useWebSocket() {
               window.dispatchEvent(new CustomEvent("aioffice:budget_update", { detail: msg }));
               break;
 
+            // QA sign-off verdict broadcast at the end of a project
+            case "qa_review":
+              window.dispatchEvent(new CustomEvent("aioffice:qa_review", { detail: msg }));
+              break;
+
+            // Daily/manual model registry refresh completed
+            case "models_refreshed":
+              window.dispatchEvent(new CustomEvent("aioffice:models_refreshed", { detail: msg }));
+              break;
+
             // Live token streaming — accumulate per-agent buffer for the activity feed
             case "stream":
               if (msg.agentId && typeof msg.delta === "string") {

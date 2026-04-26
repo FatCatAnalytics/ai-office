@@ -12,6 +12,8 @@ import type {
   Setting,
   TokenUsage, InsertTokenUsage,
   ProjectFile, InsertProjectFile,
+  Model, InsertModel,
+  QaReview, InsertQaReview,
 } from "@shared/schema";
 
 const sqlite = new Database("data.db");
@@ -121,6 +123,42 @@ try {
 try {
   sqlite.exec(`ALTER TABLE tasks ADD COLUMN wave_index INTEGER`);
 } catch { /* column already exists */ }
+
+// Stage 4.6 safe migrations: cost-routing + model registry + qa reviews
+try {
+  sqlite.exec(`ALTER TABLE tasks ADD COLUMN complexity TEXT NOT NULL DEFAULT 'medium'`);
+} catch { /* column already exists */ }
+try {
+  sqlite.exec(`ALTER TABLE tasks ADD COLUMN model_used TEXT`);
+} catch { /* column already exists */ }
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS models (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    context_window INTEGER,
+    cost_per_1k_in REAL,
+    cost_per_1k_out REAL,
+    tier TEXT NOT NULL DEFAULT 'medium',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    is_new INTEGER NOT NULL DEFAULT 0,
+    discovered_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+    last_checked_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
+  CREATE TABLE IF NOT EXISTS qa_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    signed_off INTEGER NOT NULL DEFAULT 0,
+    recommendation TEXT NOT NULL DEFAULT 'ship',
+    summary TEXT NOT NULL DEFAULT '',
+    coverage TEXT NOT NULL DEFAULT '[]',
+    issues TEXT NOT NULL DEFAULT '[]',
+    model_used TEXT NOT NULL DEFAULT '',
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
+`);
 
 // Stage 4.5 safe migrations: existing rows with retired Anthropic model ids.
 // Older seeds used "claude-opus-4-5" / "claude-sonnet-4-5" / "claude-haiku-3-5",
@@ -338,6 +376,17 @@ export interface IStorage {
   getProjectFile(fileId: number): ProjectFile | undefined;
   deleteProjectFile(fileId: number): void;
   ensureProjectDir(projectId: number): string;
+
+  // Models registry
+  getModels(): Model[];
+  upsertModel(data: InsertModel): Model;
+  setModelTier(id: string, tier: string): Model | undefined;
+  setModelEnabled(id: string, enabled: boolean): Model | undefined;
+  acknowledgeNewModels(): void;
+
+  // QA reviews
+  getLatestQaReview(projectId: number): QaReview | undefined;
+  createQaReview(data: InsertQaReview): QaReview;
 }
 
 export interface BudgetModelRow {
@@ -601,6 +650,62 @@ class SQLiteStorage implements IStorage {
       try { fs.unlinkSync(file.filePath); } catch { /* already gone */ }
       db.delete(schema.projectFiles).where(eq(schema.projectFiles.id, fileId)).run();
     }
+  }
+
+  // ── Models registry ──
+  getModels(): Model[] {
+    return db.select().from(schema.models)
+      .orderBy(desc(schema.models.discoveredAt))
+      .all();
+  }
+
+  upsertModel(data: InsertModel): Model {
+    const id = data.id || `${data.provider}:${data.modelId}`;
+    const existing = db.select().from(schema.models).where(eq(schema.models.id, id)).get();
+    const now = Date.now();
+    if (existing) {
+      // Update last-checked + any provided pricing/context fields, keep tier/enabled.
+      return db.update(schema.models).set({
+        displayName: data.displayName ?? existing.displayName,
+        contextWindow: data.contextWindow ?? existing.contextWindow,
+        costPer1kIn: data.costPer1kIn ?? existing.costPer1kIn,
+        costPer1kOut: data.costPer1kOut ?? existing.costPer1kOut,
+        lastCheckedAt: now,
+      }).where(eq(schema.models.id, id)).returning().get()!;
+    }
+    // First sighting → mark as new for the UI badge.
+    return db.insert(schema.models).values({
+      ...data,
+      id,
+      isNew: 1,
+      discoveredAt: now,
+      lastCheckedAt: now,
+    }).returning().get()!;
+  }
+
+  setModelTier(id: string, tier: string): Model | undefined {
+    return db.update(schema.models).set({ tier }).where(eq(schema.models.id, id)).returning().get();
+  }
+
+  setModelEnabled(id: string, enabled: boolean): Model | undefined {
+    return db.update(schema.models).set({ enabled: enabled ? 1 : 0 }).where(eq(schema.models.id, id)).returning().get();
+  }
+
+  acknowledgeNewModels(): void {
+    db.update(schema.models).set({ isNew: 0 }).run();
+  }
+
+  // ── QA reviews ──
+  getLatestQaReview(projectId: number): QaReview | undefined {
+    return db.select().from(schema.qaReviews)
+      .where(eq(schema.qaReviews.projectId, projectId))
+      .orderBy(desc(schema.qaReviews.createdAt))
+      .limit(1)
+      .get();
+  }
+
+  createQaReview(data: InsertQaReview): QaReview {
+    return db.insert(schema.qaReviews).values({ ...data, createdAt: Date.now() }).returning().get()!;
   }
 }
 

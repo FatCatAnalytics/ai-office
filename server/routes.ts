@@ -6,6 +6,7 @@ import fs from "fs";
 import { storage } from "./storage";
 import type { Agent, Task, Project } from "@shared/schema";
 import { runLiveOrchestration, resumeLiveOrchestration } from "./liveOrchestrator";
+import { refreshAllProviders } from "./modelsRefresh";
 
 // ─── WebSocket broadcast ───────────────────────────────────────────────────────
 const wsClients = new Set<WebSocket>();
@@ -683,7 +684,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
     if (!existing) return res.status(404).json({ error: "Not found" });
 
     // Refuse to edit while a project is mid-run — prevents racing the orchestrator.
-    if (existing.status === "active" || existing.status === "planning") {
+    if (existing.status === "active" || existing.status === "planning" || existing.status === "qa_review") {
       return res.status(409).json({
         error: `Cannot edit while project is ${existing.status}. Wait for it to finish or block.`,
       });
@@ -714,7 +715,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
     const existing = storage.getProject(id);
     if (!existing) return res.status(404).json({ error: "Not found" });
-    if (existing.status === "active" || existing.status === "planning") {
+    if (existing.status === "active" || existing.status === "planning" || existing.status === "qa_review") {
       return res.status(409).json({
         error: `Cannot delete while project is ${existing.status}. Wait for it to finish or block.`,
       });
@@ -878,5 +879,51 @@ export function registerRoutes(httpServer: Server, app: Express) {
     const record = storage.recordTokenUsage({ provider, modelId, agentId, projectId, tokensIn: tokensIn ?? 0, tokensOut: tokensOut ?? 0, costUsd: costUsd ?? 0 });
     broadcast({ type: "budget_update", summary: storage.getBudgetSummary() });
     res.json(record);
+  });
+
+  // ── Models registry (latest-models checker) ───────────────────────────────────
+
+  app.get("/api/models", (_req, res) => {
+    res.json(storage.getModels());
+  });
+
+  app.post("/api/models/refresh", async (_req, res) => {
+    try {
+      const summary = await refreshAllProviders();
+      broadcast({ type: "models_refreshed", summary });
+      res.json(summary);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post("/api/models/acknowledge", (_req, res) => {
+    storage.acknowledgeNewModels();
+    res.json(storage.getModels());
+  });
+
+  app.patch("/api/models/:id", (req, res) => {
+    const id = req.params.id;
+    const { tier, enabled } = req.body ?? {};
+    let updated;
+    if (typeof tier === "string") {
+      if (!["low", "medium", "high"].includes(tier)) return res.status(400).json({ error: "tier must be low|medium|high" });
+      updated = storage.setModelTier(id, tier);
+    }
+    if (typeof enabled === "boolean") {
+      updated = storage.setModelEnabled(id, enabled);
+    }
+    if (!updated) return res.status(404).json({ error: "model not found" });
+    res.json(updated);
+  });
+
+  // ── QA review ─────────────────────────────────────────────────────────────────
+
+  app.get("/api/projects/:id/qa-review", (req, res) => {
+    const projectId = parseInt(req.params.id, 10);
+    if (Number.isNaN(projectId)) return res.status(400).json({ error: "invalid project id" });
+    const review = storage.getLatestQaReview(projectId);
+    if (!review) return res.status(404).json({ error: "no qa review yet" });
+    res.json(review);
   });
 }

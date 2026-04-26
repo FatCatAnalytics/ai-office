@@ -4,17 +4,35 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   FolderOpen, Edit3, Trash2, Play, Clock, Calendar, AlertTriangle,
   CheckCircle2, Loader2, FileText, X, Save, Folders,
+  ShieldCheck, ShieldAlert, ChevronDown, ChevronUp,
 } from "lucide-react";
-import type { Project } from "../types";
+import type { Project, QaReview, CoverageItem } from "../types";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const STATUS_META: Record<string, { color: string; label: string }> = {
   planning:  { color: "#f59e0b", label: "Planning" },
   active:    { color: "#3b82f6", label: "Active" },
+  qa_review: { color: "#a855f7", label: "QA Review" },
   blocked:   { color: "#ef4444", label: "Blocked" },
   completed: { color: "#10b981", label: "Completed" },
 };
+
+function parseCoverage(json: string | null | undefined): CoverageItem[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+function parseIssues(json: string | null | undefined): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((x: unknown): x is string => typeof x === "string") : [];
+  } catch { return []; }
+}
 
 const PRIORITY_META: Record<string, string> = {
   critical: "#ef4444",
@@ -283,8 +301,35 @@ function ProjectCard({ project, onEdit, onDelete, onResume }: {
 }) {
   const status = STATUS_META[project.status] ?? { color: "#64748b", label: project.status };
   const formats = parseFormats(project.outputFormats);
-  const isLocked = project.status === "active" || project.status === "planning";
+  const isLocked = project.status === "active" || project.status === "planning" || project.status === "qa_review";
   const canResume = project.status === "blocked";
+  const [qaOpen, setQaOpen] = useState(false);
+
+  // Fetch QA verdict once the project has reached or passed sign-off.
+  const showQa = project.status === "completed" || project.status === "blocked" || project.status === "qa_review";
+  const { data: qa } = useQuery<QaReview>({
+    queryKey: ["/api/projects", project.id, "qa-review"],
+    queryFn: async () => {
+      const r = await apiRequest("GET", `/api/projects/${project.id}/qa-review`);
+      if (r.status === 404) throw new Error("no qa review yet");
+      return r.json();
+    },
+    enabled: showQa,
+    retry: false,
+    refetchInterval: project.status === "qa_review" ? 3000 : false,
+  });
+
+  // Refetch the QA verdict whenever a fresh one is broadcast for this project.
+  useEffect(() => {
+    const onQa = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.projectId === project.id) {
+        queryClient.invalidateQueries({ queryKey: ["/api/projects", project.id, "qa-review"] });
+      }
+    };
+    window.addEventListener("aioffice:qa_review", onQa);
+    return () => window.removeEventListener("aioffice:qa_review", onQa);
+  }, [project.id]);
 
   return (
     <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 hover:border-slate-700 transition-colors group"
@@ -353,6 +398,69 @@ function ProjectCard({ project, onEdit, onDelete, onResume }: {
               {f}
             </span>
           ))}
+        </div>
+      )}
+
+      {/* QA verdict */}
+      {showQa && qa && (
+        <div className="mb-3 rounded-lg border"
+             style={{
+               background: qa.signedOff ? "rgba(16,185,129,0.08)" : "rgba(244,63,94,0.08)",
+               borderColor: qa.signedOff ? "rgba(16,185,129,0.35)" : "rgba(244,63,94,0.35)",
+             }}
+             data-testid={`qa-verdict-${project.id}`}>
+          <button
+            type="button"
+            onClick={() => setQaOpen((v) => !v)}
+            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left"
+            data-testid={`button-qa-toggle-${project.id}`}
+          >
+            {qa.signedOff
+              ? <ShieldCheck size={12} className="text-emerald-300 flex-shrink-0" />
+              : <ShieldAlert size={12} className="text-rose-300 flex-shrink-0" />}
+            <span className={`text-[10px] font-bold uppercase tracking-wider ${qa.signedOff ? "text-emerald-300" : "text-rose-300"}`}>
+              {qa.signedOff ? "QA signed off" : `QA: ${qa.recommendation}`}
+            </span>
+            <span className="ml-auto text-slate-500">
+              {qaOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            </span>
+          </button>
+          {qaOpen && (
+            <div className="px-2.5 pb-2.5 space-y-2 border-t border-slate-800/60">
+              {qa.summary && (
+                <p className="text-[11px] text-slate-300 leading-relaxed pt-2">{qa.summary}</p>
+              )}
+              {parseCoverage(qa.coverage).length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[9px] uppercase tracking-wider text-slate-500">Coverage</div>
+                  {parseCoverage(qa.coverage).map((c, i) => (
+                    <div key={i} className="flex items-start gap-1.5 text-[10px]">
+                      {c.met
+                        ? <CheckCircle2 size={10} className="text-emerald-400 mt-0.5 flex-shrink-0" />
+                        : <X size={10} className="text-rose-400 mt-0.5 flex-shrink-0" />}
+                      <span className={c.met ? "text-slate-300" : "text-slate-400"}>{c.ask}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {parseIssues(qa.issues).length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[9px] uppercase tracking-wider text-rose-400">Issues</div>
+                  {parseIssues(qa.issues).map((iss, i) => (
+                    <div key={i} className="flex items-start gap-1.5 text-[10px] text-slate-300">
+                      <AlertTriangle size={10} className="text-rose-400 mt-0.5 flex-shrink-0" />
+                      <span>{iss}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {qa.modelUsed && (
+                <div className="text-[9px] text-slate-500 font-mono">
+                  reviewed by {qa.modelUsed} · ${qa.costUsd.toFixed(4)}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

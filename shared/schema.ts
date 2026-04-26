@@ -63,6 +63,11 @@ export const tasks = sqliteTable("tasks", {
   dependsOn: text("depends_on").notNull().default("[]"),
   // 0-based wave index assigned by the topological sort. NULL until planning completes.
   waveIndex: integer("wave_index"),
+  // Cost-routing tier set by the planner: low | medium | high.
+  // low → cheap fast model (Kimi); medium → Haiku; high → Sonnet.
+  complexity: text("complexity").notNull().default("medium"),
+  // The actual modelId used for execution (after routing override). NULL until executed.
+  modelUsed: text("model_used"),
   createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
   updatedAt: integer("updated_at").notNull().$defaultFn(() => Date.now()),
 });
@@ -131,3 +136,46 @@ export const projectFiles = sqliteTable("project_files", {
 export const insertProjectFileSchema = createInsertSchema(projectFiles).omit({ id: true, createdAt: true });
 export type InsertProjectFile = z.infer<typeof insertProjectFileSchema>;
 export type ProjectFile = typeof projectFiles.$inferSelect;
+
+// ─── Models registry (latest-models checker) ─────────────────────────────────
+// Tracks every model id seen across providers. Refresh job upserts this and
+// flips `isNew=true` on first sighting so the UI can flag fresh releases.
+export const models = sqliteTable("models", {
+  id: text("id").primaryKey(),                         // canonical "<provider>:<modelId>"
+  provider: text("provider").notNull(),                // anthropic | openai | google | kimi
+  modelId: text("model_id").notNull(),                 // e.g. claude-sonnet-4-6
+  displayName: text("display_name").notNull().default(""),
+  contextWindow: integer("context_window"),            // tokens, optional
+  costPer1kIn: real("cost_per_1k_in"),                 // optional pricing snapshot
+  costPer1kOut: real("cost_per_1k_out"),
+  tier: text("tier").notNull().default("medium"),      // low | medium | high — used by router
+  enabled: integer("enabled").notNull().default(1),    // 1 = available for routing
+  isNew: integer("is_new").notNull().default(0),       // 1 until acknowledged in UI
+  discoveredAt: integer("discovered_at").notNull().$defaultFn(() => Date.now()),
+  lastCheckedAt: integer("last_checked_at").notNull().$defaultFn(() => Date.now()),
+});
+
+export const insertModelSchema = createInsertSchema(models).omit({ discoveredAt: true, lastCheckedAt: true });
+export type InsertModel = z.infer<typeof insertModelSchema>;
+export type Model = typeof models.$inferSelect;
+
+// ─── QA reviews (project sign-off) ───────────────────────────────────────────
+// Auto-created when every regular task in a project finishes. The QA agent
+// compares the original brief to delivered outputs and returns a structured
+// verdict that drives the project's final status.
+export const qaReviews = sqliteTable("qa_reviews", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  projectId: integer("project_id").notNull(),
+  signedOff: integer("signed_off").notNull().default(0),  // 1 = ship, 0 = issues
+  recommendation: text("recommendation").notNull().default("ship"), // ship | fix-and-resume | replan
+  summary: text("summary").notNull().default(""),
+  coverage: text("coverage").notNull().default("[]"),     // JSON: [{ask, met, evidence}]
+  issues: text("issues").notNull().default("[]"),         // JSON: string[]
+  modelUsed: text("model_used").notNull().default(""),
+  costUsd: real("cost_usd").notNull().default(0),
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+});
+
+export const insertQaReviewSchema = createInsertSchema(qaReviews).omit({ id: true, createdAt: true });
+export type InsertQaReview = z.infer<typeof insertQaReviewSchema>;
+export type QaReview = typeof qaReviews.$inferSelect;

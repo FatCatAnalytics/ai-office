@@ -3,6 +3,7 @@ import express, { Response, NextFunction } from 'express';
 import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
+import { scheduleDailyModelRefresh } from "./modelsRefresh";
 import { createServer } from "node:http";
 
 const app = express();
@@ -100,6 +101,8 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      // Kick off daily model registry refresh (runs ~30s after boot, then every 24h).
+      scheduleDailyModelRefresh((msg) => log(msg, "models"));
     },
   );
 })();
