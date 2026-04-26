@@ -131,6 +131,10 @@ try {
 try {
   sqlite.exec(`ALTER TABLE tasks ADD COLUMN model_used TEXT`);
 } catch { /* column already exists */ }
+// Stage 4.7: pin a model as the operator's preferred choice for a complexity tier.
+try {
+  sqlite.exec(`ALTER TABLE models ADD COLUMN preferred_for TEXT NOT NULL DEFAULT 'none'`);
+} catch { /* column already exists */ }
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS models (
     id TEXT PRIMARY KEY,
@@ -141,6 +145,7 @@ sqlite.exec(`
     cost_per_1k_in REAL,
     cost_per_1k_out REAL,
     tier TEXT NOT NULL DEFAULT 'medium',
+    preferred_for TEXT NOT NULL DEFAULT 'none',
     enabled INTEGER NOT NULL DEFAULT 1,
     is_new INTEGER NOT NULL DEFAULT 0,
     discovered_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
@@ -382,6 +387,8 @@ export interface IStorage {
   upsertModel(data: InsertModel): Model;
   setModelTier(id: string, tier: string): Model | undefined;
   setModelEnabled(id: string, enabled: boolean): Model | undefined;
+  setModelPreferredFor(id: string, preferredFor: string): Model | undefined;
+  getPreferredModelForTier(tier: "low" | "medium" | "high"): Model | undefined;
   acknowledgeNewModels(): void;
 
   // QA reviews
@@ -689,6 +696,25 @@ class SQLiteStorage implements IStorage {
 
   setModelEnabled(id: string, enabled: boolean): Model | undefined {
     return db.update(schema.models).set({ enabled: enabled ? 1 : 0 }).where(eq(schema.models.id, id)).returning().get();
+  }
+
+  setModelPreferredFor(id: string, preferredFor: string): Model | undefined {
+    // Pinning a model for a tier clears any other model's pin for that tier so
+    // there is exactly one preferred model per tier at any time.
+    if (preferredFor === "low" || preferredFor === "medium" || preferredFor === "high") {
+      db.update(schema.models)
+        .set({ preferredFor: "none" })
+        .where(eq(schema.models.preferredFor, preferredFor))
+        .run();
+    }
+    return db.update(schema.models).set({ preferredFor }).where(eq(schema.models.id, id)).returning().get();
+  }
+
+  getPreferredModelForTier(tier: "low" | "medium" | "high"): Model | undefined {
+    return db.select().from(schema.models)
+      .where(and(eq(schema.models.preferredFor, tier), eq(schema.models.enabled, 1)))
+      .limit(1)
+      .get();
   }
 
   acknowledgeNewModels(): void {

@@ -88,6 +88,7 @@ export interface Model {
   costPer1kIn: number | null;
   costPer1kOut: number | null;
   tier: "low" | "medium" | "high" | string;
+  preferredFor: "low" | "medium" | "high" | "none" | string;
   enabled: number;     // 0 | 1
   isNew: number;       // 0 | 1
   discoveredAt: number;

@@ -148,7 +148,8 @@ export const models = sqliteTable("models", {
   contextWindow: integer("context_window"),            // tokens, optional
   costPer1kIn: real("cost_per_1k_in"),                 // optional pricing snapshot
   costPer1kOut: real("cost_per_1k_out"),
-  tier: text("tier").notNull().default("medium"),      // low | medium | high — used by router
+  tier: text("tier").notNull().default("medium"),      // low | medium | high — heuristic classification
+  preferredFor: text("preferred_for").notNull().default("none"), // low|medium|high|none — operator pin for routing
   enabled: integer("enabled").notNull().default(1),    // 1 = available for routing
   isNew: integer("is_new").notNull().default(0),       // 1 until acknowledged in UI
   discoveredAt: integer("discovered_at").notNull().$defaultFn(() => Date.now()),

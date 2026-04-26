@@ -19,8 +19,14 @@ export interface RefreshSummary {
 // model via PATCH /api/models/:id once a new model is acknowledged.
 export function classifyTier(modelId: string): "low" | "medium" | "high" {
   const id = modelId.toLowerCase();
-  if (/(haiku|flash|mini|nano|small|moonshot-v1-(8k|32k))/.test(id)) return "low";
-  if (/(sonnet|opus|gpt-4\.1(?!-mini)|gpt-5|gemini-2\.5-pro|2\.5-pro|o3|o4|moonshot-v1-128k|kimi-k2)/.test(id)) return "high";
+  // Frontier reasoning / planning tier — most expensive, most capable.
+  if (/(opus|sonnet|gpt-5(\.5|-pro)?|gpt-4\.5|o[3-9]|o1[0-9]|gemini-[3-9](\.|-)|gemini-2\.5-pro|kimi-k[2-9]|kimi-2\.[5-9]|moonshot-v[2-9])/.test(id)) {
+    return "high";
+  }
+  // Cheap / fast tier — small, fast, cost-optimised models.
+  if (/(haiku|flash|mini|nano|small|moonshot-v1-(8k|32k)|gemini-1\.5-flash)/.test(id)) {
+    return "low";
+  }
   return "medium";
 }
 
@@ -56,26 +62,50 @@ async function listOpenAI(apiKey: string): Promise<string[]> {
     headers: { authorization: `Bearer ${apiKey}` },
   });
   const ids = Array.isArray(data?.data) ? data.data.map((m: any) => m.id).filter(Boolean) : [];
-  // Filter to actual chat-capable families to keep registry focused.
-  return ids.filter((id: string) => /^(gpt-|o[134])/.test(id));
+  // Keep chat / reasoning families; drop embeddings, TTS, image, audio, moderation, search, realtime.
+  const DROP = /(embedding|whisper|tts|moderation|dall|image|audio|realtime|search|davinci|babbage|curie|ada|computer-use)/i;
+  return ids.filter((id: string) => /^(gpt-|o\d|chatgpt-)/i.test(id) && !DROP.test(id));
 }
 
 async function listGoogle(apiKey: string): Promise<string[]> {
-  const data = await fetchJson(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=100`,
-    {},
-  );
-  const ids = Array.isArray(data?.models)
-    ? data.models.map((m: any) => String(m?.name || "").replace(/^models\//, "")).filter(Boolean)
-    : [];
-  return ids.filter((id: string) => id.startsWith("gemini-"));
+  // v1beta paginates — follow nextPageToken so newer Gemini families on later
+  // pages aren't silently dropped.
+  const collected: string[] = [];
+  let pageToken: string | undefined;
+  for (let i = 0; i < 8; i++) { // hard cap to avoid loops
+    const url = new URL("https://generativelanguage.googleapis.com/v1beta/models");
+    url.searchParams.set("key", apiKey);
+    url.searchParams.set("pageSize", "200");
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    const data = await fetchJson(url.toString(), {});
+    const ids = Array.isArray(data?.models)
+      ? data.models.map((m: any) => String(m?.name || "").replace(/^models\//, "")).filter(Boolean)
+      : [];
+    for (const id of ids) collected.push(id);
+    pageToken = data?.nextPageToken;
+    if (!pageToken) break;
+  }
+  // Keep Gemini chat families only (drop embeddings, image-only, etc.).
+  const DROP = /(embedding|aqa|imagen|veo|tts)/i;
+  return collected.filter((id) => /^gemini-/i.test(id) && !DROP.test(id));
 }
 
 async function listKimi(apiKey: string): Promise<string[]> {
-  const data = await fetchJson("https://api.moonshot.cn/v1/models", {
-    headers: { authorization: `Bearer ${apiKey}` },
-  });
-  return Array.isArray(data?.data) ? data.data.map((m: any) => m.id).filter(Boolean) : [];
+  // The .ai endpoint serves the international catalogue (kimi-k2-*, kimi-2.5/2.6,
+  // moonshot-v2-*). The .cn endpoint historically only returns moonshot-v1-{8k,32k,128k}.
+  // Try .ai first; fall back to .cn so Chinese-region keys still work.
+  const headers = { authorization: `Bearer ${apiKey}` };
+  const seen = new Set<string>();
+  for (const host of ["https://api.moonshot.ai", "https://api.moonshot.cn"]) {
+    try {
+      const data = await fetchJson(`${host}/v1/models`, { headers });
+      const ids = Array.isArray(data?.data) ? data.data.map((m: any) => m.id).filter(Boolean) : [];
+      for (const id of ids) seen.add(id);
+    } catch {
+      // continue — the other host may still work
+    }
+  }
+  return Array.from(seen);
 }
 
 const PROVIDER_LISTERS: Record<Provider, (apiKey: string) => Promise<string[]>> = {

@@ -244,6 +244,12 @@ function ModelsPanel() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/models"] }),
   });
 
+  const pinMut = useMutation({
+    mutationFn: ({ id, preferredFor }: { id: string; preferredFor: string }) =>
+      apiRequest("PATCH", `/api/models/${encodeURIComponent(id)}`, { preferredFor }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/models"] }),
+  });
+
   // Refetch when daily refresh broadcasts.
   useEffect(() => {
     const onRefreshed = () => queryClient.invalidateQueries({ queryKey: ["/api/models"] });
@@ -258,6 +264,14 @@ function ModelsPanel() {
   }, {});
   const providers = Object.keys(grouped).sort();
   const lastChecked = models.reduce((max, m) => Math.max(max, m.lastCheckedAt), 0);
+
+  // Pinned-by-tier summary so the operator can see at a glance which model the
+  // router will pick for high-tier (Manager planning, QA), medium, and low.
+  const pinned: Record<"low" | "medium" | "high", Model | undefined> = {
+    low: models.find((m) => m.preferredFor === "low" && m.enabled),
+    medium: models.find((m) => m.preferredFor === "medium" && m.enabled),
+    high: models.find((m) => m.preferredFor === "high" && m.enabled),
+  };
 
   return (
     <div data-testid="settings-models-panel">
@@ -297,6 +311,27 @@ function ModelsPanel() {
           </span>
         </div>
 
+        {/* Routing pins summary */}
+        <div className="px-3 py-2 border-b border-slate-800 grid grid-cols-3 gap-2 text-[10px]">
+          {(["high", "medium", "low"] as const).map((t) => {
+            const m = pinned[t];
+            const tone =
+              t === "high" ? "text-violet-300" :
+              t === "medium" ? "text-cyan-300" :
+              "text-emerald-300";
+            return (
+              <div key={t} className="rounded-lg bg-slate-950/60 border border-slate-800 px-2 py-1.5">
+                <div className={`uppercase tracking-wider font-bold ${tone}`} style={{ fontSize: 9 }}>
+                  {t}-tier {t === "high" ? "· manager + QA" : ""}
+                </div>
+                <div className="font-mono text-slate-200 truncate" title={m ? `${m.provider}/${m.modelId}` : "using built-in chain"}>
+                  {m ? m.modelId : <span className="text-slate-500">(built-in chain)</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
         {isLoading ? (
           <div className="px-3 py-6 text-xs text-slate-500 flex items-center gap-2 justify-center">
             <Loader2 size={12} className="animate-spin" /> loading models…
@@ -326,15 +361,42 @@ function ModelsPanel() {
                             <Sparkles size={8} /> NEW
                           </span>
                         ) : null}
+                        {m.preferredFor && m.preferredFor !== "none" && (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
+                              m.preferredFor === "high"
+                                ? "bg-violet-500/15 text-violet-200 border-violet-500/40"
+                                : m.preferredFor === "medium"
+                                ? "bg-cyan-500/15 text-cyan-200 border-cyan-500/40"
+                                : "bg-emerald-500/15 text-emerald-200 border-emerald-500/40"
+                            }`}
+                            title={`Pinned as the preferred ${m.preferredFor}-tier model`}
+                          >
+                            PIN·{m.preferredFor.toUpperCase()}
+                          </span>
+                        )}
                         <select
                           value={m.tier}
                           onChange={(e) => tierMut.mutate({ id: m.id, tier: e.target.value })}
                           className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300"
+                          title="Heuristic tier classification"
                           data-testid={`select-tier-${m.id}`}
                         >
                           <option value="low">low</option>
                           <option value="medium">medium</option>
                           <option value="high">high</option>
+                        </select>
+                        <select
+                          value={m.preferredFor || "none"}
+                          onChange={(e) => pinMut.mutate({ id: m.id, preferredFor: e.target.value })}
+                          className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300"
+                          title="Pin this model as the operator's preferred choice for a tier"
+                          data-testid={`select-pin-${m.id}`}
+                        >
+                          <option value="none">pin: —</option>
+                          <option value="low">pin: low</option>
+                          <option value="medium">pin: medium</option>
+                          <option value="high">pin: high</option>
                         </select>
                         <button
                           onClick={() => enabledMut.mutate({ id: m.id, enabled: !m.enabled })}

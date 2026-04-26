@@ -438,24 +438,38 @@ async function callManagerLLM(
   deps: LiveOrchestratorDeps,
   label: string
 ): Promise<string> {
-  const { apiKey, provider } = resolveAgentKey(manager);
+  // Manager planning + replan are the most consequential calls in the system
+  // — they decide what every other agent will do. Always route through the
+  // high-tier path (Opus → GPT-5.5 → Sonnet → …) regardless of how the
+  // "manager" agent row was seeded. Operator pin in the registry overrides.
+  const routed = routeForCriticalCall(manager);
+  const apiKey = storage.getSetting(settingKeyForProvider(routed.provider));
+  if (!apiKey) {
+    throw new Error(`No API key configured for ${routed.provider} (Manager planning)`);
+  }
+
   deps.setAgentStatus("manager", "thinking", label);
   deps.emitEvent(
     project.id, "manager", manager.name,
-    "calling LLM", `[LIVE] ${provider}/${manager.modelId} — ${label}`, "info"
+    "calling LLM",
+    `[LIVE] ${routed.provider}/${routed.modelId} — ${label} (${routed.reason})`,
+    "info"
   );
 
   const stream = makeStreamCoalescer(project.id, manager, label, deps);
   let result;
   try {
     result = await streamCompletion(
-      { provider, modelId: manager.modelId, apiKey, messages, maxTokens: 2048, temperature: 0.4 },
+      { provider: routed.provider, modelId: routed.modelId, apiKey, messages, maxTokens: 2048, temperature: 0.4 },
       { onDelta: (d) => stream.push(d) }
     );
   } finally {
     stream.end();
   }
-  recordUsage(manager, project.id, result.tokensIn, result.tokensOut, deps);
+  recordUsage(manager, project.id, result.tokensIn, result.tokensOut, deps, {
+    provider: routed.provider,
+    modelId: routed.modelId,
+  });
   return result.text;
 }
 

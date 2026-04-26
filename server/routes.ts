@@ -904,7 +904,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
   app.patch("/api/models/:id", (req, res) => {
     const id = req.params.id;
-    const { tier, enabled } = req.body ?? {};
+    const { tier, enabled, preferredFor } = req.body ?? {};
     let updated;
     if (typeof tier === "string") {
       if (!["low", "medium", "high"].includes(tier)) return res.status(400).json({ error: "tier must be low|medium|high" });
@@ -912,6 +912,12 @@ export function registerRoutes(httpServer: Server, app: Express) {
     }
     if (typeof enabled === "boolean") {
       updated = storage.setModelEnabled(id, enabled);
+    }
+    if (typeof preferredFor === "string") {
+      if (!["low", "medium", "high", "none"].includes(preferredFor)) {
+        return res.status(400).json({ error: "preferredFor must be low|medium|high|none" });
+      }
+      updated = storage.setModelPreferredFor(id, preferredFor);
     }
     if (!updated) return res.status(404).json({ error: "model not found" });
     res.json(updated);
