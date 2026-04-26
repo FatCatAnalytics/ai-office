@@ -577,25 +577,7 @@ function BottomBar({ onCameraChange }: { onCameraChange?: (view: string) => void
         </div>
       </div>
 
-      {/* Camera controls */}
-      <div className="flex items-center gap-2 px-4 h-full flex-shrink-0">
-        <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap">Camera</span>
-        {[
-          { label: "Wide View", icon: Maximize2 },
-          { label: "Focus",     icon: Focus     },
-          { label: "Top View",  icon: Layers    },
-        ].map(btn => (
-          <button key={btn.label}
-            onClick={() => onCameraChange?.(btn.label)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-slate-700 hover:border-cyan-500/40 text-slate-500 hover:text-cyan-400 transition-all text-xs whitespace-nowrap">
-            <btn.icon size={10} />
-            {btn.label}
-          </button>
-        ))}
-        <button className="w-6 h-6 rounded-md border border-slate-700 hover:border-cyan-500/40 flex items-center justify-center text-slate-500 hover:text-cyan-400 transition-all">
-          <Maximize2 size={10} />
-        </button>
-      </div>
+
     </div>
   );
 }
