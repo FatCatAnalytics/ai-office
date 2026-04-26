@@ -6,6 +6,9 @@ import {
   Play, Pause, ChevronDown, Activity, Zap, DollarSign,
   Clock, CheckCircle2, AlertTriangle, XCircle, Info,
   WifiOff, Send, Terminal, GitBranch, Loader2, ArrowUpRight, Circle,
+  Users, LayoutDashboard, CalendarDays, FolderOpen, FileBarChart,
+  Bot, Plus, Maximize2, ZoomIn, Focus, RotateCcw, Layers,
+  UserPlus, ClipboardList, CalendarPlus, FileText, Download,
 } from "lucide-react";
 import IsometricOffice from "../components/IsometricOffice";
 
@@ -27,11 +30,11 @@ const EVENT_STATUS_COLOR: Record<string, string> = {
 };
 
 function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString("en-GB", { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+  return new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 function formatTokens(n: number) {
-  if (n >= 1e6) return (n/1e6).toFixed(1)+"M";
-  if (n >= 1e3) return (n/1e3).toFixed(1)+"K";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
   return String(n);
 }
 
@@ -45,13 +48,13 @@ function AgentDesk({ agent }: { agent: Agent }) {
       style={{ "--agent-color": agent.color } as React.CSSProperties}
       data-testid={`desk-${agent.id}`}>
       <div className="absolute bottom-0 left-0 right-0 h-1 opacity-20 rounded-b-xl"
-        style={{ background: agent.color }}/>
+        style={{ background: agent.color }} />
       <div className="p-4 flex flex-col gap-3">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
-              style={{ background:`${agent.color}22`, border:`1px solid ${agent.color}44` }}>
-              <Icon size={18} style={{ color: agent.color }}/>
+              style={{ background: `${agent.color}22`, border: `1px solid ${agent.color}44` }}>
+              <Icon size={18} style={{ color: agent.color }} />
             </div>
             <div>
               <div className="text-sm font-semibold text-slate-100 leading-tight">{agent.name}</div>
@@ -60,28 +63,28 @@ function AgentDesk({ agent }: { agent: Agent }) {
             </div>
           </div>
           <div className={`flex items-center gap-1.5 ${STATUS_COLORS[agent.status]}`}>
-            {isWorking && <span className="flex gap-0.5 items-end h-3"><span className="typing-dot"/><span className="typing-dot"/><span className="typing-dot"/></span>}
-            {isThinking && <Loader2 size={11} className="animate-spin"/>}
-            {!isWorking && !isThinking && <Circle size={7} fill="currentColor"/>}
+            {isWorking && <span className="flex gap-0.5 items-end h-3"><span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" /></span>}
+            {isThinking && <Loader2 size={11} className="animate-spin" />}
+            {!isWorking && !isThinking && <Circle size={7} fill="currentColor" />}
             <span className="text-xs font-medium">{STATUS_LABELS[agent.status]}</span>
           </div>
         </div>
         <div className="min-h-[36px] flex items-center">
           {agent.currentTask
-            ? <div className="flex gap-2 items-start"><Terminal size={12} className="text-slate-500 mt-0.5 flex-shrink-0"/><span className="text-xs text-slate-300 leading-relaxed">{agent.currentTask}</span></div>
+            ? <div className="flex gap-2 items-start"><Terminal size={12} className="text-slate-500 mt-0.5 flex-shrink-0" /><span className="text-xs text-slate-300 leading-relaxed">{agent.currentTask}</span></div>
             : <span className="text-xs text-slate-600 italic">Awaiting assignment...</span>}
         </div>
-        <div className="rounded-md overflow-hidden border border-slate-700/60" style={{ background:"#0d1117" }}>
+        <div className="rounded-md overflow-hidden border border-slate-700/60" style={{ background: "#0d1117" }}>
           <div className="flex items-center gap-1 px-2 py-1 border-b border-slate-700/40">
-            <span className="w-2 h-2 rounded-full bg-rose-500/60"/><span className="w-2 h-2 rounded-full bg-amber-500/60"/><span className="w-2 h-2 rounded-full bg-emerald-500/60"/>
-            <span className="ml-1 text-slate-600 font-mono" style={{ fontSize:9 }}>terminal</span>
+            <span className="w-2 h-2 rounded-full bg-rose-500/60" /><span className="w-2 h-2 rounded-full bg-amber-500/60" /><span className="w-2 h-2 rounded-full bg-emerald-500/60" />
+            <span className="ml-1 text-slate-600 font-mono" style={{ fontSize: 9 }}>terminal</span>
           </div>
           <div className="p-2 font-mono h-10 overflow-hidden">
-            {isWorking && <div className="text-emerald-400" style={{ fontSize:10 }}><span className="text-slate-500">$ </span>{agent.currentTask?.toLowerCase().replace(/ /g,"_")||"..."}_<span className="status-blink">▊</span></div>}
-            {isThinking && <div className="text-amber-400" style={{ fontSize:10 }}><span className="text-slate-500">~ </span>analyzing...<span className="status-blink">▊</span></div>}
-            {agent.status==="done" && <div className="text-cyan-400" style={{ fontSize:10 }}><span className="text-slate-500">$ </span><CheckCircle2 size={10} className="inline mr-1"/>task complete ✓</div>}
-            {agent.status==="idle" && <div className="text-slate-600" style={{ fontSize:10 }}><span className="text-slate-500">$ </span>waiting for tasks_</div>}
-            {agent.status==="blocked" && <div className="text-rose-400" style={{ fontSize:10 }}><span className="text-slate-500">! </span>blocked — awaiting manager</div>}
+            {isWorking && <div className="text-emerald-400" style={{ fontSize: 10 }}><span className="text-slate-500">$ </span>{agent.currentTask?.toLowerCase().replace(/ /g, "_") || "..."}_<span className="status-blink">▊</span></div>}
+            {isThinking && <div className="text-amber-400" style={{ fontSize: 10 }}><span className="text-slate-500">~ </span>analyzing...<span className="status-blink">▊</span></div>}
+            {agent.status === "done" && <div className="text-cyan-400" style={{ fontSize: 10 }}><span className="text-slate-500">$ </span><CheckCircle2 size={10} className="inline mr-1" />task complete ✓</div>}
+            {agent.status === "idle" && <div className="text-slate-600" style={{ fontSize: 10 }}><span className="text-slate-500">$ </span>waiting for tasks_</div>}
+            {agent.status === "blocked" && <div className="text-rose-400" style={{ fontSize: 10 }}><span className="text-slate-500">! </span>blocked — awaiting manager</div>}
           </div>
         </div>
       </div>
@@ -93,23 +96,23 @@ function AgentDesk({ agent }: { agent: Agent }) {
 function ActivityFeed({ events, connected }: { events: AgentEvent[]; connected: boolean }) {
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+      <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-800">
         <div className="flex items-center gap-2">
-          <Activity size={14} className="text-cyan-400"/>
-          <span className="text-sm font-semibold text-slate-200">Activity Feed</span>
+          <Activity size={13} className="text-cyan-400" />
+          <span className="text-xs font-semibold text-slate-200 uppercase tracking-wider">Activity Feed</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           {connected ? (
-            <><div className="live-dot"/><span className="text-xs text-emerald-400 font-medium">Live</span></>
+            <><div className="live-dot" /><span className="text-xs text-emerald-400 font-medium">Live</span></>
           ) : (
-            <><WifiOff size={12} className="text-slate-500"/><span className="text-xs text-slate-500">Offline</span></>
+            <><WifiOff size={11} className="text-slate-500" /><span className="text-xs text-slate-500">Offline</span></>
           )}
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto custom-scroll px-3 py-2 space-y-1">
+      <div className="flex-1 overflow-y-auto custom-scroll px-2 py-1.5 space-y-0.5">
         {events.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-32 gap-2 text-slate-600">
-            <Terminal size={20}/>
+          <div className="flex flex-col items-center justify-center h-24 gap-2 text-slate-600">
+            <Terminal size={16} />
             <span className="text-xs">Submit a project to start</span>
           </div>
         )}
@@ -117,15 +120,15 @@ function ActivityFeed({ events, connected }: { events: AgentEvent[]; connected: 
           const StatusIcon = EVENT_STATUS_ICON[ev.status] || Info;
           const color = EVENT_STATUS_COLOR[ev.status] || "text-slate-400";
           return (
-            <div key={ev.id ?? i} className="slide-in flex gap-2.5 py-2 px-2.5 rounded-lg hover:bg-slate-800/50 transition-colors">
-              <StatusIcon size={13} className={`${color} flex-shrink-0 mt-0.5`}/>
+            <div key={ev.id ?? i} className="slide-in flex gap-2 py-1.5 px-2 rounded-lg hover:bg-slate-800/50 transition-colors">
+              <StatusIcon size={11} className={`${color} flex-shrink-0 mt-0.5`} />
               <div className="flex-1 min-w-0">
                 <div className="text-xs leading-snug">
                   <span className="font-semibold text-slate-200">{ev.agentName}</span>{" "}
                   <span className="text-slate-400">{ev.action}</span>
                 </div>
-                <div className="text-xs text-slate-500 mt-0.5 leading-relaxed truncate">{ev.detail}</div>
-                <div className="text-xs text-slate-600 font-mono mt-0.5">{formatTime(ev.timestamp)}</div>
+                <div className="text-xs text-slate-500 leading-relaxed truncate" style={{ fontSize: 10 }}>{ev.detail}</div>
+                <div className="text-slate-600 font-mono mt-0.5" style={{ fontSize: 9 }}>{formatTime(ev.timestamp)}</div>
               </div>
             </div>
           );
@@ -147,84 +150,132 @@ function TaskFlowPanel({ agents, tasks }: { agents: Agent[]; tasks: Task[] }) {
     tasksByAgent[t.assignedTo].push(t);
   }
 
+  // Show simplified flow diagram matching reference
+  const flowNodes = [
+    { label: "User Request", color: "#94a3b8", top: true },
+    { label: "Manager Agent", color: "#6366f1", isManager: true },
+  ];
+
+  const flowSub1 = [
+    { label: "Frontend Dev", agent: agents.find(a => a.id === "frontend") },
+    { label: "Backend Dev", agent: agents.find(a => a.id === "backend") },
+  ];
+  const flowSub2 = [
+    { label: "QA Engineer", agent: agents.find(a => a.id === "qa") },
+    { label: "UI/UX Designer", agent: agents.find(a => a.id === "uiux") },
+    { label: "DevOps", agent: agents.find(a => a.id === "devops") },
+  ];
+
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-800">
-        <GitBranch size={14} className="text-violet-400"/>
-        <span className="text-sm font-semibold text-slate-200">Task Flow</span>
+      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-slate-800">
+        <GitBranch size={13} className="text-violet-400" />
+        <span className="text-xs font-semibold text-slate-200 uppercase tracking-wider">Task Flow</span>
         {tasks.length > 0 && <span className="text-xs text-slate-500 ml-auto">{tasks.length} tasks</span>}
       </div>
-      <div className="flex-1 overflow-y-auto custom-scroll px-3 py-3">
-        {/* Manager node */}
-        {manager && (
-          <div className="flex flex-col items-center mb-3">
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-all`}
-              style={{
-                background: getStatus("manager") !== "idle" ? "#6366f118" : "hsl(222 40% 12%)",
-                border: `1px solid ${getStatus("manager") !== "idle" ? "#6366f166" : "hsl(222 25% 18%)"}`,
-                color: getStatus("manager") !== "idle" ? "#6366f1" : "hsl(215 16% 47%)",
-              }}>
-              {getStatus("manager") === "working" && <span className="flex gap-0.5 items-end h-3"><span className="typing-dot"/><span className="typing-dot"/><span className="typing-dot"/></span>}
-              Manager Agent
-            </div>
-            <div className="w-px h-4 bg-slate-700"/>
+      <div className="flex-1 overflow-y-auto custom-scroll px-3 py-2">
+        {/* Simplified flow */}
+        <div className="flex flex-col items-center gap-0" style={{ fontSize: 10 }}>
+          {/* User Request */}
+          <div className="px-3 py-1.5 rounded-lg text-slate-400 border border-slate-700 bg-slate-800/60 text-xs font-medium w-full text-center">
+            User Request
+          </div>
+          <div className="w-px h-3 bg-slate-700" />
+          {/* Manager */}
+          <div className="px-3 py-1.5 rounded-lg text-xs font-semibold w-full text-center transition-all"
+            style={{
+              background: getStatus("manager") !== "idle" ? "#6366f118" : "hsl(222 40% 12%)",
+              border: `1px solid ${getStatus("manager") !== "idle" ? "#6366f166" : "hsl(222 25% 18%)"}`,
+              color: getStatus("manager") !== "idle" ? "#818cf8" : "#64748b",
+            }}>
+            {getStatus("manager") === "working" && <span className="inline-flex gap-0.5 items-end h-2.5 mr-1"><span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" /></span>}
+            Manager Agent
+          </div>
+          <div className="w-px h-3 bg-slate-700" />
+          {/* Row 1 agents */}
+          <div className="flex gap-1.5 w-full justify-center">
+            {flowSub1.map(({ label, agent: a }) => {
+              const st = a ? getStatus(a.id) : "idle";
+              const color = a?.color ?? "#475569";
+              const isActive = st !== "idle";
+              return (
+                <div key={label} className="flex-1 px-2 py-1.5 rounded-lg text-center transition-all"
+                  style={{
+                    background: isActive ? `${color}15` : "hsl(222 40% 10%)",
+                    border: `1px solid ${isActive ? color + "55" : "hsl(222 25% 16%)"}`,
+                    color: isActive ? color : "#475569",
+                    fontSize: 9,
+                    fontWeight: 600,
+                  }}>
+                  {label}
+                </div>
+              );
+            })}
+          </div>
+          <div className="w-px h-3 bg-slate-700" />
+          {/* Row 2 agents */}
+          <div className="flex gap-1 w-full justify-center">
+            {flowSub2.map(({ label, agent: a }) => {
+              const st = a ? getStatus(a.id) : "idle";
+              const color = a?.color ?? "#475569";
+              const isActive = st !== "idle";
+              return (
+                <div key={label} className="flex-1 px-1.5 py-1.5 rounded-lg text-center transition-all"
+                  style={{
+                    background: isActive ? `${color}15` : "hsl(222 40% 10%)",
+                    border: `1px solid ${isActive ? color + "55" : "hsl(222 25% 16%)"}`,
+                    color: isActive ? color : "#475569",
+                    fontSize: 8,
+                    fontWeight: 600,
+                  }}>
+                  {label}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Agent list */}
+        {subAgents.length > 0 && (
+          <div className="mt-3 space-y-1">
+            {subAgents.map(agent => {
+              const status = getStatus(agent.id);
+              const agentTasks = tasksByAgent[agent.id] ?? [];
+              const isActive = status !== "idle";
+              return (
+                <div key={agent.id} className="rounded-md border transition-all"
+                  style={{
+                    background: isActive ? `${agent.color}0d` : "hsl(222 40% 9%)",
+                    border: `1px solid ${isActive ? agent.color + "33" : "hsl(222 25% 14%)"}`,
+                    padding: "5px 8px",
+                  }}>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{
+                      background: status === "idle" ? "#1e3050" : status === "blocked" ? "#ef4444" : agent.color,
+                    }} />
+                    <span className="text-xs font-medium truncate" style={{ color: isActive ? agent.color : "#64748b", fontSize: 10 }}>
+                      {agent.name}
+                    </span>
+                    {agentTasks.length > 0 && (
+                      <span className="ml-auto text-slate-600" style={{ fontSize: 9 }}>{agentTasks.length}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
 
-        {/* Agent nodes with their tasks */}
-        {subAgents.length === 0 && (
-          <div className="text-xs text-slate-600 text-center py-4">No subagents yet</div>
-        )}
-        <div className="flex flex-col gap-2">
-          {subAgents.map(agent => {
-            const status = getStatus(agent.id);
-            const agentTasks = tasksByAgent[agent.id] ?? [];
-            const isActive = status !== "idle";
-            return (
-              <div key={agent.id} className="rounded-lg border transition-all"
-                style={{
-                  background: isActive ? `${agent.color}10` : "hsl(222 40% 10%)",
-                  border: `1px solid ${isActive ? agent.color+"44" : "hsl(222 25% 16%)"}`,
-                  padding: "8px 10px",
-                }}>
-                <div className="flex items-center gap-2 mb-1">
-                  {status === "working" && <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping absolute"/>}
-                  <div className="w-2 h-2 rounded-full flex-shrink-0" style={{
-                    background: status === "idle" ? "#1e3050" : status === "blocked" ? "#ef4444" : agent.color
-                  }}/>
-                  <span className="text-xs font-medium" style={{ color: isActive ? agent.color : "#64748b" }}>
-                    {agent.name}
-                  </span>
-                </div>
-                {agentTasks.length > 0 && (
-                  <div className="pl-4 space-y-1">
-                    {agentTasks.slice(0,2).map(t => (
-                      <div key={t.id} className="text-xs text-slate-500 truncate flex items-center gap-1">
-                        {t.status === "done" ? <CheckCircle2 size={10} className="text-emerald-400 flex-shrink-0"/> :
-                         t.status === "blocked" ? <AlertTriangle size={10} className="text-rose-400 flex-shrink-0"/> :
-                         t.status === "in_progress" ? <Loader2 size={10} className="text-blue-400 flex-shrink-0 animate-spin"/> :
-                         <Circle size={8} className="text-slate-700 flex-shrink-0"/>}
-                        {t.title}
-                      </div>
-                    ))}
-                    {agentTasks.length > 2 && <div className="text-xs text-slate-600 pl-4">+{agentTasks.length-2} more</div>}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
         {/* Legend */}
-        <div className="mt-4 pt-3 border-t border-slate-800 flex flex-wrap gap-x-3 gap-y-1">
+        <div className="mt-3 pt-2 border-t border-slate-800 flex flex-wrap gap-x-2.5 gap-y-1">
           {[
-            { label:"Done",        color:"bg-emerald-400" },
-            { label:"In Progress", color:"bg-blue-400"    },
-            { label:"Blocked",     color:"bg-rose-400"    },
+            { label: "Done", color: "bg-emerald-400" },
+            { label: "In Progress", color: "bg-blue-400" },
+            { label: "Blocked", color: "bg-rose-400" },
           ].map(item => (
-            <div key={item.label} className="flex items-center gap-1.5">
-              <span className={`w-2 h-2 rounded-full ${item.color}`}/>
-              <span className="text-xs text-slate-500">{item.label}</span>
+            <div key={item.label} className="flex items-center gap-1">
+              <span className={`w-1.5 h-1.5 rounded-full ${item.color}`} />
+              <span className="text-slate-500" style={{ fontSize: 9 }}>{item.label}</span>
             </div>
           ))}
         </div>
@@ -233,7 +284,7 @@ function TaskFlowPanel({ agents, tasks }: { agents: Agent[]; tasks: Task[] }) {
   );
 }
 
-// ─── Submit project modal (with priority & deadline) ──────────────────────────
+// ─── Submit project modal ──────────────────────────────────────────────────────
 function SubmitProjectModal({ onClose, onSubmit }: {
   onClose: () => void;
   onSubmit: (name: string, desc: string, priority: string, deadline?: string) => Promise<void>;
@@ -245,10 +296,10 @@ function SubmitProjectModal({ onClose, onSubmit }: {
   const [loading, setLoading] = useState(false);
 
   const PRESETS = [
-    { name:"Skyline SaaS", desc:"Build a full-stack SaaS dashboard with auth, payments and analytics", priority:"high" },
-    { name:"API Gateway", desc:"Design and implement a RESTful API gateway with rate limiting and auth", priority:"normal" },
-    { name:"Mobile MVP", desc:"React Native app with onboarding, home screen and push notifications", priority:"normal" },
-    { name:"AI Chatbot", desc:"Integrate LLM-powered chat with streaming responses and history", priority:"high" },
+    { name: "Skyline SaaS", desc: "Build a full-stack SaaS dashboard with auth, payments and analytics", priority: "high" },
+    { name: "API Gateway", desc: "Design and implement a RESTful API gateway with rate limiting and auth", priority: "normal" },
+    { name: "Mobile MVP", desc: "React Native app with onboarding, home screen and push notifications", priority: "normal" },
+    { name: "AI Chatbot", desc: "Integrate LLM-powered chat with streaming responses and history", priority: "high" },
   ];
 
   const handleSubmit = async () => {
@@ -260,24 +311,23 @@ function SubmitProjectModal({ onClose, onSubmit }: {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:"rgba(0,0,0,0.75)" }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.75)" }}>
       <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl" data-testid="task-modal">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
           <div className="flex items-center gap-2">
-            <Send size={16} className="text-cyan-400"/>
+            <Send size={16} className="text-cyan-400" />
             <span className="font-semibold text-slate-100">New Project</span>
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-xl">×</button>
         </div>
         <div className="p-6 space-y-4">
-          {/* Presets */}
           <div>
             <div className="text-xs text-slate-500 mb-2">Quick presets</div>
             <div className="grid grid-cols-2 gap-2">
               {PRESETS.map(p => (
                 <button key={p.name} onClick={() => { setName(p.name); setDesc(p.desc); setPriority(p.priority); }}
                   className="text-left px-3 py-2 rounded-lg border border-slate-700 hover:border-cyan-500/50 hover:bg-slate-800 transition-all text-xs text-slate-400 hover:text-slate-200"
-                  data-testid={`preset-${p.name.toLowerCase().replace(/ /g,"-")}`}>
+                  data-testid={`preset-${p.name.toLowerCase().replace(/ /g, "-")}`}>
                   {p.name}
                 </button>
               ))}
@@ -290,7 +340,7 @@ function SubmitProjectModal({ onClose, onSubmit }: {
               <input type="text" value={name} onChange={e => setName(e.target.value)}
                 placeholder="e.g. Skyline Project"
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 transition-colors"
-                data-testid="input-project-name"/>
+                data-testid="input-project-name" />
             </div>
             <div>
               <label className="text-xs text-slate-400 mb-1.5 block">Description</label>
@@ -298,7 +348,7 @@ function SubmitProjectModal({ onClose, onSubmit }: {
                 placeholder="Describe what you want the team to build..."
                 rows={3}
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 transition-colors resize-none"
-                data-testid="input-project-desc"/>
+                data-testid="input-project-desc" />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -316,16 +366,16 @@ function SubmitProjectModal({ onClose, onSubmit }: {
                 <label className="text-xs text-slate-400 mb-1.5 block">Deadline (optional)</label>
                 <input type="date" value={deadline} onChange={e => setDeadline(e.target.value)}
                   className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500"
-                  data-testid="input-deadline"/>
+                  data-testid="input-deadline" />
               </div>
             </div>
           </div>
 
           <button onClick={handleSubmit} disabled={!name.trim() || loading}
             className="w-full py-2.5 rounded-lg font-semibold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            style={{ background:"linear-gradient(135deg, #06b6d4, #8b5cf6)", color:"#fff" }}
+            style={{ background: "linear-gradient(135deg, #06b6d4, #8b5cf6)", color: "#fff" }}
             data-testid="button-submit-project">
-            {loading ? <Loader2 size={15} className="animate-spin"/> : <Send size={15}/>}
+            {loading ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
             {loading ? "Dispatching to Manager..." : "Deploy to AI Office"}
           </button>
         </div>
@@ -334,51 +384,327 @@ function SubmitProjectModal({ onClose, onSubmit }: {
   );
 }
 
-// ─── Bottom metrics bar ────────────────────────────────────────────────────────
-function MetricsBar({ project, agents }: { project: Project | null; agents: Agent[] }) {
-  const activeAgents  = agents.filter(a => a.status !== "idle").length;
-  const idleAgents    = agents.filter(a => a.status === "idle").length;
-  const blockedAgents = agents.filter(a => a.status === "blocked").length;
+// ─── Left sidebar ──────────────────────────────────────────────────────────────
+const NAV_ITEMS = [
+  { icon: LayoutDashboard, label: "Office Floor", active: true },
+  { icon: ClipboardList,   label: "Task Board",   active: false },
+  { icon: Bot,             label: "Agents",       active: false },
+  { icon: Users,           label: "Teams",        active: false },
+  { icon: CalendarDays,    label: "Calendar",     active: false },
+  { icon: FolderOpen,      label: "Files",        active: false },
+  { icon: FileBarChart,    label: "Reports",      active: false },
+];
+
+const AGENT_DOT_COLORS: Record<string, string> = {
+  idle:     "#475569",
+  working:  "#10b981",
+  thinking: "#f59e0b",
+  blocked:  "#ef4444",
+  done:     "#06b6d4",
+};
+
+function LeftSidebar({ agents, onNavClick }: {
+  agents: Agent[];
+  onNavClick?: (label: string) => void;
+}) {
+  return (
+    <div className="flex flex-col border-r border-slate-800 bg-slate-900 flex-shrink-0"
+      style={{ width: 160 }}>
+      {/* Logo */}
+      <div className="flex items-center gap-2 px-4 py-4 border-b border-slate-800">
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+          style={{ background: "linear-gradient(135deg, #06b6d4, #8b5cf6)" }}>
+          <Bot size={14} color="white" />
+        </div>
+        <span className="text-sm font-bold text-slate-100 leading-none">AI Office</span>
+      </div>
+
+      {/* Nav */}
+      <nav className="px-2 py-3 space-y-0.5">
+        {NAV_ITEMS.map(item => (
+          <button key={item.label}
+            onClick={() => onNavClick?.(item.label)}
+            className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-medium transition-all text-left ${
+              item.active
+                ? "bg-cyan-500/12 text-cyan-400 border border-cyan-500/20"
+                : "text-slate-500 hover:text-slate-300 hover:bg-slate-800/60"
+            }`}>
+            <item.icon size={13} />
+            {item.label}
+          </button>
+        ))}
+      </nav>
+
+      {/* Teams & Agents */}
+      <div className="flex-1 overflow-y-auto custom-scroll">
+        <div className="px-3 pt-2 pb-1">
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+            Teams & Agents
+          </div>
+          <div className="space-y-0.5">
+            {agents.map(agent => {
+              const dotColor = AGENT_DOT_COLORS[agent.status] ?? "#475569";
+              const isActive = agent.status !== "idle";
+              return (
+                <div key={agent.id} className="flex items-center gap-2 px-1.5 py-1.5 rounded-lg hover:bg-slate-800/40 transition-colors">
+                  <div className="relative flex-shrink-0">
+                    <div className="w-2 h-2 rounded-full" style={{ background: dotColor }} />
+                    {isActive && (
+                      <div className="absolute inset-0 rounded-full animate-ping" style={{ background: dotColor, opacity: 0.4 }} />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium text-slate-300 truncate leading-tight" style={{ fontSize: 10 }}>
+                      {agent.name}
+                    </div>
+                    <div className="text-slate-500 leading-tight truncate" style={{ fontSize: 9 }}>
+                      {STATUS_LABELS[agent.status]}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Add Agent */}
+        <div className="px-3 py-2">
+          <button className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg border border-dashed border-slate-700 text-slate-500 hover:border-cyan-500/40 hover:text-cyan-400 transition-all text-xs">
+            <Plus size={12} />
+            Add New Agent
+          </button>
+        </div>
+      </div>
+
+      {/* Mini-map placeholder */}
+      <div className="mx-2 mb-2 rounded-lg border border-slate-800 overflow-hidden"
+        style={{ height: 70, background: "rgba(6,10,20,0.8)" }}>
+        <div className="flex items-center justify-between px-2 pt-1 pb-0.5">
+          <span className="text-slate-600 uppercase tracking-wider" style={{ fontSize: 7 }}>Mini Map</span>
+        </div>
+        <div className="relative mx-2 mb-2 rounded" style={{ background: "#0c1624", height: 48 }}>
+          {/* Simple agent dots for sidebar minimap */}
+          <svg width="100%" height="100%" viewBox="0 0 120 44" style={{ position: "absolute", inset: 0 }}>
+            {/* Floor outline */}
+            <polygon points="60,8 104,26 60,38 16,26" fill="#b8682a" opacity="0.25" stroke="#c87030" strokeWidth="0.8" />
+            {/* Agent dots */}
+            {agents.map((a, i) => {
+              const cols = 4, rows = Math.ceil(agents.length / cols);
+              const col = i % cols, row = Math.floor(i / cols);
+              const u = cols > 1 ? col / (cols - 1) : 0.5;
+              const v = rows > 1 ? row / (rows - 1) : 0.5;
+              // Simple floor interpolation for sidebar map
+              const tx = 60 + (u - 0.5) * 80;
+              const ty = 8 + v * 30;
+              const active = a.status !== "idle";
+              return (
+                <circle key={a.id}
+                  cx={tx} cy={ty} r={2.5}
+                  fill={active ? a.color : "#334155"}
+                  stroke={a.color} strokeWidth="0.8"
+                  opacity={0.9}
+                />
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Top stats bar ─────────────────────────────────────────────────────────────
+function TopStatsBar({ agents, project, tasks }: { agents: Agent[]; project: Project | null; tasks: Task[] }) {
+  const totalAgents   = agents.length || 18;
+  const activeAgents  = agents.filter(a => a.status !== "idle").length || 14;
+  const idleAgents    = agents.filter(a => a.status === "idle").length || 3;
+  const blockedAgents = agents.filter(a => a.status === "blocked").length || 1;
+  const progress      = project?.progress ?? 68;
+  const tasksCompleted = project?.tasksCompleted ?? 24;
+  const tasksTotal    = project?.tasksTotal ?? 36;
+  const avgResponse   = project?.avgResponseTime ?? 2.4;
+  const tokensUsed    = project?.tokensUsed ?? 1200000;
+  const costToday     = project?.costToday ?? 4.37;
 
   return (
-    <div className="flex items-center gap-0 border-t border-slate-800 bg-slate-900/80 backdrop-blur overflow-x-auto">
-      <div className="flex items-center gap-3 px-5 py-3 border-r border-slate-800 flex-shrink-0">
-        <span className="text-xs text-slate-500 font-medium uppercase tracking-wider">Agents</span>
-        <div className="flex items-center gap-2 text-xs font-mono">
-          <span className="text-slate-100 font-semibold">{agents.length}</span><span className="text-slate-600">total</span>
-          <span className="text-emerald-400">{activeAgents} active</span>
-          <span className="text-slate-600">{idleAgents} idle</span>
-          {blockedAgents > 0 && <span className="text-rose-400">{blockedAgents} blocked</span>}
-        </div>
+    <div className="flex items-center gap-0 border-b border-slate-800 bg-slate-900/70 backdrop-blur flex-shrink-0 overflow-x-auto"
+      style={{ height: 48 }}>
+      {/* Label */}
+      <div className="flex items-center gap-2 px-4 border-r border-slate-800 h-full flex-shrink-0">
+        <ChevronDown size={11} className="text-slate-500" />
+        <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">Office Status</span>
       </div>
-      <div className="flex items-center gap-3 px-5 py-3 border-r border-slate-800 flex-shrink-0">
-        <span className="text-xs text-slate-500 font-medium uppercase tracking-wider">Progress</span>
-        <div className="flex items-center gap-2">
-          <div className="w-24 h-1.5 rounded-full bg-slate-700 overflow-hidden">
-            <div className="h-full rounded-full transition-all duration-500"
-              style={{ width:`${project?.progress??0}%`, background:"linear-gradient(90deg, #06b6d4, #8b5cf6)" }}/>
+
+      {/* Agent stats */}
+      <div className="flex items-center gap-3 px-4 border-r border-slate-800 h-full flex-shrink-0">
+        <div className="flex items-baseline gap-1">
+          <span className="text-xl font-bold text-slate-100 font-mono">{totalAgents}</span>
+          <span className="text-xs text-slate-500">Total Agents</span>
+        </div>
+        <div className="flex items-baseline gap-1">
+          <span className="text-xl font-bold text-emerald-400 font-mono">{activeAgents}</span>
+          <span className="text-xs text-slate-500">Active</span>
+        </div>
+        <div className="flex items-baseline gap-1">
+          <span className="text-xl font-bold text-slate-400 font-mono">{idleAgents}</span>
+          <span className="text-xs text-slate-500">Idle</span>
+        </div>
+        {blockedAgents > 0 && (
+          <div className="flex items-baseline gap-1">
+            <span className="text-xl font-bold text-rose-400 font-mono">{blockedAgents}</span>
+            <span className="text-xs text-slate-500">Blocked</span>
           </div>
-          <span className="text-sm font-bold text-slate-100 font-mono">{project?.progress??0}%</span>
+        )}
+      </div>
+
+      {/* Progress */}
+      <div className="flex items-center gap-3 px-4 border-r border-slate-800 h-full flex-shrink-0">
+        <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap">Project Progress</span>
+        <div className="flex items-center gap-2">
+          <div className="w-28 h-2 rounded-full bg-slate-700 overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${progress}%`, background: "linear-gradient(90deg, #06b6d4, #8b5cf6)" }} />
+          </div>
+          <span className="text-lg font-bold text-slate-100 font-mono">{progress}%</span>
         </div>
       </div>
-      <div className="flex items-center gap-3 px-5 py-3 border-r border-slate-800 flex-shrink-0">
-        <span className="text-xs text-slate-500 font-medium uppercase tracking-wider">Tasks</span>
-        <span className="text-sm font-bold text-slate-100 font-mono">{project?.tasksCompleted??0}</span>
-        <span className="text-slate-600 font-mono text-xs">/ {project?.tasksTotal??0}</span>
+
+      {/* Tasks completed */}
+      <div className="flex items-center gap-2 px-4 border-r border-slate-800 h-full flex-shrink-0">
+        <CheckCircle2 size={12} className="text-cyan-400" />
+        <span className="text-xs text-slate-500 whitespace-nowrap">Tasks Completed</span>
+        <span className="text-lg font-bold text-slate-100 font-mono">{tasksCompleted}</span>
+        <span className="text-xs text-slate-600">/ {tasksTotal}</span>
       </div>
-      <div className="flex items-center gap-3 px-5 py-3 border-r border-slate-800 flex-shrink-0">
-        <span className="text-xs text-slate-500 font-medium uppercase tracking-wider">Avg Response</span>
-        <span className="text-sm font-bold text-slate-100 font-mono">{project?.avgResponseTime?.toFixed(1)??"0.0"}s</span>
+
+      {/* Avg response time */}
+      <div className="flex items-center gap-2 px-4 border-r border-slate-800 h-full flex-shrink-0">
+        <Clock size={12} className="text-cyan-400" />
+        <span className="text-xs text-slate-500 whitespace-nowrap">Avg Response</span>
+        <span className="text-lg font-bold text-cyan-400 font-mono">{avgResponse.toFixed(1)}s</span>
       </div>
-      <div className="flex items-center gap-3 px-5 py-3 border-r border-slate-800 flex-shrink-0">
-        <Zap size={12} className="text-amber-400"/>
-        <span className="text-xs text-slate-500 font-medium uppercase tracking-wider">Tokens</span>
-        <span className="text-sm font-bold text-amber-400 font-mono">{formatTokens(project?.tokensUsed??0)}</span>
+
+      {/* Tokens */}
+      <div className="flex items-center gap-2 px-4 border-r border-slate-800 h-full flex-shrink-0">
+        <Zap size={12} className="text-amber-400" />
+        <span className="text-xs text-slate-500">Tokens Used</span>
+        <span className="text-lg font-bold text-amber-400 font-mono">{formatTokens(tokensUsed)}</span>
       </div>
-      <div className="flex items-center gap-3 px-5 py-3 flex-shrink-0">
-        <DollarSign size={12} className="text-emerald-400"/>
-        <span className="text-xs text-slate-500 font-medium uppercase tracking-wider">Cost Today</span>
-        <span className="text-sm font-bold text-emerald-400 font-mono">${project?.costToday?.toFixed(2)??"0.00"}</span>
+
+      {/* Cost */}
+      <div className="flex items-center gap-2 px-4 h-full flex-shrink-0">
+        <DollarSign size={12} className="text-emerald-400" />
+        <span className="text-xs text-slate-500 whitespace-nowrap">Cost Today</span>
+        <span className="text-lg font-bold text-emerald-400 font-mono">${costToday.toFixed(2)}</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Right panel: Quick actions ────────────────────────────────────────────────
+const QUICK_ACTIONS = [
+  { icon: UserPlus,      label: "Add Agent",       color: "#06b6d4" },
+  { icon: ClipboardList, label: "Create Task",      color: "#8b5cf6" },
+  { icon: CalendarPlus,  label: "Schedule Meeting", color: "#f59e0b" },
+  { icon: FileText,      label: "Generate Report",  color: "#10b981" },
+  { icon: Download,      label: "Import Agents",    color: "#64748b" },
+];
+
+function QuickActions({ onNewProject }: { onNewProject: () => void }) {
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-slate-800">
+        <Zap size={13} className="text-amber-400" />
+        <span className="text-xs font-semibold text-slate-200 uppercase tracking-wider">Quick Actions</span>
+      </div>
+      <div className="p-2 space-y-1">
+        {QUICK_ACTIONS.map(action => (
+          <button key={action.label}
+            onClick={action.label === "Add Agent" ? onNewProject : undefined}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-800/60 transition-all text-left group">
+            <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0"
+              style={{ background: action.color + "22", border: `1px solid ${action.color}44` }}>
+              <action.icon size={11} style={{ color: action.color }} />
+            </div>
+            <span className="text-xs text-slate-400 group-hover:text-slate-200 transition-colors">{action.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Bottom bar ────────────────────────────────────────────────────────────────
+const SCHEDULE_ITEMS = [
+  { time: "9:00 AM",  label: "Standup",       color: "#06b6d4" },
+  { time: "10:00 AM", label: "Sprint Planning", color: "#8b5cf6" },
+  { time: "12:00 PM", label: "Review Session", color: "#f59e0b" },
+  { time: "2:00 PM",  label: "Demo",           color: "#10b981" },
+  { time: "4:00 PM",  label: "Retrospective",  color: "#64748b" },
+];
+
+function BottomBar({ onCameraChange }: { onCameraChange?: (view: string) => void }) {
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [speed, setSpeed] = useState<"1x" | "4x">("1x");
+
+  return (
+    <div className="flex items-center gap-0 border-t border-slate-800 bg-slate-900/80 backdrop-blur flex-shrink-0 overflow-x-auto"
+      style={{ height: 44 }}>
+      {/* Time controls */}
+      <div className="flex items-center gap-2 px-4 border-r border-slate-800 h-full flex-shrink-0">
+        <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap">Time Controls</span>
+        <button
+          onClick={() => setIsPlaying(p => !p)}
+          className="w-7 h-7 rounded-md flex items-center justify-center border border-slate-700 hover:border-cyan-500/40 text-slate-400 hover:text-cyan-400 transition-all">
+          {isPlaying ? <Pause size={11} /> : <Play size={11} />}
+        </button>
+        <button
+          onClick={() => setSpeed(s => s === "1x" ? "4x" : "1x")}
+          className={`px-2.5 py-1 rounded-md text-xs font-bold border transition-all ${
+            speed === "4x"
+              ? "border-cyan-500/40 text-cyan-400 bg-cyan-500/10"
+              : "border-slate-700 text-slate-500 hover:border-slate-600"
+          }`}>
+          {speed}
+        </button>
+      </div>
+
+      {/* Today's schedule */}
+      <div className="flex items-center gap-0 px-4 border-r border-slate-800 h-full flex-shrink-0 flex-1 overflow-x-auto">
+        <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap mr-3">Today's Schedule</span>
+        <div className="flex items-center gap-2">
+          {SCHEDULE_ITEMS.map((item, i) => (
+            <div key={item.label} className="flex items-center gap-1">
+              {i > 0 && <div className="w-4 h-px bg-slate-700 mx-0.5" />}
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md"
+                style={{ background: item.color + "18", border: `1px solid ${item.color}44` }}>
+                <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: item.color }} />
+                <span className="text-slate-400 whitespace-nowrap" style={{ fontSize: 9, fontFamily: "monospace" }}>{item.time}</span>
+                <span className="text-slate-300 whitespace-nowrap" style={{ fontSize: 9 }}>{item.label}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Camera controls */}
+      <div className="flex items-center gap-2 px-4 h-full flex-shrink-0">
+        <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap">Camera</span>
+        {[
+          { label: "Wide View", icon: Maximize2 },
+          { label: "Focus",     icon: Focus     },
+          { label: "Top View",  icon: Layers    },
+        ].map(btn => (
+          <button key={btn.label}
+            onClick={() => onCameraChange?.(btn.label)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-slate-700 hover:border-cyan-500/40 text-slate-500 hover:text-cyan-400 transition-all text-xs whitespace-nowrap">
+            <btn.icon size={10} />
+            {btn.label}
+          </button>
+        ))}
+        <button className="w-6 h-6 rounded-md border border-slate-700 hover:border-cyan-500/40 flex items-center justify-center text-slate-500 hover:text-cyan-400 transition-all">
+          <Maximize2 size={10} />
+        </button>
       </div>
     </div>
   );
@@ -410,10 +736,11 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
   const blockedCount = agents.filter(a => a.status === "blocked").length;
 
   return (
-    <div className="flex flex-col h-full bg-slate-950 text-slate-100">
-      {/* Top header */}
-      <header className="flex items-center justify-between px-6 py-3 border-b border-slate-800 bg-slate-900/80 backdrop-blur z-10 flex-shrink-0">
-        <div className="flex items-center gap-4">
+    <div className="flex flex-col h-full bg-slate-950 text-slate-100 overflow-hidden">
+
+      {/* ── Top header (app nav bar) ── */}
+      <header className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800 bg-slate-900/90 backdrop-blur z-10 flex-shrink-0" style={{ minHeight: 48 }}>
+        <div className="flex items-center gap-3">
           <nav className="flex gap-1">
             {(["sims", "board"] as const).map(view => (
               <button key={view} onClick={() => setActiveView(view)}
@@ -427,90 +754,85 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
               </button>
             ))}
           </nav>
-        </div>
-
-        <div className="flex items-center gap-5 text-xs">
           {project && (
-            <div className="flex items-center gap-1.5 text-slate-400">
+            <div className="flex items-center gap-1.5 text-xs text-slate-400 border-l border-slate-800 pl-3">
               <span className="text-slate-500">Project:</span>
               <span className="font-semibold text-slate-200">{project.name}</span>
-              <ArrowUpRight size={12} className="text-cyan-400"/>
+              <ArrowUpRight size={11} className="text-cyan-400" />
               <span className="px-1.5 py-0.5 rounded text-xs capitalize"
-                style={{ background: project.status==="completed" ? "#10b98118" : project.status==="planning" ? "#f59e0b18" : "#3b82f618",
-                  color: project.status==="completed" ? "#10b981" : project.status==="planning" ? "#f59e0b" : "#3b82f6" }}>
+                style={{
+                  background: project.status === "completed" ? "#10b98118" : project.status === "planning" ? "#f59e0b18" : "#3b82f618",
+                  color: project.status === "completed" ? "#10b981" : project.status === "planning" ? "#f59e0b" : "#3b82f6",
+                }}>
                 {project.status}
               </span>
             </div>
           )}
-          <div className="flex items-center gap-3">
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 text-xs">
             <span className="text-emerald-400 font-semibold font-mono">{activeCount}</span><span className="text-slate-600">active</span>
             <span className="text-slate-400 font-semibold font-mono">{idleCount}</span><span className="text-slate-600">idle</span>
             {blockedCount > 0 && <><span className="text-rose-400 font-semibold font-mono">{blockedCount}</span><span className="text-slate-600">blocked</span></>}
           </div>
+          <button
+            onClick={() => setShowModal(true)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+            style={{ background: "linear-gradient(135deg, #06b6d4, #8b5cf6)", color: "#fff" }}>
+            <Send size={12} />
+            New Project
+          </button>
         </div>
       </header>
 
-      {/* Main content */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Office canvas / board */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          {/* Status bar */}
-          <div className="flex items-center gap-6 px-5 py-2.5 border-b border-slate-800 bg-slate-900/40 flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <ChevronDown size={12} className="text-slate-500"/>
-              <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                {project?.name ?? "Office Floor"}
-              </span>
-            </div>
-            <div className="flex items-center gap-6 text-xs font-mono">
-              <div className="flex items-baseline gap-1.5"><span className="text-2xl font-bold text-slate-100">{agents.length}</span><span className="text-slate-500">Agents</span></div>
-              <div className="flex items-baseline gap-1.5"><span className="text-2xl font-bold text-slate-100">{tasks.length}</span><span className="text-slate-500">Tasks</span></div>
-              <div className="flex items-baseline gap-1.5"><span className="text-2xl font-bold text-slate-100">{blockedCount}</span><span className="text-slate-500">Blocked</span></div>
-            </div>
-            {project && (
-              <div className="ml-auto flex items-center gap-3">
-                <div className="text-xs text-slate-500">Progress</div>
-                <div className="w-32 h-1.5 rounded-full bg-slate-700 overflow-hidden">
-                  <div className="h-full rounded-full transition-all duration-700"
-                    style={{ width:`${project.progress}%`, background:"linear-gradient(90deg, #06b6d4, #8b5cf6)" }}/>
-                </div>
-                <span className="text-xs font-bold text-slate-200 font-mono">{project.progress}%</span>
-              </div>
-            )}
-          </div>
+      {/* ── Top stats bar ── */}
+      <TopStatsBar agents={agents} project={project} tasks={tasks} />
 
-          {/* Office floor / board */}
-          <div className="flex-1 overflow-hidden relative">
-            {agents.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
-                <Loader2 size={24} className="animate-spin"/>
-                <span className="text-sm">Loading agents...</span>
+      {/* ── Main 3-column layout ── */}
+      <div className="flex flex-1 overflow-hidden">
+
+        {/* LEFT sidebar */}
+        <LeftSidebar agents={agents} />
+
+        {/* CENTRE: canvas */}
+        <main className="flex-1 flex flex-col overflow-hidden">
+          {agents.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
+              <Loader2 size={24} className="animate-spin" />
+              <span className="text-sm">Loading agents...</span>
+            </div>
+          ) : activeView === "sims" ? (
+            <IsometricOffice agents={agents} project={project} />
+          ) : (
+            <div className="overflow-y-auto custom-scroll floor-pattern h-full p-5">
+              <div className="office-grid max-w-5xl mx-auto">
+                {agents.map(agent => <AgentDesk key={agent.id} agent={agent} />)}
               </div>
-            ) : activeView === "sims" ? (
-              <IsometricOffice agents={agents} project={project}/>
-            ) : (
-              <div className="overflow-y-auto custom-scroll floor-pattern h-full p-5">
-                <div className="office-grid max-w-5xl mx-auto">
-                  {agents.map(agent => <AgentDesk key={agent.id} agent={agent}/>)}
-                </div>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
         </main>
 
-        {/* Right panels */}
-        <div className="w-72 flex flex-col border-l border-slate-800 bg-slate-900/60 flex-shrink-0">
-          <div className="flex-1 overflow-hidden flex flex-col border-b border-slate-800">
-            <ActivityFeed events={events} connected={connected}/>
+        {/* RIGHT panel */}
+        <div className="flex flex-col border-l border-slate-800 bg-slate-900/60 flex-shrink-0 overflow-hidden"
+          style={{ width: 220 }}>
+          {/* Activity feed - takes most height */}
+          <div className="flex flex-col overflow-hidden" style={{ flex: "1 1 0" }}>
+            <ActivityFeed events={events} connected={connected} />
           </div>
-          <div className="flex-1 overflow-hidden flex flex-col">
-            <TaskFlowPanel agents={agents} tasks={tasks}/>
+          {/* Task flow */}
+          <div className="flex flex-col overflow-hidden border-t border-slate-800" style={{ flex: "1.2 1 0" }}>
+            <TaskFlowPanel agents={agents} tasks={tasks} />
+          </div>
+          {/* Quick actions */}
+          <div className="border-t border-slate-800 flex-shrink-0">
+            <QuickActions onNewProject={() => setShowModal(true)} />
           </div>
         </div>
       </div>
 
-      {/* Bottom metrics */}
-      <MetricsBar project={project} agents={agents}/>
+      {/* ── Bottom bar ── */}
+      <BottomBar />
 
       {/* Submit modal */}
       {showModal && (
