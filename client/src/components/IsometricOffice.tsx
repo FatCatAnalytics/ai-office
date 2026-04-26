@@ -524,14 +524,12 @@ function OfficeRoom() {
     >
       <defs>
         <linearGradient id="leftWallG" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%"   stopColor="#7a8090"/>
-          <stop offset="60%"  stopColor="#adb3be"/>
-          <stop offset="100%" stopColor="#c0c6d0"/>
+          <stop offset="0%"   stopColor="#8e949e"/>
+          <stop offset="100%" stopColor="#b8bec8"/>
         </linearGradient>
         <linearGradient id="rightWallG" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%"   stopColor="#d0d5dd"/>
-          <stop offset="50%"  stopColor="#b8bcc6"/>
-          <stop offset="100%" stopColor="#949aa6"/>
+          <stop offset="0%"   stopColor="#c8cdd5"/>
+          <stop offset="100%" stopColor="#a8adb8"/>
         </linearGradient>
         <linearGradient id="ceilG" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%"   stopColor="#22283a"/>
