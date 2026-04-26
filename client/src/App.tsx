@@ -10,11 +10,12 @@ import TaskBoardPage from "./pages/TaskBoardPage";
 import SettingsPage from "./pages/SettingsPage";
 import BudgetPage from "./pages/BudgetPage";
 import FilesPage from "./pages/FilesPage";
+import ProjectsPage from "./pages/ProjectsPage";
 import { useWebSocket } from "./hooks/useWebSocket";
 import {
   LayoutDashboard, Users, LayoutGrid, Settings, Send, DollarSign, FolderOpen,
   Wifi, WifiOff, Crown, Monitor, Server, Bug, Palette, Rocket,
-  Database, BarChart3, Shield, Briefcase, Circle, ChevronRight,
+  Database, BarChart3, Shield, Briefcase, Circle, ChevronRight, Folders,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import type { Agent, Project } from "./types";
@@ -41,6 +42,7 @@ function AppShell() {
 
   const navItems = [
     { href: "/", icon: LayoutDashboard, label: "Office Floor" },
+    { href: "/projects", icon: Folders, label: "Projects" },
     { href: "/board", icon: LayoutGrid, label: "Task Board" },
     { href: "/agents", icon: Users, label: "Agents" },
     { href: "/files", icon: FolderOpen, label: "Files" },
@@ -151,6 +153,7 @@ function AppShell() {
               liveStreams={liveStreams}
             />
           </Route>
+          <Route path="/projects" component={ProjectsPage} />
           <Route path="/board">
             <TaskBoardPage tasks={tasks} project={project} agents={agents}/>
           </Route>

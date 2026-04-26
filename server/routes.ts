@@ -5,7 +5,7 @@ import path from "path";
 import fs from "fs";
 import { storage } from "./storage";
 import type { Agent, Task, Project } from "@shared/schema";
-import { runLiveOrchestration } from "./liveOrchestrator";
+import { runLiveOrchestration, resumeLiveOrchestration } from "./liveOrchestrator";
 
 // ─── WebSocket broadcast ───────────────────────────────────────────────────────
 const wsClients = new Set<WebSocket>();
@@ -369,7 +369,7 @@ function runTaskWaves(projectId: number, tasks: Task[], agents: Agent[]) {
 const MODEL_COST_PER_1K: Record<string, { in: number; out: number }> = {
   "claude-opus-4-7":   { in: 0.015,   out: 0.075 },
   "claude-sonnet-4-6": { in: 0.003,   out: 0.015 },
-  "claude-haiku-3-5":  { in: 0.00025, out: 0.00125 },
+  "claude-haiku-4-5":  { in: 0.001,   out: 0.005 },
   "gpt-4.1":           { in: 0.002,   out: 0.008 },
   "gpt-4.1-mini":      { in: 0.0004,  out: 0.0016 },
   "o4-mini":           { in: 0.0011,  out: 0.0044 },
@@ -596,7 +596,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
       role,
       spriteType: spriteType || "manager",
       provider: provider || "anthropic",
-      modelId: modelId || "claude-opus-4-5",
+      modelId: modelId || "claude-opus-4-7",
       systemPrompt: systemPrompt || "",
       capabilities: JSON.stringify(capabilities || []),
       reportsTo: reportsTo || null,
@@ -676,10 +676,85 @@ export function registerRoutes(httpServer: Server, app: Express) {
   });
 
   app.patch("/api/projects/:id", (req, res) => {
-    const project = storage.updateProject(parseInt(req.params.id), req.body);
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "invalid project id" });
+
+    const existing = storage.getProject(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+
+    // Refuse to edit while a project is mid-run — prevents racing the orchestrator.
+    if (existing.status === "active" || existing.status === "planning") {
+      return res.status(409).json({
+        error: `Cannot edit while project is ${existing.status}. Wait for it to finish or block.`,
+      });
+    }
+
+    // Whitelist editable fields only.
+    const { name, description, priority, outputFormats, deadline } = req.body ?? {};
+    const update: Record<string, unknown> = {};
+    if (typeof name === "string" && name.trim()) update.name = name.trim();
+    if (typeof description === "string") update.description = description.trim();
+    if (typeof priority === "string") update.priority = priority;
+    if (Array.isArray(outputFormats)) update.outputFormats = JSON.stringify(outputFormats);
+    if (deadline === null || typeof deadline === "number") update.deadline = deadline;
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: "No editable fields supplied" });
+    }
+
+    const project = storage.updateProject(id, update);
     if (!project) return res.status(404).json({ error: "Not found" });
     broadcast({ type: "project_update", projectId: project.id, ...project });
     res.json(project);
+  });
+
+  app.delete("/api/projects/:id", (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "invalid project id" });
+
+    const existing = storage.getProject(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    if (existing.status === "active" || existing.status === "planning") {
+      return res.status(409).json({
+        error: `Cannot delete while project is ${existing.status}. Wait for it to finish or block.`,
+      });
+    }
+
+    const counts = storage.deleteProject(id);
+    broadcast({ type: "project_deleted", projectId: id });
+    res.json({ ok: true, deleted: counts });
+  });
+
+  app.post("/api/projects/:id/resume", (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "invalid project id" });
+
+    const existing = storage.getProject(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    if (existing.status !== "blocked") {
+      return res.status(409).json({
+        error: `Resume is only valid for blocked projects (current status: ${existing.status}).`,
+      });
+    }
+
+    res.json({ ok: true, resumed: true });
+
+    // Kick off resume asynchronously so the response returns immediately.
+    setImmediate(() => {
+      resumeLiveOrchestration(id, {
+        broadcast,
+        emitEvent,
+        setAgentStatus,
+        generateSimulatedFiles,
+      }).catch((e) => {
+        const manager = storage.getAgent("manager");
+        emitEvent(id, "manager", manager?.name ?? "Manager Agent", "resume error",
+          `${(e as Error).message ?? e}`, "error");
+        setAgentStatus("manager", "idle", null);
+        storage.updateProject(id, { status: "blocked" });
+        broadcast({ type: "project_update", projectId: id, status: "blocked" });
+      });
+    });
   });
 
   app.get("/api/projects/:id/events", (req, res) => {

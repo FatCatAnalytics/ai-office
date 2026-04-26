@@ -42,10 +42,8 @@ export interface StreamResult {
 const COST_PER_1K: Record<string, { in: number; out: number }> = {
   // Anthropic
   "claude-opus-4-7":   { in: 0.015,   out: 0.075 },
-  "claude-opus-4-5":   { in: 0.015,   out: 0.075 },
   "claude-sonnet-4-6": { in: 0.003,   out: 0.015 },
-  "claude-sonnet-4-5": { in: 0.003,   out: 0.015 },
-  "claude-haiku-3-5":  { in: 0.00025, out: 0.00125 },
+  "claude-haiku-4-5":  { in: 0.001,   out: 0.005 },
   // OpenAI
   "gpt-4.1":           { in: 0.002,   out: 0.008 },
   "gpt-4.1-mini":      { in: 0.0004,  out: 0.0016 },

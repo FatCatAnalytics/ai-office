@@ -85,7 +85,7 @@ export const MODEL_CATALOG: Record<string, { label: string; models: string[] }> 
     models: [
       "claude-opus-4-7",   // latest flagship
       "claude-sonnet-4-6", // latest balanced
-      "claude-haiku-3-5",  // fast + cheap
+      "claude-haiku-4-5",  // fast + cheap
     ],
   },
   openai: {

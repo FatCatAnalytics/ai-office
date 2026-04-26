@@ -25,7 +25,7 @@ sqlite.exec(`
     role TEXT NOT NULL,
     sprite_type TEXT NOT NULL,
     provider TEXT NOT NULL DEFAULT 'anthropic',
-    model_id TEXT NOT NULL DEFAULT 'claude-opus-4-5',
+    model_id TEXT NOT NULL DEFAULT 'claude-opus-4-7',
     system_prompt TEXT NOT NULL DEFAULT '',
     capabilities TEXT NOT NULL DEFAULT '[]',
     reports_to TEXT,
@@ -122,6 +122,18 @@ try {
   sqlite.exec(`ALTER TABLE tasks ADD COLUMN wave_index INTEGER`);
 } catch { /* column already exists */ }
 
+// Stage 4.5 safe migrations: existing rows with retired Anthropic model ids.
+// Older seeds used "claude-opus-4-5" / "claude-sonnet-4-5" / "claude-haiku-3-5",
+// none of which exist in the public Anthropic API. Map them forward to the
+// current canonical ids so live calls don't 404. Idempotent.
+try {
+  sqlite.exec(`UPDATE agents SET model_id = 'claude-opus-4-7'   WHERE model_id = 'claude-opus-4-5'`);
+  sqlite.exec(`UPDATE agents SET model_id = 'claude-sonnet-4-6' WHERE model_id = 'claude-sonnet-4-5'`);
+  sqlite.exec(`UPDATE agents SET model_id = 'claude-haiku-4-5'  WHERE model_id = 'claude-haiku-3-5'`);
+} catch (e) {
+  console.warn("[migration] failed to remap retired Anthropic model ids:", e);
+}
+
 // Ensure projects storage dir exists
 export const PROJECTS_DIR = process.env.PROJECTS_DIR ?? path.join(process.cwd(), "projects");
 fs.mkdirSync(PROJECTS_DIR, { recursive: true });
@@ -134,7 +146,7 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     role: "Orchestrator",
     spriteType: "manager",
     provider: "anthropic",
-    modelId: "claude-opus-4-5",
+    modelId: "claude-opus-4-7",
     systemPrompt: "You are the AI Office Manager. You receive projects, break them into tasks, delegate to the right agents based on their capabilities, monitor progress, and reassign blocked tasks. You see everything and coordinate the whole team.",
     capabilities: JSON.stringify(["orchestration", "planning", "delegation", "review"]),
     reportsTo: null,
@@ -149,7 +161,7 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     role: "UI Engineer",
     spriteType: "frontend",
     provider: "anthropic",
-    modelId: "claude-sonnet-4-5",
+    modelId: "claude-sonnet-4-6",
     systemPrompt: "You are a skilled Frontend Developer. You build React components, implement UI designs, handle routing, state management, and ensure pixel-perfect rendering across devices.",
     capabilities: JSON.stringify(["react", "typescript", "css", "ui", "components", "routing"]),
     reportsTo: "manager",
@@ -179,7 +191,7 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     role: "Quality Assurance",
     spriteType: "qa",
     provider: "anthropic",
-    modelId: "claude-haiku-3-5",
+    modelId: "claude-haiku-4-5",
     systemPrompt: "You are a thorough QA Engineer. You write and run tests, find bugs, validate requirements, test edge cases, and ensure nothing ships broken. You catch what others miss.",
     capabilities: JSON.stringify(["testing", "e2e", "integration", "unit-tests", "bug-finding", "qa"]),
     reportsTo: "manager",
@@ -209,7 +221,7 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     role: "Infrastructure",
     spriteType: "devops",
     provider: "anthropic",
-    modelId: "claude-sonnet-4-5",
+    modelId: "claude-sonnet-4-6",
     systemPrompt: "You are a seasoned DevOps Engineer. You manage CI/CD pipelines, container orchestration, cloud infrastructure, monitoring, and deployment strategies. You make things scale reliably.",
     capabilities: JSON.stringify(["docker", "ci-cd", "kubernetes", "nginx", "monitoring", "deployment", "linux"]),
     reportsTo: "manager",
@@ -254,7 +266,7 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     role: "AppSec & Infra",
     spriteType: "secengineer",
     provider: "anthropic",
-    modelId: "claude-opus-4-5",
+    modelId: "claude-opus-4-7",
     systemPrompt: "You are a Security Engineer. You perform threat modeling, code security reviews, pen testing, implement auth & encryption, and ensure the stack is hardened against attacks.",
     capabilities: JSON.stringify(["security", "auth", "encryption", "pentest", "owasp", "ssl", "firewall"]),
     reportsTo: "manager",
@@ -295,6 +307,7 @@ export interface IStorage {
   getProject(id: number): Project | undefined;
   createProject(data: InsertProject): Project;
   updateProject(id: number, data: Partial<Project>): Project | undefined;
+  deleteProject(id: number): { tasks: number; events: number; files: number; tokenUsage: number } | undefined;
 
   // Tasks
   getTasks(projectId?: number): Task[];
@@ -302,6 +315,8 @@ export interface IStorage {
   createTask(data: InsertTask): Task;
   updateTask(id: number, data: Partial<Task>): Task | undefined;
   deleteTask(id: number): void;
+  getResumableTasks(projectId: number): Task[];
+  getCompletedTasksWithFiles(projectId: number): { task: Task; output: string }[];
 
   // Events
   getEvents(projectId: number, limit?: number): AgentEvent[];
@@ -374,6 +389,42 @@ class SQLiteStorage implements IStorage {
   updateProject(id: number, data: Partial<Project>): Project | undefined {
     return db.update(schema.projects).set(data).where(eq(schema.projects.id, id)).returning().get();
   }
+  deleteProject(id: number): { tasks: number; events: number; files: number; tokenUsage: number } | undefined {
+    const project = db.select().from(schema.projects).where(eq(schema.projects.id, id)).get();
+    if (!project) return undefined;
+
+    // Delete tasks
+    const taskRows = db.delete(schema.tasks).where(eq(schema.tasks.projectId, id)).run();
+
+    // Delete agent events
+    const eventRows = db.delete(schema.agentEvents).where(eq(schema.agentEvents.projectId, id)).run();
+
+    // Delete project file rows + their on-disk files
+    const files = db.select().from(schema.projectFiles).where(eq(schema.projectFiles.projectId, id)).all();
+    for (const f of files) {
+      try { fs.unlinkSync(f.filePath); } catch { /* already gone */ }
+    }
+    const fileRows = db.delete(schema.projectFiles).where(eq(schema.projectFiles.projectId, id)).run();
+
+    // Delete token usage rows for this project
+    const tokenRows = db.delete(schema.tokenUsage).where(eq(schema.tokenUsage.projectId, id)).run();
+
+    // Remove project filesystem dir (best-effort)
+    try {
+      const dir = path.join(PROJECTS_DIR, String(id));
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    } catch { /* ignore */ }
+
+    // Finally remove project row
+    db.delete(schema.projects).where(eq(schema.projects.id, id)).run();
+
+    return {
+      tasks: taskRows.changes ?? 0,
+      events: eventRows.changes ?? 0,
+      files: fileRows.changes ?? 0,
+      tokenUsage: tokenRows.changes ?? 0,
+    };
+  }
 
   // ── Tasks ──
   getTasks(projectId?: number): Task[] {
@@ -394,6 +445,44 @@ class SQLiteStorage implements IStorage {
   }
   deleteTask(id: number): void {
     db.delete(schema.tasks).where(eq(schema.tasks.id, id)).run();
+  }
+  getResumableTasks(projectId: number): Task[] {
+    // Tasks that haven't completed and weren't superseded by a replan.
+    return db
+      .select()
+      .from(schema.tasks)
+      .where(eq(schema.tasks.projectId, projectId))
+      .all()
+      .filter((t) => {
+        if (t.status === "todo" || t.status === "in_progress") return true;
+        if (t.status === "blocked" && t.blockedReason !== "Superseded by replan") return true;
+        return false;
+      });
+  }
+  getCompletedTasksWithFiles(projectId: number): { task: Task; output: string }[] {
+    const tasks = db
+      .select()
+      .from(schema.tasks)
+      .where(and(eq(schema.tasks.projectId, projectId), eq(schema.tasks.status, "done")))
+      .all();
+    const out: { task: Task; output: string }[] = [];
+    for (const task of tasks) {
+      // Find the most-relevant file for this task (markdown preferred, else any).
+      const files = db
+        .select()
+        .from(schema.projectFiles)
+        .where(and(eq(schema.projectFiles.projectId, projectId), eq(schema.projectFiles.taskId, task.id)))
+        .all();
+      if (files.length === 0) continue;
+      const md = files.find((f) => f.fileType === "markdown") ?? files[0];
+      try {
+        const content = fs.readFileSync(md.filePath, "utf8");
+        out.push({ task, output: content });
+      } catch {
+        /* file gone — skip */
+      }
+    }
+    return out;
   }
 
   // ── Events ──

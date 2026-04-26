@@ -823,3 +823,147 @@ export async function runLiveOrchestration(
     deps.setAgentStatus("manager", "idle", null);
   }
 }
+
+// ─── Resume orchestration ───────────────────────────────────────────────────
+//
+// Re-runs blocked / todo tasks for an existing project, reusing previously
+// completed task outputs as shared context. Wave structure is rebuilt from
+// each task's existing `dependsOn` ids, so the parallelism shape from the
+// original plan is preserved.
+//
+export async function resumeLiveOrchestration(
+  projectId: number,
+  deps: LiveOrchestratorDeps
+): Promise<void> {
+  const project = storage.getProject(projectId);
+  if (!project) return;
+  const agents = storage.getAgents();
+  const manager = agents.find(a => a.id === "manager");
+  if (!manager) return;
+
+  const resumable = storage.getResumableTasks(projectId);
+  if (resumable.length === 0) {
+    deps.emitEvent(
+      projectId, "manager", manager.name, "resume skipped",
+      "No tasks to resume — project has nothing pending or blocked", "warning"
+    );
+    return;
+  }
+
+  // Reset blocked tasks back to "todo" so they re-run cleanly.
+  for (const t of resumable) {
+    if (t.status === "blocked" || t.status === "in_progress") {
+      storage.updateTask(t.id, { status: "todo", blockedReason: null });
+      deps.broadcast({ type: "task_update", task: { ...t, status: "todo", blockedReason: null } });
+    }
+  }
+
+  // Reload after status reset.
+  const tasksToRun = storage.getResumableTasks(projectId);
+
+  // Rebuild waves from existing dependsOn ids. Tasks completed previously
+  // satisfy any dependency they appear in, so they don't block resume tasks.
+  const completedTaskIds = new Set(
+    storage.getTasks(projectId)
+      .filter(t => t.status === "done")
+      .map(t => t.id)
+  );
+  const idToTask = new Map(tasksToRun.map(t => [t.id, t]));
+
+  const parseDeps = (t: Task): number[] => {
+    try {
+      const arr = JSON.parse(t.dependsOn || "[]");
+      return Array.isArray(arr) ? arr.filter((x): x is number => typeof x === "number") : [];
+    } catch { return []; }
+  };
+
+  // Topo sort the resume tasks into waves.
+  const remaining = new Map(tasksToRun.map(t => [t.id, t]));
+  const waves: Task[][] = [];
+  let safety = 20;
+  while (remaining.size > 0 && safety-- > 0) {
+    const wave: Task[] = [];
+    for (const t of Array.from(remaining.values())) {
+      const taskDeps = parseDeps(t);
+      // A dep is "satisfied" if it's already done, or it's not in the resume set
+      // (which means it was completed before, or never existed).
+      const blocked = taskDeps.some(depId => idToTask.has(depId) && remaining.has(depId) && !completedTaskIds.has(depId));
+      if (!blocked) wave.push(t);
+    }
+    if (wave.length === 0) {
+      // Cycle / unresolved dep — flush remainder as a final wave.
+      wave.push(...Array.from(remaining.values()));
+    }
+    for (const t of wave) remaining.delete(t.id);
+    waves.push(wave);
+  }
+
+  // Mark project active.
+  storage.updateProject(projectId, { status: "active" });
+  deps.broadcast({ type: "project_update", projectId, status: "active" });
+  deps.emitEvent(
+    projectId, "manager", manager.name, "resuming project",
+    `Replaying ${tasksToRun.length} task${tasksToRun.length > 1 ? "s" : ""} across ${waves.length} wave${waves.length > 1 ? "s" : ""}`,
+    "info"
+  );
+  deps.setAgentStatus("manager", "working", "Resuming team progress");
+
+  // Seed prior outputs from previously completed tasks (reads from saved files).
+  const priorOutputs: PriorOutput[] = [];
+  for (const { task, output } of storage.getCompletedTasksWithFiles(projectId)) {
+    const agent = agents.find(a => a.id === task.assignedTo);
+    if (agent) priorOutputs.push({ task, agent, output });
+  }
+
+  // Run the waves.
+  let completedCount = completedTaskIds.size;
+  const allFailures: { task: Task; reason: string }[] = [];
+  const total = storage.getTasks(projectId)
+    .filter(t => t.blockedReason !== "Superseded by replan").length;
+
+  for (let wIdx = 0; wIdx < waves.length; wIdx++) {
+    const wave = waves[wIdx];
+    if (wave.length === 0) continue;
+
+    deps.emitEvent(
+      projectId, "manager", manager.name, "wave start",
+      `Resume wave ${wIdx + 1}: ${wave.length} task${wave.length > 1 ? "s" : ""} running in parallel (cap ${WAVE_CONCURRENCY})`,
+      "info"
+    );
+
+    const { successes, failures } = await runWaveConcurrent(project, wave, agents, priorOutputs, deps, wIdx);
+    priorOutputs.push(...successes);
+    allFailures.push(...failures);
+    completedCount += successes.length;
+
+    const progress = Math.round((completedCount / Math.max(1, total)) * 100);
+    const usageRows = storage.getTokenUsage().filter(u => u.projectId === projectId);
+    const tokensUsed = usageRows.reduce((s, r) => s + r.tokensIn + r.tokensOut, 0);
+    const costToday = parseFloat(usageRows.reduce((s, r) => s + r.costUsd, 0).toFixed(4));
+    storage.updateProject(projectId, { progress, tasksCompleted: completedCount, tokensUsed, costToday });
+    deps.broadcast({ type: "project_update", projectId, progress, tasksCompleted: completedCount, tokensUsed, costToday });
+  }
+
+  // Wrap up.
+  const finalStatus = allFailures.length === 0 && completedCount >= total ? "completed" : "blocked";
+  storage.updateProject(projectId, {
+    status: finalStatus,
+    progress: Math.round((completedCount / Math.max(1, total)) * 100),
+  });
+  deps.broadcast({ type: "project_update", projectId, status: finalStatus });
+
+  if (finalStatus === "completed") {
+    deps.emitEvent(
+      projectId, "manager", manager.name, "project complete",
+      `Resume succeeded — ${completedCount}/${total} tasks delivered ✓`, "success"
+    );
+    deps.setAgentStatus("manager", "done", "All tasks complete");
+    setTimeout(() => deps.setAgentStatus("manager", "idle", null), 3000);
+  } else {
+    deps.emitEvent(
+      projectId, "manager", manager.name, "resume incomplete",
+      `${completedCount}/${total} tasks completed after resume — review blocked tasks`, "warning"
+    );
+    deps.setAgentStatus("manager", "idle", null);
+  }
+}

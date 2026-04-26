@@ -66,6 +66,14 @@ export function useWebSocket() {
 
             case "project_update":
               setProject((prev) => prev ? { ...prev, ...msg } : prev);
+              // Notify any list views that a project changed.
+              window.dispatchEvent(new CustomEvent("aioffice:project_update", { detail: msg }));
+              break;
+
+            case "project_deleted":
+              setProject((prev) => prev && prev.id === msg.projectId ? null : prev);
+              setTasks((prev) => prev.filter(t => t.projectId !== msg.projectId));
+              window.dispatchEvent(new CustomEvent("aioffice:project_deleted", { detail: msg }));
               break;
 
             case "agent_update":

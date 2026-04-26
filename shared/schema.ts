@@ -9,7 +9,7 @@ export const agents = sqliteTable("agents", {
   role: text("role").notNull(),
   spriteType: text("sprite_type").notNull(), // matches sprite filename key
   provider: text("provider").notNull().default("anthropic"), // anthropic | openai | google | kimi
-  modelId: text("model_id").notNull().default("claude-opus-4-5"),
+  modelId: text("model_id").notNull().default("claude-opus-4-7"),
   systemPrompt: text("system_prompt").notNull().default(""),
   capabilities: text("capabilities").notNull().default("[]"), // JSON array of strings
   reportsTo: text("reports_to"), // agentId or null (null = top-level, reports to Manager)
