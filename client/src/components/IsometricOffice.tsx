@@ -209,54 +209,113 @@ function OfficeRoom() {
   // Window positions on left wall: row 4, 10, 16 at col=0
   const leftWindows  = [4, 10, 16];
 
-  // Floor: warm wood checker — clear 2-tone alternating pattern
+  // Floor: dark hardwood planks — horizontal planks with grain variation
+  // Planks run along the "column" axis (iso diagonal), each 1 tile wide
+  // We use the column index to pick a plank shade, row adds micro grain
   const floorTiles = [];
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      const v = (c + r) % 2 === 0 ? 0 : 1;
-      // Two clearly distinct wood tones with a touch of grain per tile
-      const grain = ((c * 3 + r * 7) % 6) * 0.5;
-      const hue = 26 + (v === 0 ? 0 : 2);
-      const sat = v === 0 ? 52 : 48;
-      const lum = v === 0 ? 43 + grain : 54 + grain;
+      // Plank index alternates every 2 cols for plank-width feel
+      const plank = Math.floor(c / 2) % 4;
+      const grain = ((c * 7 + r * 13) % 10) * 0.4;
+      // Dark walnut palette: hue ~22, sat 35-42%, lum 22-30%
+      const lumBase = [24, 27, 22, 29][plank];
+      const satBase = [38, 35, 40, 36][plank];
+      const lum = lumBase + grain;
+      const sat = satBase;
+      // Subtle grout/seam between planks
+      const isSeam = (c % 2 === 0);
       floorTiles.push(
         <polygon key={`t${c}-${r}`}
           points={tilePoly(c, r)}
-          fill={`hsl(${hue},${sat}%,${lum.toFixed(1)}%)`}
-          stroke="rgba(0,0,0,0.07)" strokeWidth="0.5"
+          fill={`hsl(22,${sat}%,${lum.toFixed(1)}%)`}
+          stroke={isSeam ? "rgba(0,0,0,0.25)" : "rgba(0,0,0,0.08)"}
+          strokeWidth={isSeam ? "1" : "0.4"}
         />
       );
     }
   }
+  // Ambient floor lighting — warm glow from ceiling lights pooling on floor
+  const floorAmbient = (
+    <>
+      {/* Overall warm ambient overlay — makes floor feel lit from above */}
+      <polygon
+        points={`${fx0},${fy0} ${fx1},${fy1} ${fx2},${fy2} ${fx3},${fy3}`}
+        fill="rgba(255,220,160,0.07)"
+      />
+      {/* Central lighter area (main overhead lighting) */}
+      <ellipse
+        cx={(fx0+fx2)/2} cy={(fy0+fy2)/2 + 60}
+        rx={TW*7} ry={TH*7}
+        fill="rgba(255,230,180,0.08)"
+      />
+    </>
+  );
 
-  // Zone carpet / area fills
-  const zoneAreas = ZONES.map(z => (
-    <polygon key={`za-${z.id}`}
-      points={zonePoly(z.col, z.row, z.w, z.d)}
-      fill={z.color}
-      opacity="0.06"
-    />
+  // Zone rugs — solid coloured rugs like in the reference image
+  // Each zone has a clear rug that defines the team area
+  const RUG_INSET = 0.35; // inset from zone edge so rug doesn't touch walls
+  function rugPoly(col: number, row: number, w: number, d: number) {
+    const ci = col + RUG_INSET, ri = row + RUG_INSET;
+    const wi = w - RUG_INSET*2, di = d - RUG_INSET*2;
+    return zonePoly(ci, ri, wi, di);
+  }
+  const zoneAreas = ZONES.filter(z => z.id !== "hotdesk").map(z => (
+    <g key={`za-${z.id}`}>
+      {/* Rug shadow */}
+      <polygon
+        points={rugPoly(z.col, z.row+0.15, z.w, z.d)}
+        fill="rgba(0,0,0,0.18)"
+      />
+      {/* Rug base */}
+      <polygon
+        points={rugPoly(z.col, z.row, z.w, z.d)}
+        fill={z.color}
+        opacity="0.22"
+      />
+      {/* Rug inner border — thin inset line for that rug texture feel */}
+      <polygon
+        points={rugPoly(z.col + 0.2, z.row + 0.2, z.w - 0.4, z.d - 0.4)}
+        fill="none"
+        stroke={z.color}
+        strokeWidth="1.5"
+        opacity="0.35"
+      />
+    </g>
   ));
 
-  // Zone dashed outlines
-  const zoneOutlines = ZONES.map(z => (
+  // Zone outlines — solid coloured border matching the rug, no dash
+  const zoneOutlines = ZONES.filter(z => z.id !== "hotdesk").map(z => (
     <polygon key={`zo-${z.id}`}
-      points={zonePoly(z.col, z.row, z.w, z.d)}
+      points={rugPoly(z.col, z.row, z.w, z.d)}
       fill="none"
       stroke={z.color}
-      strokeWidth="2.5"
-      strokeDasharray="10 6"
-      opacity="0.85"
+      strokeWidth="2"
+      opacity="0.6"
     />
   ));
+  // Hot desk keeps dashed outline
+  const hotDeskOutline = (() => {
+    const z = ZONES.find(h => h.id === "hotdesk")!;
+    return (
+      <polygon
+        points={zonePoly(z.col, z.row, z.w, z.d)}
+        fill="rgba(100,116,139,0.06)"
+        stroke="#64748b"
+        strokeWidth="2"
+        strokeDasharray="10 6"
+        opacity="0.7"
+      />
+    );
+  })();
 
-  // Zone labels
+  // Zone labels — pill with zone colour tint
   const zoneLabels = ZONES.map(z => {
     const [lx, ly] = zoneLabel(z.col, z.row, z.w);
     return (
       <g key={`zl-${z.id}`}>
         <rect x={lx-52} y={ly-13} width={104} height={20} rx="10"
-          fill="rgba(8,14,26,0.82)" />
+          fill="rgba(8,14,26,0.88)" stroke={z.color} strokeWidth="1" strokeOpacity="0.5"/>
         <text x={lx} y={ly+2}
           textAnchor="middle" fill={z.color}
           fontSize="11" fontFamily="Inter,sans-serif" fontWeight="700"
@@ -410,7 +469,7 @@ function OfficeRoom() {
     </g>
   );
 
-  // Ceiling spotlights
+  // Ceiling spotlights — brighter pools on dark floor
   const spotlightCols = [3, 7, 12, 17, 21];
   const spotlightRow  = 0;
   const spotlights = spotlightCols.map((c, i) => {
@@ -418,13 +477,16 @@ function OfficeRoom() {
     const lY = ly - WALL_H + 10;
     return (
       <g key={i}>
-        <circle cx={lx} cy={lY} r={6} fill="#dde2ea" opacity="0.95"/>
-        <ellipse cx={lx} cy={lY+WALL_H*0.9}
-          rx={55} ry={22}
-          fill="rgba(255,242,200,0.10)"/>
+        {/* light cone */}
         <polygon
-          points={`${lx-6},${lY+4} ${lx+6},${lY+4} ${lx+50},${lY+WALL_H*0.88} ${lx-50},${lY+WALL_H*0.88}`}
-          fill="rgba(255,242,200,0.055)"/>
+          points={`${lx-5},${lY+4} ${lx+5},${lY+4} ${lx+60},${lY+WALL_H*0.88} ${lx-60},${lY+WALL_H*0.88}`}
+          fill="rgba(255,240,200,0.06)"/>
+        {/* floor pool — brighter on dark wood */}
+        <ellipse cx={lx} cy={lY+WALL_H*0.9}
+          rx={65} ry={26}
+          fill="rgba(255,235,180,0.18)"/>
+        {/* fixture dot */}
+        <circle cx={lx} cy={lY} r={5} fill="#fffde8" opacity="0.9"/>
       </g>
     );
   });
@@ -497,17 +559,25 @@ function OfficeRoom() {
       style={{ position:"absolute", top:0, left:0, overflow:"visible" }}
     >
       <defs>
+        {/* Warm cream walls like reference image */}
         <linearGradient id="leftWallG" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%"   stopColor="#8e949e"/>
-          <stop offset="100%" stopColor="#b8bec8"/>
+          <stop offset="0%"   stopColor="#b8a898"/>
+          <stop offset="50%"  stopColor="#d4c8b8"/>
+          <stop offset="100%" stopColor="#e8ddd0"/>
         </linearGradient>
         <linearGradient id="rightWallG" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%"   stopColor="#c8cdd5"/>
-          <stop offset="100%" stopColor="#a8adb8"/>
+          <stop offset="0%"   stopColor="#ede4d8"/>
+          <stop offset="50%"  stopColor="#d8cec2"/>
+          <stop offset="100%" stopColor="#bfb4a8"/>
         </linearGradient>
         <linearGradient id="ceilG" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%"   stopColor="#22283a"/>
           <stop offset="100%" stopColor="#161c2c"/>
+        </linearGradient>
+        {/* Wall top ridge shadow */}
+        <linearGradient id="wallTopG" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor="rgba(0,0,0,0.35)"/>
+          <stop offset="100%" stopColor="rgba(0,0,0,0)"/>
         </linearGradient>
         <filter id="softShadow">
           <feDropShadow dx="0" dy="3" stdDeviation="5" floodOpacity="0.35"/>
@@ -515,23 +585,31 @@ function OfficeRoom() {
       </defs>
 
       {/* ── Background / ceiling above walls ── */}
-      <rect x={0} y={0} width={WORLD_W} height={ORIGIN_Y + 20} fill="#161c2c"/>
+      <rect x={0} y={0} width={WORLD_W} height={ORIGIN_Y + 20} fill="#1a1f2e"/>
 
-      {/* ── Left wall ── */}
+      {/* ── Left wall ── warm cream */}
       <polygon points={pts(leftWall)} fill="url(#leftWallG)"/>
+      {/* Shadow under ceiling on left wall */}
+      <polygon
+        points={`${fx0},${wt(fy0)} ${fx3},${wt(fy3)} ${fx3},${wt(fy3)+40} ${fx0},${wt(fy0)+40}`}
+        fill="url(#wallTopG)"/>
       {leftWindowEls}
       {/* Left-wall baseboard */}
       <polygon
-        points={`${fx0},${fy0} ${fx3},${fy3} ${fx3},${fy3+10} ${fx0},${fy0+10}`}
-        fill="#e8e4dc" opacity="0.6"/>
+        points={`${fx0},${fy0} ${fx3},${fy3} ${fx3},${fy3+12} ${fx0},${fy0+12}`}
+        fill="#c8b89a" opacity="0.9"/>
 
-      {/* ── Right wall ── */}
+      {/* ── Right wall ── warm cream */}
       <polygon points={pts(rightWall)} fill="url(#rightWallG)"/>
+      {/* Shadow under ceiling on right wall */}
+      <polygon
+        points={`${fx0},${wt(fy0)} ${fx1},${wt(fy1)} ${fx1},${wt(fy1)+40} ${fx0},${wt(fy0)+40}`}
+        fill="url(#wallTopG)"/>
       {rightWindowEls}
       {/* Right-wall baseboard */}
       <polygon
-        points={`${fx0},${fy0} ${fx1},${fy1} ${fx1},${fy1+10} ${fx0},${fy0+10}`}
-        fill="#e8e4dc" opacity="0.5"/>
+        points={`${fx0},${fy0} ${fx1},${fy1} ${fx1},${fy1+12} ${fx0},${fy0+12}`}
+        fill="#c8b89a" opacity="0.8"/>
 
       {/* ── Big screen on back wall ── */}
       {screenEl}
@@ -542,7 +620,10 @@ function OfficeRoom() {
       {/* ── Floor tiles ── */}
       {floorTiles}
 
-      {/* ── Zone carpet fills ── */}
+      {/* ── Ambient floor lighting overlay ── */}
+      {floorAmbient}
+
+      {/* ── Zone rugs ── */}
       {zoneAreas}
 
       {/* ── Lounge area ── */}
@@ -551,8 +632,11 @@ function OfficeRoom() {
       {/* ── Plants ── */}
       {plants}
 
-      {/* ── Zone dashed outlines ── */}
+      {/* ── Zone rug outlines ── */}
       {zoneOutlines}
+
+      {/* ── Hot desk outline ── */}
+      {hotDeskOutline}
 
       {/* ── Zone labels ── */}
       {zoneLabels}
