@@ -2,6 +2,8 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
 import * as schema from "@shared/schema";
 import { eq, desc, and } from "drizzle-orm";
+import fs from "fs";
+import path from "path";
 import type {
   Agent, InsertAgent,
   Project, InsertProject,
@@ -9,6 +11,7 @@ import type {
   AgentEvent, InsertAgentEvent,
   Setting,
   TokenUsage, InsertTokenUsage,
+  ProjectFile, InsertProjectFile,
 } from "@shared/schema";
 
 const sqlite = new Database("data.db");
@@ -87,7 +90,31 @@ sqlite.exec(`
     cost_usd REAL NOT NULL DEFAULT 0,
     timestamp INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
   );
+  CREATE TABLE IF NOT EXISTS project_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    task_id INTEGER,
+    agent_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    file_path TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
+  -- Add output_formats column to projects if it doesn't exist (safe migration)
+  PRAGMA table_info(projects);
 `);
+
+// Safe migration: add output_formats column if missing
+try {
+  sqlite.exec(`ALTER TABLE projects ADD COLUMN output_formats TEXT NOT NULL DEFAULT '[]'`);
+} catch { /* column already exists */ }
+
+// Ensure projects storage dir exists
+export const PROJECTS_DIR = process.env.PROJECTS_DIR ?? path.join(process.cwd(), "projects");
+fs.mkdirSync(PROJECTS_DIR, { recursive: true });
 
 // ─── Default agents (seed) ───────────────────────────────────────────────────
 const DEFAULT_AGENTS: InsertAgent[] = [
@@ -279,6 +306,13 @@ export interface IStorage {
   recordTokenUsage(data: InsertTokenUsage): TokenUsage;
   getTokenUsage(since?: number): TokenUsage[];
   getBudgetSummary(): BudgetModelRow[];
+
+  // Project files
+  saveProjectFile(data: InsertProjectFile, content: Buffer | string): ProjectFile;
+  getProjectFiles(projectId: number): ProjectFile[];
+  getProjectFile(fileId: number): ProjectFile | undefined;
+  deleteProjectFile(fileId: number): void;
+  ensureProjectDir(projectId: number): string;
 }
 
 export interface BudgetModelRow {
@@ -424,6 +458,50 @@ class SQLiteStorage implements IStorage {
       }
     }
     return [...map.values()].sort((a, b) => b.costUsd - a.costUsd);
+  }
+
+  // ── Project files ──
+  ensureProjectDir(projectId: number): string {
+    const dir = path.join(PROJECTS_DIR, String(projectId));
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  saveProjectFile(data: InsertProjectFile, content: Buffer | string): ProjectFile {
+    const dir = this.ensureProjectDir(data.projectId);
+    // Sanitise filename
+    const safeName = data.filename.replace(/[^a-zA-Z0-9._\-]/g, "_");
+    const filePath = path.join(dir, safeName);
+    fs.writeFileSync(filePath, content);
+    const sizeBytes = fs.statSync(filePath).size;
+    return db.insert(schema.projectFiles).values({
+      ...data,
+      filename: safeName,
+      filePath,
+      sizeBytes,
+      createdAt: Date.now(),
+    }).returning().get()!;
+  }
+
+  getProjectFiles(projectId: number): ProjectFile[] {
+    return db.select().from(schema.projectFiles)
+      .where(eq(schema.projectFiles.projectId, projectId))
+      .orderBy(desc(schema.projectFiles.createdAt))
+      .all();
+  }
+
+  getProjectFile(fileId: number): ProjectFile | undefined {
+    return db.select().from(schema.projectFiles)
+      .where(eq(schema.projectFiles.id, fileId))
+      .get();
+  }
+
+  deleteProjectFile(fileId: number): void {
+    const file = this.getProjectFile(fileId);
+    if (file) {
+      try { fs.unlinkSync(file.filePath); } catch { /* already gone */ }
+      db.delete(schema.projectFiles).where(eq(schema.projectFiles.id, fileId)).run();
+    }
   }
 }
 

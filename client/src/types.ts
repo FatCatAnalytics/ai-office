@@ -37,11 +37,26 @@ export interface Project {
   status: string;
   progress: number;
   deadline: number | null;
+  outputFormats: string; // JSON array string e.g. '["pdf","csv"]'
   tasksTotal: number;
   tasksCompleted: number;
   tokensUsed: number;
   costToday: number;
   avgResponseTime: number;
+  createdAt: number;
+}
+
+export interface ProjectFile {
+  id: number;
+  projectId: number;
+  taskId: number | null;
+  agentId: string;
+  filename: string;
+  fileType: string;
+  mimeType: string;
+  sizeBytes: number;
+  filePath: string;
+  description: string;
   createdAt: number;
 }
 

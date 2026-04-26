@@ -33,6 +33,7 @@ export const projects = sqliteTable("projects", {
   status: text("status").notNull().default("planning"), // planning | active | blocked | completed | cancelled
   progress: integer("progress").notNull().default(0),
   deadline: integer("deadline"), // Unix ms, optional
+  outputFormats: text("output_formats").notNull().default("[]"), // JSON array: pdf | csv | excel | python | json | markdown
   tasksTotal: integer("tasks_total").notNull().default(0),
   tasksCompleted: integer("tasks_completed").notNull().default(0),
   tokensUsed: integer("tokens_used").notNull().default(0),
@@ -106,3 +107,22 @@ export const tokenUsage = sqliteTable("token_usage", {
 export const insertTokenUsageSchema = createInsertSchema(tokenUsage).omit({ id: true, timestamp: true });
 export type InsertTokenUsage = z.infer<typeof insertTokenUsageSchema>;
 export type TokenUsage = typeof tokenUsage.$inferSelect;
+
+// ─── Project files table (agent-generated outputs) ───────────────────────────────────
+export const projectFiles = sqliteTable("project_files", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  projectId: integer("project_id").notNull(),
+  taskId: integer("task_id"),                          // optional link to source task
+  agentId: text("agent_id").notNull(),
+  filename: text("filename").notNull(),
+  fileType: text("file_type").notNull(),               // pdf | csv | excel | python | json | markdown | code
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull().default(0),
+  filePath: text("file_path").notNull(),               // absolute path on VPS
+  description: text("description").notNull().default(""),
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+});
+
+export const insertProjectFileSchema = createInsertSchema(projectFiles).omit({ id: true, createdAt: true });
+export type InsertProjectFile = z.infer<typeof insertProjectFileSchema>;
+export type ProjectFile = typeof projectFiles.$inferSelect;

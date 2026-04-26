@@ -1,22 +1,23 @@
 import { useState } from "react";
 import { Router, Switch, Route } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
-import { QueryClientProvider } from "@tanstack/react-query";
-import { queryClient } from "./lib/queryClient";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { queryClient, apiRequest } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import OfficeDashboard from "./pages/OfficeDashboard";
 import AgentsPage from "./pages/AgentsPage";
 import TaskBoardPage from "./pages/TaskBoardPage";
 import SettingsPage from "./pages/SettingsPage";
 import BudgetPage from "./pages/BudgetPage";
+import FilesPage from "./pages/FilesPage";
 import { useWebSocket } from "./hooks/useWebSocket";
 import {
-  LayoutDashboard, Users, LayoutGrid, Settings, Send, DollarSign,
+  LayoutDashboard, Users, LayoutGrid, Settings, Send, DollarSign, FolderOpen,
   Wifi, WifiOff, Crown, Monitor, Server, Bug, Palette, Rocket,
   Database, BarChart3, Shield, Briefcase, Circle, ChevronRight,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import type { Agent } from "./types";
+import type { Agent, Project } from "./types";
 
 const ICON_MAP: Record<string, React.ElementType> = {
   Crown, Monitor, Server, Bug, Palette, Rocket, Database, BarChart3, Shield, Briefcase,
@@ -31,10 +32,18 @@ function AppShell() {
   const [showModal, setShowModal] = useState(false);
   const [location] = useLocation();
 
+  // All projects list (for Files page project selector)
+  const { data: allProjects = [] } = useQuery<Project[]>({
+    queryKey: ["/api/projects"],
+    queryFn: () => apiRequest("GET", "/api/projects").then(r => r.json()),
+    refetchInterval: 15000,
+  });
+
   const navItems = [
     { href: "/", icon: LayoutDashboard, label: "Office Floor" },
     { href: "/board", icon: LayoutGrid, label: "Task Board" },
     { href: "/agents", icon: Users, label: "Agents" },
+    { href: "/files", icon: FolderOpen, label: "Files" },
     { href: "/budget", icon: DollarSign, label: "Budget" },
     { href: "/settings", icon: Settings, label: "Settings" },
   ];
@@ -145,6 +154,9 @@ function AppShell() {
             <TaskBoardPage tasks={tasks} project={project} agents={agents}/>
           </Route>
           <Route path="/agents" component={AgentsPage}/>
+          <Route path="/files">
+            <FilesPage projects={allProjects} />
+          </Route>
           <Route path="/budget" component={BudgetPage}/>
           <Route path="/settings" component={SettingsPage}/>
         </Switch>

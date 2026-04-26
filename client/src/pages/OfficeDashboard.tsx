@@ -285,15 +285,31 @@ function TaskFlowPanel({ agents, tasks }: { agents: Agent[]; tasks: Task[] }) {
 }
 
 // ─── Submit project modal ──────────────────────────────────────────────────────
+const OUTPUT_FORMATS = [
+  { key: "pdf",      label: "PDF Report",    icon: "📄" },
+  { key: "csv",      label: "CSV Data",      icon: "📊" },
+  { key: "excel",    label: "Excel (.xlsx)", icon: "📗" },
+  { key: "python",   label: "Python Code",   icon: "🐍" },
+  { key: "json",     label: "Raw JSON",      icon: "{ }" },
+  { key: "markdown", label: "Markdown doc",  icon: "✍" },
+];
+
 function SubmitProjectModal({ onClose, onSubmit }: {
   onClose: () => void;
-  onSubmit: (name: string, desc: string, priority: string, deadline?: string) => Promise<void>;
+  onSubmit: (name: string, desc: string, priority: string, deadline?: string, outputFormats?: string[]) => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [priority, setPriority] = useState("normal");
   const [deadline, setDeadline] = useState("");
+  const [outputFormats, setOutputFormats] = useState<string[]>(["markdown"]);
   const [loading, setLoading] = useState(false);
+
+  const toggleFormat = (key: string) => {
+    setOutputFormats(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    );
+  };
 
   const PRESETS = [
     { name: "Skyline SaaS", desc: "Build a full-stack SaaS dashboard with auth, payments and analytics", priority: "high" },
@@ -305,7 +321,7 @@ function SubmitProjectModal({ onClose, onSubmit }: {
   const handleSubmit = async () => {
     if (!name.trim()) return;
     setLoading(true);
-    await onSubmit(name, desc, priority, deadline || undefined);
+    await onSubmit(name, desc, priority, deadline || undefined, outputFormats);
     setLoading(false);
     onClose();
   };
@@ -369,6 +385,34 @@ function SubmitProjectModal({ onClose, onSubmit }: {
                   data-testid="input-deadline" />
               </div>
             </div>
+          </div>
+
+          {/* Output format selector */}
+          <div>
+            <label className="text-xs text-slate-400 mb-2 block">Output formats <span className="text-slate-600">(agents save these per task)</span></label>
+            <div className="grid grid-cols-3 gap-2">
+              {OUTPUT_FORMATS.map(fmt => {
+                const active = outputFormats.includes(fmt.key);
+                return (
+                  <button
+                    key={fmt.key}
+                    type="button"
+                    onClick={() => toggleFormat(fmt.key)}
+                    data-testid={`format-${fmt.key}`}
+                    className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg border text-xs font-medium transition-all text-left"
+                    style={active
+                      ? { borderColor: "#06b6d4", background: "#06b6d418", color: "#06b6d4" }
+                      : { borderColor: "#334155", background: "transparent", color: "#64748b" }
+                    }>
+                    <span>{fmt.icon}</span>
+                    <span>{fmt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {outputFormats.length === 0 && (
+              <p className="text-xs text-amber-500 mt-1.5">Pick at least one format — agents default to Markdown if none selected.</p>
+            )}
           </div>
 
           <button onClick={handleSubmit} disabled={!name.trim() || loading}
@@ -616,9 +660,10 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
     await apiRequest("PATCH", "/api/settings", { agent_mode: mode }).catch(() => {});
   };
 
-  const handleSubmitProject = async (name: string, desc: string, priority: string, deadline?: string) => {
+  const handleSubmitProject = async (name: string, desc: string, priority: string, deadline?: string, outputFormats?: string[]) => {
     const body: Record<string, unknown> = { name, description: desc, priority };
     if (deadline) body.deadline = new Date(deadline).getTime();
+    if (outputFormats && outputFormats.length > 0) body.outputFormats = outputFormats;
     await apiRequest("POST", "/api/projects", body);
   };
 

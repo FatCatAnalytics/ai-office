@@ -102,6 +102,12 @@ export function useWebSocket() {
                 setAgentMode(msg.agentMode);
               }
               break;
+
+            // file_created — handled by FilesPage via its own polling/query invalidation
+            // We emit a custom event so any mounted FileList component can react
+            case "file_created":
+              window.dispatchEvent(new CustomEvent("aioffice:file_created", { detail: msg }));
+              break;
           }
         } catch {
           // ignore parse errors
