@@ -4,8 +4,20 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Task, Agent, Project } from "../types";
 import {
   LayoutGrid, AlertTriangle, CheckCircle2, Clock, Loader2, RefreshCw,
-  ChevronDown, GitBranch, ArrowRight, Flag,
+  ChevronDown, GitBranch, ArrowRight, Flag, Layers, Link2,
 } from "lucide-react";
+
+// Parse the JSON-encoded dependsOn list off a Task. Returns the count of
+// real dependencies (dropping anything unparseable).
+function parseDependsOn(raw: unknown): number {
+  if (!raw) return 0;
+  if (Array.isArray(raw)) return raw.length;
+  if (typeof raw !== "string") return 0;
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.length : 0;
+  } catch { return 0; }
+}
 
 const PRIORITY_COLORS: Record<string, string> = {
   critical: "#ef4444", high: "#f97316", normal: "#3b82f6", low: "#64748b",
@@ -44,6 +56,27 @@ function TaskCard({ task, agents, onReassign }: {
           <span className="text-xs font-medium capitalize" style={{ color: priorityColor }}>{task.priority}</span>
         </div>
       </div>
+
+      {/* Wave + dependency chips (Stage 4) */}
+      {(task.waveIndex != null || parseDependsOn(task.dependsOn) > 0) && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {task.waveIndex != null && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-violet-500/10 border border-violet-500/30 text-violet-300"
+              data-testid={`task-wave-${task.id}`}>
+              <Layers size={9}/>
+              <span className="text-[10px] font-medium">Wave {(task.waveIndex ?? 0) + 1}</span>
+            </span>
+          )}
+          {parseDependsOn(task.dependsOn) > 0 && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300"
+              data-testid={`task-deps-${task.id}`}
+              title={`Depends on ${parseDependsOn(task.dependsOn)} prior task(s)`}>
+              <Link2 size={9}/>
+              <span className="text-[10px] font-medium">{parseDependsOn(task.dependsOn)} dep{parseDependsOn(task.dependsOn) > 1 ? "s" : ""}</span>
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Blocked reason */}
       {task.blockedReason && (

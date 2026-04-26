@@ -61,6 +61,8 @@ sqlite.exec(`
     priority TEXT NOT NULL DEFAULT 'normal',
     deadline INTEGER,
     blocked_reason TEXT,
+    depends_on TEXT NOT NULL DEFAULT '[]',
+    wave_index INTEGER,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
   );
@@ -110,6 +112,14 @@ sqlite.exec(`
 // Safe migration: add output_formats column if missing
 try {
   sqlite.exec(`ALTER TABLE projects ADD COLUMN output_formats TEXT NOT NULL DEFAULT '[]'`);
+} catch { /* column already exists */ }
+
+// Stage 4 safe migrations: parallel-execution columns on tasks
+try {
+  sqlite.exec(`ALTER TABLE tasks ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'`);
+} catch { /* column already exists */ }
+try {
+  sqlite.exec(`ALTER TABLE tasks ADD COLUMN wave_index INTEGER`);
 } catch { /* column already exists */ }
 
 // Ensure projects storage dir exists

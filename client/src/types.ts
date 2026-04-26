@@ -71,6 +71,10 @@ export interface Task {
   priority: "critical" | "high" | "normal" | "low";
   deadline: number | null;
   blockedReason: string | null;
+  /** JSON-encoded array of task IDs (or planner-local keys) this task depends on. */
+  dependsOn?: string;
+  /** 0-based wave index assigned by the topological sort. null while planning. */
+  waveIndex?: number | null;
   createdAt: number;
   updatedAt: number;
 }

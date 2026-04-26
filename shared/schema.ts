@@ -58,6 +58,11 @@ export const tasks = sqliteTable("tasks", {
   priority: text("priority").notNull().default("normal"), // critical | high | normal | low
   deadline: integer("deadline"), // Unix ms, optional
   blockedReason: text("blocked_reason"),
+  // JSON string array of task IDs (or planner-local string keys) this task depends on.
+  // Empty array ("[]") means no dependencies — the task can run in the first wave.
+  dependsOn: text("depends_on").notNull().default("[]"),
+  // 0-based wave index assigned by the topological sort. NULL until planning completes.
+  waveIndex: integer("wave_index"),
   createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
   updatedAt: integer("updated_at").notNull().$defaultFn(() => Date.now()),
 });

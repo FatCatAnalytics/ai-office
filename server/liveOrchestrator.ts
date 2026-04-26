@@ -1,21 +1,26 @@
 // ─── Live AI Orchestrator ─────────────────────────────────────────────────────
-// Stage 3: Real LLM calls drive the agent simulation.
+// Stage 4: Parallel execution + replanning + real PDF/XLSX outputs.
 //
 // Flow:
-//   1. Manager LLM call decomposes the project into ordered tasks (JSON).
-//   2. Tasks are written to the DB and Kanban broadcast.
-//   3. Worker tasks run sequentially. Each agent receives:
-//        - their system prompt
-//        - the project description
-//        - prior task outputs (shared context, bounded)
-//        - their assigned task
-//      Streaming tokens are forwarded to the activity feed in real time.
-//   4. Each completed task records token usage + cost (Budget tab) and saves
-//      the agent output as a project file (FilesPage).
+//   1. Manager LLM call decomposes the project into 3-9 tasks, each with an
+//      optional `dependsOn` array referencing planner-local task keys ("t1",
+//      "t2", …). The orchestrator topologically sorts the tasks into "waves"
+//      where every task in a wave can run concurrently.
+//   2. Tasks are written to the DB (with `dependsOn` and `waveIndex`) and
+//      broadcast to the Kanban board.
+//   3. Workers in the same wave run in parallel under a small concurrency cap
+//      so we don't blast through API rate limits. As each wave finishes, its
+//      outputs become part of the shared context for the next wave.
+//   4. If a task fails, the manager gets ONE chance to replan the remaining
+//      work given the failure context. If the replan also fails, the project
+//      finishes in `blocked` state with whatever was completed.
+//   5. Outputs are persisted as real PDF (pdfkit) / XLSX (exceljs) files where
+//      requested; markdown / json / csv / python paths are unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { storage } from "./storage";
 import { streamCompletion, calculateCost, settingKeyForProvider, type Provider, type LLMMessage } from "./llm";
+import { renderPdf, renderXlsx, type RenderMeta } from "./renderers";
 import type { Agent, Task, Project } from "@shared/schema";
 
 export interface LiveOrchestratorDeps {
@@ -38,6 +43,10 @@ export interface LiveOrchestratorDeps {
 
 // Cap shared context size to keep prompts cheap. ~16k chars ≈ ~4k tokens.
 const SHARED_CONTEXT_CHAR_BUDGET = 16_000;
+// Max workers in a single wave running concurrently.
+const WAVE_CONCURRENCY = 3;
+// Max replans the manager is allowed per project.
+const MAX_REPLANS = 1;
 
 // Truncate a long string with an indicator, preserving start + end.
 function trimToBudget(text: string, budget: number): string {
@@ -47,15 +56,13 @@ function trimToBudget(text: string, budget: number): string {
   return `${text.slice(0, headLen)}\n\n[... ${text.length - headLen - tailLen} chars truncated ...]\n\n${text.slice(-tailLen)}`;
 }
 
-// Build shared-context block from prior task outputs for this project.
-function buildSharedContext(priorOutputs: Array<{ task: Task; agent: Agent; output: string }>): string {
-  if (priorOutputs.length === 0) return "";
+interface PriorOutput { task: Task; agent: Agent; output: string; }
 
-  // Allocate budget per prior output (most recent get more room)
+function buildSharedContext(priorOutputs: PriorOutput[]): string {
+  if (priorOutputs.length === 0) return "";
   const lines: string[] = ["## Prior Task Outputs (shared context)\n"];
   const reserved: string[] = [];
   let used = 0;
-
   for (let i = priorOutputs.length - 1; i >= 0; i--) {
     const { task, agent, output } = priorOutputs[i];
     const remaining = SHARED_CONTEXT_CHAR_BUDGET - used;
@@ -66,21 +73,15 @@ function buildSharedContext(priorOutputs: Array<{ task: Task; agent: Agent; outp
     reserved.unshift(block);
     used += block.length;
   }
-
   return lines.concat(reserved).join("");
 }
 
 // Robust JSON extraction — LLMs sometimes wrap JSON in markdown fences.
 function extractJSON<T = unknown>(raw: string): T | null {
   const trimmed = raw.trim();
-
-  // Strip ```json ... ``` fence
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
   const candidate = fenced ? fenced[1].trim() : trimmed;
-
   try { return JSON.parse(candidate) as T; } catch { /* fall through */ }
-
-  // Find the first balanced JSON object/array in the string
   for (const opener of ["[", "{"]) {
     const start = candidate.indexOf(opener);
     if (start === -1) continue;
@@ -107,17 +108,13 @@ function extractJSON<T = unknown>(raw: string): T | null {
   return null;
 }
 
-// Resolve an agent's API key and validate provider/model.
 function resolveAgentKey(agent: Agent): { apiKey: string; provider: Provider } {
   const provider = (agent.provider as Provider) ?? "anthropic";
   const key = storage.getSetting(settingKeyForProvider(provider));
-  if (!key) {
-    throw new Error(`No API key configured for ${provider} (${agent.name})`);
-  }
+  if (!key) throw new Error(`No API key configured for ${provider} (${agent.name})`);
   return { apiKey: key, provider };
 }
 
-// Record token usage + persist + broadcast budget update.
 function recordUsage(
   agent: Agent,
   projectId: number,
@@ -127,19 +124,17 @@ function recordUsage(
 ): number {
   const costUsd = calculateCost(agent.modelId, tokensIn, tokensOut);
   storage.recordTokenUsage({
-    provider: agent.provider,
-    modelId: agent.modelId,
-    agentId: agent.id,
-    projectId,
-    tokensIn,
-    tokensOut,
-    costUsd,
+    provider: agent.provider, modelId: agent.modelId, agentId: agent.id,
+    projectId, tokensIn, tokensOut, costUsd,
   });
   deps.broadcast({ type: "budget_update", summary: storage.getBudgetSummary() });
   return costUsd;
 }
 
-// File-extension lookup matching Stage 2's FILE_TEMPLATES set.
+// ─── Output persistence ─────────────────────────────────────────────────────
+// Async because PDF/XLSX rendering is async. Markdown/json/csv/python are
+// fast string ops and remain effectively synchronous.
+
 const EXT_BY_FORMAT: Record<string, { ext: string; mime: string }> = {
   pdf:      { ext: "pdf",  mime: "application/pdf" },
   csv:      { ext: "csv",  mime: "text/csv" },
@@ -162,14 +157,13 @@ const AGENT_DEFAULT_FORMAT: Record<string, string> = {
   pm:            "markdown",
 };
 
-// Persist live agent output as one or more files matching project format prefs.
-function saveLiveOutput(
+async function saveLiveOutput(
   projectId: number,
   task: Task,
   agent: Agent,
   rawOutput: string,
   deps: LiveOrchestratorDeps
-): void {
+): Promise<void> {
   const project = storage.getProject(projectId);
   if (!project) return;
 
@@ -180,48 +174,44 @@ function saveLiveOutput(
   }
 
   const slug = task.title.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 40);
+  const meta: RenderMeta = {
+    projectName: project.name,
+    projectDescription: project.description,
+    taskTitle: task.title,
+    agentName: agent.name,
+    modelId: agent.modelId,
+    generatedAt: new Date(),
+  };
 
   for (const fmt of formats) {
-    const meta = EXT_BY_FORMAT[fmt];
-    if (!meta) continue;
+    const extMime = EXT_BY_FORMAT[fmt];
+    if (!extMime) continue;
 
-    let content = rawOutput;
-    // For structured formats, extract just the relevant block from the LLM output
-    if (fmt === "json") {
-      const parsed = extractJSON(rawOutput);
-      if (parsed) content = JSON.stringify(parsed, null, 2);
-    } else if (fmt === "csv") {
-      // Extract first ```csv``` fence or any ``` fenced block; otherwise use as-is.
-      const fenceCsv = rawOutput.match(/```(?:csv)?\s*([\s\S]*?)```/);
-      if (fenceCsv) content = fenceCsv[1].trim();
-    } else if (fmt === "python") {
-      const fencePy = rawOutput.match(/```(?:python|py)?\s*([\s\S]*?)```/);
-      if (fencePy) content = fencePy[1].trim();
-    } else if (fmt === "markdown") {
-      // Add a small live-mode header so the saved file is self-describing
-      content = `# ${task.title}\n\n**Project:** ${project.name}  \n**Agent:** ${agent.name} (\`${agent.modelId}\`)  \n**Mode:** Live AI  \n**Completed:** ${new Date().toLocaleString()}\n\n---\n\n${rawOutput.trim()}\n`;
-    } else if (fmt === "pdf") {
-      // We don't generate real PDFs in Stage 3; write a text PDF placeholder
-      // with the live content embedded so it remains useful.
-      content = `%PDF-1.4\n% AI Office — Live output\n% Project: ${project.name}\n% Task: ${task.title}\n% Agent: ${agent.name} (${agent.modelId})\n% Generated: ${new Date().toISOString()}\n\n${rawOutput.trim()}\n`;
-    } else if (fmt === "excel") {
-      // Same caveat — Stage 3 does not create real .xlsx; store as plain text
-      // with a clear note. (Stage 4 todo: ship exceljs integration.)
-      content = `AI Office live output — placeholder XLSX\nProject: ${project.name}\nTask: ${task.title}\nAgent: ${agent.name} (${agent.modelId})\n\n${rawOutput.trim()}`;
-    }
-
+    let content: Buffer | string = rawOutput;
     try {
-      const filename = `${slug}_${agent.id}.${meta.ext}`;
+      if (fmt === "json") {
+        const parsed = extractJSON(rawOutput);
+        content = parsed ? JSON.stringify(parsed, null, 2) : rawOutput;
+      } else if (fmt === "csv") {
+        const fenceCsv = rawOutput.match(/```(?:csv)?\s*([\s\S]*?)```/);
+        content = fenceCsv ? fenceCsv[1].trim() : rawOutput;
+      } else if (fmt === "python") {
+        const fencePy = rawOutput.match(/```(?:python|py)?\s*([\s\S]*?)```/);
+        content = fencePy ? fencePy[1].trim() : rawOutput;
+      } else if (fmt === "markdown") {
+        content = `# ${task.title}\n\n**Project:** ${project.name}  \n**Agent:** ${agent.name} (\`${agent.modelId}\`)  \n**Mode:** Live AI  \n**Completed:** ${new Date().toLocaleString()}\n\n---\n\n${rawOutput.trim()}\n`;
+      } else if (fmt === "pdf") {
+        content = await renderPdf(rawOutput, meta);
+      } else if (fmt === "excel") {
+        content = await renderXlsx(rawOutput, meta);
+      }
+
+      const filename = `${slug}_${agent.id}.${extMime.ext}`;
       const saved = storage.saveProjectFile(
         {
-          projectId,
-          taskId: task.id,
-          agentId: agent.id,
-          filename,
-          fileType: fmt,
-          mimeType: meta.mime,
-          filePath: "",
-          description: `${agent.name}: ${task.title}`,
+          projectId, taskId: task.id, agentId: agent.id,
+          filename, fileType: fmt, mimeType: extMime.mime,
+          filePath: "", description: `${agent.name}: ${task.title}`,
         },
         content
       );
@@ -231,13 +221,16 @@ function saveLiveOutput(
         `📄 ${saved.filename} (${(saved.sizeBytes / 1024).toFixed(1)} KB)`, "success"
       );
     } catch (e) {
-      console.error("[live] file save error:", e);
+      console.error(`[live] ${fmt} render/save error:`, e);
+      deps.emitEvent(
+        projectId, agent.id, agent.name, "save failed",
+        `${fmt}: ${(e as Error).message ?? e}`, "warning"
+      );
     }
   }
 }
 
-// Stream-broadcast helper. Coalesces tiny token deltas (every ~50 chars or
-// 250ms) into "stream" events to keep the activity feed readable.
+// ─── Stream coalescer ───────────────────────────────────────────────────────
 function makeStreamCoalescer(
   projectId: number,
   agent: Agent,
@@ -254,36 +247,31 @@ function makeStreamCoalescer(
     if (!buffer) return;
     if (!force && buffer.length < FLUSH_CHARS && now - lastFlush < FLUSH_MS) return;
     deps.broadcast({
-      type: "stream",
-      projectId,
-      agentId: agent.id,
-      agentName: agent.name,
-      taskTitle,
-      delta: buffer,
+      type: "stream", projectId,
+      agentId: agent.id, agentName: agent.name,
+      taskTitle, delta: buffer,
     });
     buffer = "";
     lastFlush = now;
   }
 
   return {
-    push(delta: string) {
-      buffer += delta;
-      flush(false);
-    },
+    push(delta: string) { buffer += delta; flush(false); },
     end() { flush(true); },
   };
 }
 
 // ─── Manager planner ────────────────────────────────────────────────────────
-// Calls the Manager LLM to break the project into 3-9 ordered tasks, each
-// assigned to a specific sub-agent by ID. Falls back to capability-based
-// planning on parse failure or LLM error.
 
 interface PlannedTask {
+  // Planner-local key used by other tasks to declare dependencies.
+  // Manager emits "t1", "t2", …; orchestrator maps these to real DB ids.
+  key: string;
   title: string;
   description: string;
   assignedTo: string;
   priority: "critical" | "high" | "normal" | "low";
+  dependsOn: string[]; // planner-local keys
 }
 
 function buildManagerPrompt(project: Project, subAgents: Agent[]): LLMMessage[] {
@@ -298,7 +286,27 @@ function buildManagerPrompt(project: Project, subAgents: Agent[]): LLMMessage[] 
   return [
     {
       role: "system",
-      content: `You are the AI Office Manager. You receive a project and break it into 3-9 concrete, ordered tasks. Each task is assigned to exactly ONE agent on your team based on their capabilities. You must respond with ONLY a JSON array — no prose, no markdown fences. Each entry must be:\n{\n  "title": "<short imperative title, max 70 chars>",\n  "description": "<one paragraph describing what should be done and what the deliverable looks like>",\n  "assignedTo": "<exact agent id from the team list>",\n  "priority": "critical" | "high" | "normal" | "low"\n}\n\nOrdering rules:\n- Put discovery / planning / requirements tasks FIRST.\n- Put design / architecture tasks BEFORE implementation.\n- Put implementation BEFORE testing.\n- Put testing BEFORE deployment.\n- The "manager" agent does NOT receive sub-tasks — they only orchestrate.`,
+      content: `You are the AI Office Manager. You receive a project and break it into 3-9 concrete tasks. Each task is assigned to exactly ONE agent on your team based on capability. Tasks may depend on the OUTPUTS of earlier tasks; tasks with no dependencies will run in parallel.
+
+You must respond with ONLY a JSON array — no prose, no markdown fences. Each entry must be:
+{
+  "key": "t1" | "t2" | ... (unique stable id within this plan),
+  "title": "<short imperative title, max 70 chars>",
+  "description": "<one paragraph describing what should be done and what the deliverable looks like>",
+  "assignedTo": "<exact agent id from the team list>",
+  "priority": "critical" | "high" | "normal" | "low",
+  "dependsOn": ["t1", "t3", ...] (keys of tasks that must finish first; empty array if independent)
+}
+
+Planning rules:
+- Maximize parallelism. Tasks that can run independently MUST have empty dependsOn arrays so they execute concurrently.
+- Discovery / planning / requirements come BEFORE design.
+- Design / architecture come BEFORE implementation.
+- Implementation comes BEFORE testing.
+- Testing comes BEFORE deployment.
+- Don't invent fake dependencies — only declare a dependency if the assigned agent genuinely needs the prior task's output.
+- The "manager" agent does NOT receive sub-tasks.
+- Keys must be unique. dependsOn must reference only keys that exist in this plan and must not form a cycle.`,
     },
     {
       role: "user",
@@ -307,77 +315,213 @@ function buildManagerPrompt(project: Project, subAgents: Agent[]): LLMMessage[] 
   ];
 }
 
-async function planProjectLive(
+// Validate planner output: shape, valid agent ids, dependency keys, no cycles.
+function validatePlan(parsed: unknown, validAgentIds: Set<string>): PlannedTask[] {
+  if (!Array.isArray(parsed) || parsed.length === 0) return [];
+
+  const cleaned: PlannedTask[] = [];
+  const usedKeys = new Set<string>();
+
+  for (let i = 0; i < parsed.length; i++) {
+    const t = parsed[i] as Record<string, unknown> | null;
+    if (!t || typeof t !== "object") continue;
+
+    const key = String(t.key ?? `t${i + 1}`).trim().slice(0, 24) || `t${i + 1}`;
+    if (usedKeys.has(key)) continue;
+    usedKeys.add(key);
+
+    const title = String(t.title ?? "").trim().slice(0, 200);
+    if (!title) continue;
+
+    const description = String(t.description ?? "").trim();
+    const assignedToRaw = String(t.assignedTo ?? "");
+    const assignedTo = validAgentIds.has(assignedToRaw)
+      ? assignedToRaw
+      : Array.from(validAgentIds)[0];
+    if (!assignedTo) continue;
+
+    const priority = ["critical", "high", "normal", "low"].includes(t.priority as string)
+      ? (t.priority as PlannedTask["priority"])
+      : "normal";
+
+    const depsRaw = Array.isArray(t.dependsOn) ? t.dependsOn : [];
+    const dependsOn = depsRaw
+      .map(d => String(d).trim())
+      .filter(d => d.length > 0 && d !== key);
+
+    cleaned.push({ key, title, description, assignedTo, priority, dependsOn });
+  }
+
+  // Drop dangling dep references (refer to non-existent keys)
+  const allKeys = new Set(cleaned.map(t => t.key));
+  for (const t of cleaned) {
+    t.dependsOn = t.dependsOn.filter(d => allKeys.has(d));
+  }
+
+  // Detect + break cycles via DFS. Any task on a cycle has its deps cleared
+  // so the plan is salvageable rather than rejected.
+  const onStack = new Set<string>();
+  const visited = new Set<string>();
+  const map = new Map(cleaned.map(t => [t.key, t]));
+
+  function dfs(key: string): boolean {
+    if (onStack.has(key)) return true; // cycle!
+    if (visited.has(key)) return false;
+    visited.add(key); onStack.add(key);
+    const t = map.get(key);
+    if (t) {
+      for (const dep of [...t.dependsOn]) {
+        if (dfs(dep)) {
+          // break the cycle by removing this back-edge
+          t.dependsOn = t.dependsOn.filter(d => d !== dep);
+        }
+      }
+    }
+    onStack.delete(key);
+    return false;
+  }
+  for (const t of cleaned) dfs(t.key);
+
+  return cleaned;
+}
+
+// Wave-based topological sort.
+// Wave 0 = tasks with no remaining deps. Wave N = tasks whose deps all
+// completed in waves < N. Returns array of task arrays grouped by wave.
+function planWaves(plan: PlannedTask[]): PlannedTask[][] {
+  const remaining = new Map(plan.map(t => [t.key, new Set(t.dependsOn)]));
+  const byKey = new Map(plan.map(t => [t.key, t]));
+  const waves: PlannedTask[][] = [];
+  const done = new Set<string>();
+
+  while (remaining.size > 0) {
+    const wave: PlannedTask[] = [];
+    Array.from(remaining.entries()).forEach(([key, deps]) => {
+      if (deps.size === 0) wave.push(byKey.get(key)!);
+    });
+    if (wave.length === 0) {
+      // Should be impossible after validatePlan removes cycles, but guard anyway.
+      // Drop everything left as a single final wave.
+      Array.from(remaining.keys()).forEach(key => wave.push(byKey.get(key)!));
+    }
+    for (const t of wave) {
+      remaining.delete(t.key);
+      done.add(t.key);
+    }
+    Array.from(remaining.values()).forEach(deps => {
+      Array.from(done).forEach(k => deps.delete(k));
+    });
+    waves.push(wave);
+  }
+  return waves;
+}
+
+async function callManagerLLM(
   project: Project,
-  agents: Agent[],
-  deps: LiveOrchestratorDeps
-): Promise<PlannedTask[]> {
-  const manager = agents.find(a => a.id === "manager");
-  if (!manager) throw new Error("Manager agent not found");
-
-  const subAgents = agents.filter(a => a.id !== "manager");
+  manager: Agent,
+  messages: LLMMessage[],
+  deps: LiveOrchestratorDeps,
+  label: string
+): Promise<string> {
   const { apiKey, provider } = resolveAgentKey(manager);
-
-  deps.setAgentStatus("manager", "thinking", "Planning project tasks");
+  deps.setAgentStatus("manager", "thinking", label);
   deps.emitEvent(
     project.id, "manager", manager.name,
-    "calling LLM",
-    `[LIVE] ${provider}/${manager.modelId} — decomposing "${project.name}"`,
-    "info"
+    "calling LLM", `[LIVE] ${provider}/${manager.modelId} — ${label}`, "info"
   );
 
-  const messages = buildManagerPrompt(project, subAgents);
-  const stream = makeStreamCoalescer(project.id, manager, "Planning tasks", deps);
-
+  const stream = makeStreamCoalescer(project.id, manager, label, deps);
   let result;
   try {
     result = await streamCompletion(
       { provider, modelId: manager.modelId, apiKey, messages, maxTokens: 2048, temperature: 0.4 },
       { onDelta: (d) => stream.push(d) }
     );
-  } catch (e: any) {
+  } finally {
     stream.end();
-    throw new Error(`Manager LLM call failed: ${e?.message ?? e}`);
   }
-  stream.end();
-
   recordUsage(manager, project.id, result.tokensIn, result.tokensOut, deps);
+  return result.text;
+}
 
-  const parsed = extractJSON<PlannedTask[]>(result.text);
-  if (!Array.isArray(parsed) || parsed.length === 0) {
-    throw new Error("Manager output was not a valid JSON array of tasks");
-  }
-
-  // Validate + sanitise each task
+async function planProjectLive(
+  project: Project,
+  agents: Agent[],
+  deps: LiveOrchestratorDeps
+): Promise<PlannedTask[]> {
+  const manager = agents.find(a => a.id === "manager")!;
+  const subAgents = agents.filter(a => a.id !== "manager");
   const validIds = new Set(subAgents.map(a => a.id));
-  const cleaned: PlannedTask[] = [];
-  for (const t of parsed) {
-    if (!t || typeof t !== "object") continue;
-    const title = String(t.title ?? "").trim().slice(0, 200);
-    const description = String(t.description ?? "").trim();
-    const assignedTo = validIds.has(String(t.assignedTo)) ? String(t.assignedTo) : subAgents[0]?.id;
-    const priority = ["critical", "high", "normal", "low"].includes(t.priority as string)
-      ? (t.priority as PlannedTask["priority"])
-      : "normal";
-    if (title && assignedTo) cleaned.push({ title, description, assignedTo, priority });
-  }
-  if (cleaned.length === 0) throw new Error("No valid tasks parsed from Manager output");
 
-  return cleaned;
+  const messages = buildManagerPrompt(project, subAgents);
+  const text = await callManagerLLM(project, manager, messages, deps, "Planning project tasks");
+  const parsed = extractJSON(text);
+  const plan = validatePlan(parsed, validIds);
+  if (plan.length === 0) throw new Error("Manager output produced no valid tasks");
+  return plan;
+}
+
+// Replan after a task failure. Manager sees the original plan, what completed,
+// what failed and why, then emits a revised plan for the REMAINING work.
+async function replanAfterFailure(
+  project: Project,
+  agents: Agent[],
+  failed: { task: Task; reason: string },
+  completed: PriorOutput[],
+  remaining: Task[],
+  deps: LiveOrchestratorDeps
+): Promise<PlannedTask[] | null> {
+  const manager = agents.find(a => a.id === "manager")!;
+  const subAgents = agents.filter(a => a.id !== "manager");
+  const validIds = new Set(subAgents.map(a => a.id));
+
+  const agentList = subAgents.map(a => {
+    const caps: string[] = (() => { try { return JSON.parse(a.capabilities); } catch { return []; } })();
+    return `- ${a.id}: "${a.name}" — ${a.role}. Capabilities: ${caps.join(", ") || "general"}`;
+  }).join("\n");
+
+  const completedSummary = completed.length === 0
+    ? "(none yet)"
+    : completed.map(c => `- ${c.agent.name}: "${c.task.title}" ✓`).join("\n");
+
+  const remainingSummary = remaining.length === 0
+    ? "(none)"
+    : remaining.map(r => `- "${r.title}" (assigned to ${r.assignedTo})`).join("\n");
+
+  const messages: LLMMessage[] = [
+    {
+      role: "system",
+      content: `You are the AI Office Manager performing a REPLAN after a task failure. Same JSON output format as before (array of task objects with key, title, description, assignedTo, priority, dependsOn). Only return tasks for the REMAINING work — do not repeat completed tasks. You may merge, drop, or reassign remaining tasks. Maximize parallelism.`,
+    },
+    {
+      role: "user",
+      content: `Team available:\n${agentList}\n\nProject: "${project.name}"\nDescription: ${project.description || "(no description)"}\n\nCompleted so far:\n${completedSummary}\n\nFailed task:\n- "${failed.task.title}" (was assigned to ${failed.task.assignedTo})\n  Reason: ${failed.reason}\n\nRemaining (currently planned but not yet executed):\n${remainingSummary}\n\nReturn a fresh JSON array describing how to finish the remaining work, accounting for the failure.`,
+    },
+  ];
+
+  let text: string;
+  try {
+    text = await callManagerLLM(project, manager, messages, deps, "Replanning after failure");
+  } catch (e) {
+    deps.emitEvent(project.id, "manager", manager.name, "replan failed", `${(e as Error).message ?? e}`, "error");
+    return null;
+  }
+
+  const parsed = extractJSON(text);
+  const plan = validatePlan(parsed, validIds);
+  return plan.length > 0 ? plan : null;
 }
 
 // ─── Worker execution ───────────────────────────────────────────────────────
-// Run a single task with a sub-agent. Streams output, records usage, saves files.
 
 async function runWorkerTask(
   project: Project,
   task: Task,
   agent: Agent,
-  priorOutputs: Array<{ task: Task; agent: Agent; output: string }>,
+  priorOutputs: PriorOutput[],
   deps: LiveOrchestratorDeps
 ): Promise<string> {
   const { apiKey, provider } = resolveAgentKey(agent);
-
   const sharedContext = buildSharedContext(priorOutputs);
 
   const messages: LLMMessage[] = [
@@ -394,23 +538,19 @@ async function runWorkerTask(
   deps.setAgentStatus(agent.id, "working", task.title);
   deps.emitEvent(
     project.id, agent.id, agent.name, "started task",
-    `[LIVE] ${provider}/${agent.modelId} — ${task.title}`,
-    "info"
+    `[LIVE] ${provider}/${agent.modelId} — ${task.title}`, "info"
   );
 
   const stream = makeStreamCoalescer(project.id, agent, task.title, deps);
-
   let result;
   try {
     result = await streamCompletion(
       { provider, modelId: agent.modelId, apiKey, messages, maxTokens: 3072, temperature: 0.7 },
       { onDelta: (d) => stream.push(d) }
     );
-  } catch (e: any) {
+  } finally {
     stream.end();
-    throw new Error(`${agent.name} LLM call failed: ${e?.message ?? e}`);
   }
-  stream.end();
 
   const cost = recordUsage(agent, project.id, result.tokensIn, result.tokensOut, deps);
   deps.emitEvent(
@@ -418,12 +558,68 @@ async function runWorkerTask(
     `${result.tokensIn.toLocaleString()} in / ${result.tokensOut.toLocaleString()} out · $${cost.toFixed(4)}`,
     "info"
   );
-
   return result.text;
 }
 
+// Run a list of tasks under a concurrency cap. Returns successes + failures.
+async function runWaveConcurrent(
+  project: Project,
+  tasksInWave: Task[],
+  agents: Agent[],
+  priorOutputs: PriorOutput[],
+  deps: LiveOrchestratorDeps,
+  waveIndex: number
+): Promise<{ successes: PriorOutput[]; failures: { task: Task; reason: string }[] }> {
+  const successes: PriorOutput[] = [];
+  const failures: { task: Task; reason: string }[] = [];
+
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= tasksInWave.length) return;
+      const task = tasksInWave[idx];
+      const agent = agents.find(a => a.id === task.assignedTo);
+      if (!agent) {
+        storage.updateTask(task.id, { status: "blocked", blockedReason: "Assignee not found" });
+        deps.broadcast({ type: "task_update", task: { ...task, status: "blocked" } });
+        failures.push({ task, reason: "Assignee not found" });
+        continue;
+      }
+      storage.updateTask(task.id, { status: "in_progress" });
+      deps.broadcast({ type: "task_update", task: { ...task, status: "in_progress", waveIndex } });
+      try {
+        const output = await runWorkerTask(project, task, agent, priorOutputs, deps);
+        storage.updateTask(task.id, { status: "done" });
+        deps.broadcast({ type: "task_update", task: { ...task, status: "done", waveIndex } });
+        deps.setAgentStatus(agent.id, "done", null);
+        deps.emitEvent(
+          project.id, agent.id, agent.name, "completed task",
+          `✓ Finished: ${task.title}`, "success"
+        );
+        await saveLiveOutput(project.id, task, agent, output, deps);
+        successes.push({ task, agent, output });
+        // Brief idle gap so the UI can settle the "done" pulse before reset
+        setTimeout(() => deps.setAgentStatus(agent.id, "idle", null), 600);
+      } catch (e) {
+        const reason = (e as Error)?.message ?? String(e);
+        storage.updateTask(task.id, { status: "blocked", blockedReason: reason });
+        deps.broadcast({ type: "task_update", task: { ...task, status: "blocked", blockedReason: reason, waveIndex } });
+        deps.setAgentStatus(agent.id, "blocked", task.title);
+        deps.emitEvent(project.id, agent.id, agent.name, "blocked", reason, "error");
+        failures.push({ task, reason });
+      }
+    }
+  }
+
+  // Spawn capped concurrent workers
+  const N = Math.min(WAVE_CONCURRENCY, tasksInWave.length);
+  await Promise.all(Array.from({ length: N }, () => worker()));
+
+  return { successes, failures };
+}
+
 // ─── Orchestrator entry point ───────────────────────────────────────────────
-// Replaces simulation when agent_mode === "live" and the Manager has an API key.
 
 export async function runLiveOrchestration(
   projectId: number,
@@ -439,137 +635,190 @@ export async function runLiveOrchestration(
   deps.broadcast({ type: "project_update", projectId, status: "planning" });
 
   // ── Phase 1: Manager plans ────────────────────────────────────────────
-  let plans: PlannedTask[];
+  let plan: PlannedTask[];
   try {
-    plans = await planProjectLive(project, agents, deps);
-  } catch (e: any) {
-    deps.emitEvent(
-      projectId, "manager", manager.name, "planning failed",
-      `${e?.message ?? e}`, "error"
-    );
+    plan = await planProjectLive(project, agents, deps);
+  } catch (e) {
+    deps.emitEvent(projectId, "manager", manager.name, "planning failed", `${(e as Error).message ?? e}`, "error");
     deps.setAgentStatus("manager", "idle", null);
     storage.updateProject(projectId, { status: "blocked" });
     deps.broadcast({ type: "project_update", projectId, status: "blocked" });
     return;
   }
 
-  // ── Phase 2: Persist tasks ────────────────────────────────────────────
-  const createdTasks: Task[] = [];
-  for (const plan of plans) {
-    const task = storage.createTask({
-      title: plan.title,
-      description: plan.description,
-      projectId,
-      assignedTo: plan.assignedTo,
-      assignedBy: "manager",
-      status: "todo",
-      priority: plan.priority,
-    });
-    createdTasks.push(task);
-    const assignee = agents.find(a => a.id === plan.assignedTo);
-    deps.emitEvent(
-      projectId, "manager", manager.name, "assigned task",
-      `→ ${assignee?.name ?? plan.assignedTo}: "${plan.title}"`, "info"
-    );
-    deps.broadcast({ type: "task_created", task });
+  // ── Phase 2: Persist tasks with dependency metadata ───────────────────
+  const waves = planWaves(plan);
+  const keyToTaskId = new Map<string, number>();
+  const keyToTask = new Map<string, Task>();
+  const allCreated: Task[] = [];
+
+  for (let wIdx = 0; wIdx < waves.length; wIdx++) {
+    for (const planned of waves[wIdx]) {
+      const dependsOnIds = planned.dependsOn
+        .map(k => keyToTaskId.get(k))
+        .filter((v): v is number => typeof v === "number");
+
+      const created = storage.createTask({
+        title: planned.title,
+        description: planned.description,
+        projectId,
+        assignedTo: planned.assignedTo,
+        assignedBy: "manager",
+        status: "todo",
+        priority: planned.priority,
+        dependsOn: JSON.stringify(dependsOnIds),
+        waveIndex: wIdx,
+      });
+      keyToTaskId.set(planned.key, created.id);
+      keyToTask.set(planned.key, created);
+      allCreated.push(created);
+
+      const assignee = agents.find(a => a.id === planned.assignedTo);
+      const depLabel = dependsOnIds.length > 0 ? ` (after ${dependsOnIds.length} dep${dependsOnIds.length > 1 ? "s" : ""})` : "";
+      deps.emitEvent(
+        projectId, "manager", manager.name, "assigned task",
+        `→ ${assignee?.name ?? planned.assignedTo}: "${planned.title}" [wave ${wIdx + 1}]${depLabel}`, "info"
+      );
+      deps.broadcast({ type: "task_created", task: created });
+    }
   }
 
   storage.updateProject(projectId, {
     status: "active",
-    tasksTotal: createdTasks.length,
+    tasksTotal: allCreated.length,
     tasksCompleted: 0,
   });
-  deps.broadcast({ type: "project_update", projectId, status: "active", tasksTotal: createdTasks.length });
+  deps.broadcast({ type: "project_update", projectId, status: "active", tasksTotal: allCreated.length });
 
   deps.setAgentStatus("manager", "working", "Monitoring team progress");
   deps.emitEvent(
     projectId, "manager", manager.name, "plan complete",
-    `Delegated ${createdTasks.length} tasks across ${new Set(createdTasks.map(t => t.assignedTo)).size} agents`,
+    `Delegated ${allCreated.length} tasks across ${new Set(allCreated.map(t => t.assignedTo)).size} agents in ${waves.length} wave${waves.length > 1 ? "s" : ""}`,
     "success"
   );
 
-  // ── Phase 3: Run tasks sequentially with shared context ───────────────
-  const priorOutputs: Array<{ task: Task; agent: Agent; output: string }> = [];
+  // ── Phase 3: Run waves with optional replan on failure ────────────────
+  const priorOutputs: PriorOutput[] = [];
+  const allFailures: { task: Task; reason: string }[] = [];
   let completedCount = 0;
+  let replansUsed = 0;
 
-  for (const task of createdTasks) {
-    const agent = agents.find(a => a.id === task.assignedTo);
-    if (!agent) {
-      storage.updateTask(task.id, { status: "blocked", blockedReason: "Assignee not found" });
-      deps.broadcast({ type: "task_update", task: { ...task, status: "blocked" } });
-      continue;
-    }
+  // We work over a mutable list of "remaining waves" so a replan can replace it.
+  let remainingWaves: Task[][] = waves.map(w => w.map(p => keyToTask.get(p.key)!).filter(Boolean));
 
-    storage.updateTask(task.id, { status: "in_progress" });
-    deps.broadcast({ type: "task_update", task: { ...task, status: "in_progress" } });
+  while (remainingWaves.length > 0) {
+    const wave = remainingWaves.shift()!;
+    if (wave.length === 0) continue;
 
-    let output: string;
-    try {
-      output = await runWorkerTask(project, task, agent, priorOutputs, deps);
-    } catch (e: any) {
-      const reason = e?.message ?? String(e);
-      storage.updateTask(task.id, { status: "blocked", blockedReason: reason });
-      deps.broadcast({ type: "task_update", task: { ...task, status: "blocked", blockedReason: reason } });
-      deps.setAgentStatus(agent.id, "blocked", task.title);
-      deps.emitEvent(projectId, agent.id, agent.name, "blocked", reason, "error");
-      // Continue with remaining tasks rather than aborting the whole project
-      continue;
-    }
-
-    // Persist completion + outputs
-    storage.updateTask(task.id, { status: "done" });
-    const completedTask = { ...task, status: "done" as const };
-    deps.broadcast({ type: "task_update", task: completedTask });
-
-    deps.setAgentStatus(agent.id, "done", null);
+    const waveIdx = waves.length - remainingWaves.length - 1; // best-effort label
     deps.emitEvent(
-      projectId, agent.id, agent.name, "completed task",
-      `✓ Finished: ${task.title}`, "success"
+      projectId, "manager", manager.name, "wave start",
+      `Wave ${waveIdx + 1}: ${wave.length} task${wave.length > 1 ? "s" : ""} running in parallel (cap ${WAVE_CONCURRENCY})`,
+      "info"
     );
 
-    saveLiveOutput(projectId, task, agent, output, deps);
-    priorOutputs.push({ task, agent, output });
+    const { successes, failures } = await runWaveConcurrent(project, wave, agents, priorOutputs, deps, waveIdx);
+    priorOutputs.push(...successes);
+    allFailures.push(...failures);
+    completedCount += successes.length;
 
-    completedCount++;
-    const progress = Math.round((completedCount / createdTasks.length) * 100);
-
-    // Aggregate token totals from this project's runs for project stats
+    // Update progress
+    const total = allCreated.length;
+    const progress = Math.round((completedCount / Math.max(1, total)) * 100);
     const usageRows = storage.getTokenUsage().filter(u => u.projectId === projectId);
     const tokensUsed = usageRows.reduce((s, r) => s + r.tokensIn + r.tokensOut, 0);
     const costToday = parseFloat(usageRows.reduce((s, r) => s + r.costUsd, 0).toFixed(4));
-
-    storage.updateProject(projectId, {
-      progress,
-      tasksCompleted: completedCount,
-      tokensUsed,
-      costToday,
-    });
+    storage.updateProject(projectId, { progress, tasksCompleted: completedCount, tokensUsed, costToday });
     deps.broadcast({ type: "project_update", projectId, progress, tasksCompleted: completedCount, tokensUsed, costToday });
 
-    // Brief idle gap so the UI can settle the "done" pulse before the next agent lights up
-    await new Promise(r => setTimeout(r, 600));
-    deps.setAgentStatus(agent.id, "idle", null);
+    // If anything failed AND we still have replans available, try once.
+    if (failures.length > 0 && replansUsed < MAX_REPLANS && remainingWaves.length > 0) {
+      replansUsed++;
+      const flatRemaining = remainingWaves.flat();
+      deps.emitEvent(
+        projectId, "manager", manager.name, "replanning",
+        `${failures.length} task${failures.length > 1 ? "s" : ""} failed — manager attempting replan ${replansUsed}/${MAX_REPLANS}`,
+        "warning"
+      );
+
+      const newPlan = await replanAfterFailure(
+        project, agents,
+        failures[0], // pass the most informative failure
+        priorOutputs, flatRemaining, deps
+      );
+
+      if (newPlan && newPlan.length > 0) {
+        // Mark old remaining tasks as cancelled-by-replan (status: blocked w/ reason)
+        for (const t of flatRemaining) {
+          storage.updateTask(t.id, { status: "blocked", blockedReason: "Superseded by replan" });
+          deps.broadcast({ type: "task_update", task: { ...t, status: "blocked", blockedReason: "Superseded by replan" } });
+        }
+
+        // Create the replanned tasks fresh
+        const newWaves = planWaves(newPlan);
+        const newKeyToTask = new Map<string, Task>();
+        const newKeyToId = new Map<string, number>();
+        for (let wIdx = 0; wIdx < newWaves.length; wIdx++) {
+          for (const planned of newWaves[wIdx]) {
+            const depIds = planned.dependsOn.map(k => newKeyToId.get(k)).filter((v): v is number => typeof v === "number");
+            const created = storage.createTask({
+              title: planned.title,
+              description: planned.description,
+              projectId,
+              assignedTo: planned.assignedTo,
+              assignedBy: "manager",
+              status: "todo",
+              priority: planned.priority,
+              dependsOn: JSON.stringify(depIds),
+              waveIndex: wIdx,
+            });
+            newKeyToId.set(planned.key, created.id);
+            newKeyToTask.set(planned.key, created);
+            allCreated.push(created);
+            deps.broadcast({ type: "task_created", task: created });
+            const assignee = agents.find(a => a.id === planned.assignedTo);
+            deps.emitEvent(
+              projectId, "manager", manager.name, "replanned task",
+              `→ ${assignee?.name ?? planned.assignedTo}: "${planned.title}" [replan wave ${wIdx + 1}]`, "info"
+            );
+          }
+        }
+
+        // Replace remaining waves with the replan
+        remainingWaves = newWaves.map(w => w.map(p => newKeyToTask.get(p.key)!).filter(Boolean));
+        storage.updateProject(projectId, { tasksTotal: allCreated.length });
+        deps.broadcast({ type: "project_update", projectId, tasksTotal: allCreated.length });
+      } else {
+        deps.emitEvent(
+          projectId, "manager", manager.name, "replan failed",
+          "Manager could not produce a viable replan — continuing with remaining waves",
+          "warning"
+        );
+      }
+    }
   }
 
   // ── Phase 4: Wrap up ─────────────────────────────────────────────────
-  const finalStatus = completedCount === createdTasks.length ? "completed" : "blocked";
+  const total = allCreated.length;
+  const finalStatus = allFailures.length === 0 && completedCount === total ? "completed" : "blocked";
   storage.updateProject(projectId, {
     status: finalStatus,
-    progress: Math.round((completedCount / createdTasks.length) * 100),
+    progress: Math.round((completedCount / Math.max(1, total)) * 100),
   });
   deps.broadcast({ type: "project_update", projectId, status: finalStatus });
 
   if (finalStatus === "completed") {
     deps.emitEvent(
       projectId, "manager", manager.name, "project complete",
-      `All ${completedCount} tasks delivered — project marked done ✓`, "success"
+      `All ${completedCount} tasks delivered across ${waves.length} wave${waves.length > 1 ? "s" : ""} ✓`,
+      "success"
     );
     deps.setAgentStatus("manager", "done", "All tasks complete");
     setTimeout(() => deps.setAgentStatus("manager", "idle", null), 3000);
   } else {
     deps.emitEvent(
       projectId, "manager", manager.name, "project incomplete",
-      `${completedCount}/${createdTasks.length} tasks completed — review blocked tasks`, "warning"
+      `${completedCount}/${total} tasks completed — review blocked tasks`, "warning"
     );
     deps.setAgentStatus("manager", "idle", null);
   }
