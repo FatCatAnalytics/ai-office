@@ -491,64 +491,90 @@ function OfficeRoom() {
     );
   });
 
-  // Windows on right wall
+  // Helper: draw a proper isometric window on a wall face.
+  // On the RIGHT wall (col axis), moving along col shifts x by +TW/2, y by +TH/2.
+  // On the LEFT wall (row axis), moving along row shifts x by -TW/2, y by +TH/2.
+  // Windows are rectangular on the wall face: the horizontal edges follow the
+  // wall's lean and the vertical edges are purely vertical (dx=0).
+  //
+  // Right wall: anchor at iso(col, 0). Step right = iso(col+W, 0) - iso(col,0).
+  // Left  wall: anchor at iso(0, row). Step right = iso(0, row+W) - iso(0,row).
+
+  function isoWindow(
+    ax: number, ay: number,   // top-left anchor on wall (screen coords)
+    stepX: number, stepW: number, // horizontal step per unit & width in units
+    wallH: number,            // full wall height in px
+    wUnits: number,           // window width in iso units
+  ) {
+    const winH  = wallH * 0.42;       // window height = 42% of wall
+    const topOff = wallH * 0.14;      // gap from wall top to window top
+    // horizontal step vector (follows wall lean):
+    const dx = stepX * wUnits;
+    const dy = stepW * wUnits;
+    // Four corners — vertical edges are purely vertical (x unchanged, y +winH)
+    const x0 = ax,      y0 = ay - wallH + topOff;
+    const x1 = ax + dx, y1 = y0 + dy;
+    const x2 = x1,      y2 = y1 + winH;
+    const x3 = x0,      y3 = y0 + winH;
+    const pts3 = `${x0},${y0} ${x1},${y1} ${x2},${y2} ${x3},${y3}`;
+    // frame inset (3px)
+    const fi = 3;
+    const fi2 = fi * 0.5;
+    const ix0=x0+fi, iy0=y0+fi, ix1=x1-fi, iy1=y1+fi,
+          ix2=x2-fi, iy2=y2-fi2, ix3=x3+fi, iy3=y3-fi2;
+    const ipts = `${ix0},${iy0} ${ix1},${iy1} ${ix2},${iy2} ${ix3},${iy3}`;
+    return { pts: pts3, ipts, x0, y0, x1, y1, x2, y2, x3, y3,
+             ix0, iy0, ix1, iy1, ix2, iy2, ix3, iy3 };
+  }
+
+  // Right wall step: moving +1 col from row=0 shifts by (TW/2, TH/2)
+  const rStepX = TW / 2, rStepY = TH / 2;
   const rightWindowEls = rightWindows.map((wc, i) => {
-    const [wx, wy] = iso(wc, 0);
-    const [wx2, wy2] = iso(wc+2, 0);
-    const wTop = wy - WALL_H + 30, wBot = wy - WALL_H*0.25;
-    const p1x=wx, p1y=wTop, p2x=wx2, p2y=wTop+(wy2-wy),
-          p3x=wx2, p3y=wBot+(wy2-wy)*0.5, p4x=wx, p4y=wBot;
-    const pts2 = `${p1x},${p1y} ${p2x},${p2y} ${p3x},${p3y} ${p4x},${p4y}`;
+    const [ax, ay] = iso(wc, 0);
+    const w = isoWindow(ax, ay, rStepX, rStepY, WALL_H, 2);
     return (
       <g key={i}>
-        <polygon points={pts2} fill="#081828" opacity="0.92"/>
-        {/* City silhouette */}
-        {[0.1,0.28,0.48,0.68,0.85].map((bx,bi) => {
-          const bh = [0.6,0.85,0.55,0.75,0.65][bi];
-          const bLeft = p1x+(p2x-p1x)*bx, bRight = p1x+(p2x-p1x)*(bx+0.12);
-          const bTop  = p4y + (p1y-p4y)*(1-bh*0.8);
-          return (
-            <polygon key={bi}
-              points={`${bLeft},${bTop} ${bRight},${bTop+(p2y-p1y)*0.1} ${bRight},${p4y+12} ${bLeft},${p4y+8}`}
-              fill={`hsl(220,20%,${9+bi*2}%)`} opacity="0.95"/>
-          );
-        })}
-        <polygon points={pts2} fill="none"
-          stroke="#dde8f0" strokeWidth="4" opacity="0.75"/>
-        <polygon points={pts2} fill="none"
-          stroke="#8fb0d0" strokeWidth="1.5" opacity="0.4"/>
-        {/* Sill */}
-        <line x1={p4x} y1={p4y} x2={p3x} y2={p3y}
-          stroke="#d8e4f0" strokeWidth="5"/>
+        {/* Dark glass */}
+        <polygon points={w.pts} fill="#0a1a2e" opacity="0.94"/>
+        {/* Night sky gradient tint */}
+        <polygon points={w.pts} fill="rgba(30,60,120,0.18)"/>
+        {/* White frame */}
+        <polygon points={w.pts} fill="none" stroke="#e8ddd0" strokeWidth="5" opacity="0.9"/>
+        {/* Inner frame */}
+        <polygon points={w.ipts} fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="1"/>
+        {/* Horizontal glazing bar (mid-height) */}
+        <line
+          x1={w.x0} y1={(w.y0+w.y3)/2}
+          x2={w.x1} y2={(w.y1+w.y2)/2}
+          stroke="#e8ddd0" strokeWidth="2" opacity="0.6"/>
+        {/* Window sill */}
+        <line x1={w.x3} y1={w.y3} x2={w.x2} y2={w.y2}
+          stroke="#d4c8b8" strokeWidth="6" opacity="0.9"/>
       </g>
     );
   });
 
-  // Windows on left wall
+  // Left wall step: moving +1 row from col=0 shifts by (-TW/2, TH/2)
+  const lStepX = -TW / 2, lStepY = TH / 2;
   const leftWindowEls = leftWindows.map((wr, i) => {
-    const [wx, wy] = iso(0, wr);
-    const [wx2, wy2] = iso(0, wr+2);
-    const wTop = wy - WALL_H + 30, wBot = wy - WALL_H*0.25;
-    const p1x=wx, p1y=wTop, p2x=wx2, p2y=wTop+(wy2-wy),
-          p3x=wx2, p3y=wBot+(wy2-wy)*0.5, p4x=wx, p4y=wBot;
-    const pts2 = `${p1x},${p1y} ${p2x},${p2y} ${p3x},${p3y} ${p4x},${p4y}`;
+    const [ax, ay] = iso(0, wr);
+    const w = isoWindow(ax, ay, lStepX, lStepY, WALL_H, 2);
     return (
       <g key={i}>
-        <polygon points={pts2} fill="#081828" opacity="0.92"/>
-        {[0.1,0.35,0.6,0.82].map((bx,bi) => {
-          const bh = [0.7,0.5,0.8,0.6][bi];
-          const bLeft = p1x+(p2x-p1x)*bx, bRight = p1x+(p2x-p1x)*(bx+0.14);
-          const bTop  = p4y + (p1y-p4y)*(1-bh*0.8);
-          return (
-            <polygon key={bi}
-              points={`${bLeft},${bTop} ${bRight},${bTop+(p2y-p1y)*0.08} ${bRight},${p4y+10} ${bLeft},${p4y+6}`}
-              fill={`hsl(220,18%,${10+bi*2}%)`} opacity="0.95"/>
-          );
-        })}
-        <polygon points={pts2} fill="none"
-          stroke="#dde8f0" strokeWidth="4" opacity="0.75"/>
-        <line x1={p4x} y1={p4y} x2={p3x} y2={p3y}
-          stroke="#d8e4f0" strokeWidth="5"/>
+        {/* Dark glass */}
+        <polygon points={w.pts} fill="#0a1a2e" opacity="0.94"/>
+        <polygon points={w.pts} fill="rgba(30,60,120,0.18)"/>
+        {/* White frame */}
+        <polygon points={w.pts} fill="none" stroke="#e8ddd0" strokeWidth="5" opacity="0.9"/>
+        <polygon points={w.ipts} fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="1"/>
+        {/* Glazing bar */}
+        <line
+          x1={w.x0} y1={(w.y0+w.y3)/2}
+          x2={w.x1} y2={(w.y1+w.y2)/2}
+          stroke="#e8ddd0" strokeWidth="2" opacity="0.6"/>
+        {/* Sill */}
+        <line x1={w.x3} y1={w.y3} x2={w.x2} y2={w.y2}
+          stroke="#d4c8b8" strokeWidth="6" opacity="0.9"/>
       </g>
     );
   });
