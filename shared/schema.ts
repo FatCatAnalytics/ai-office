@@ -89,3 +89,20 @@ export const settings = sqliteTable("settings", {
 });
 
 export type Setting = typeof settings.$inferSelect;
+
+// ─── Token usage table (per-model cost tracking) ──────────────────────────────────────────
+export const tokenUsage = sqliteTable("token_usage", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  provider: text("provider").notNull(),    // anthropic | openai | google | kimi
+  modelId: text("model_id").notNull(),     // e.g. claude-opus-4-7
+  agentId: text("agent_id").notNull(),     // which agent made the call
+  projectId: integer("project_id"),        // associated project (optional)
+  tokensIn: integer("tokens_in").notNull().default(0),
+  tokensOut: integer("tokens_out").notNull().default(0),
+  costUsd: real("cost_usd").notNull().default(0),
+  timestamp: integer("timestamp").notNull().$defaultFn(() => Date.now()),
+});
+
+export const insertTokenUsageSchema = createInsertSchema(tokenUsage).omit({ id: true, timestamp: true });
+export type InsertTokenUsage = z.infer<typeof insertTokenUsageSchema>;
+export type TokenUsage = typeof tokenUsage.$inferSelect;

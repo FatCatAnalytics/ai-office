@@ -21,34 +21,50 @@ const PROVIDERS: ProviderConfig[] = [
     description: "Claude models — best for reasoning, code, and long-context tasks",
     envKey: "ANTHROPIC_API_KEY",
     docsUrl: "https://console.anthropic.com/",
-    models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-3-5"],
+    models: [
+      "claude-opus-4-7",   // latest flagship
+      "claude-sonnet-4-6", // latest balanced
+      "claude-haiku-3-5",  // fast + cheap
+    ],
   },
   {
     key: "openai",
     label: "OpenAI",
     color: "#10a37f",
-    description: "GPT-4o, o3, and o1 models — versatile, widely supported",
+    description: "GPT-4.1, o4-mini and o3 — versatile, widely supported",
     envKey: "OPENAI_API_KEY",
     docsUrl: "https://platform.openai.com/api-keys",
-    models: ["gpt-4o", "gpt-4o-mini", "o3", "o1"],
+    models: [
+      "gpt-4.1",       // latest GPT-4 class
+      "gpt-4.1-mini",  // cost-efficient
+      "o4-mini",       // fast reasoning
+      "o3",            // advanced reasoning
+    ],
   },
   {
     key: "google",
     label: "Google",
     color: "#4285f4",
-    description: "Gemini 2.5 Pro — excellent for multimodal and long-context",
+    description: "Gemini 2.5 Pro & Flash — multimodal, long-context",
     envKey: "GEMINI_API_KEY",
     docsUrl: "https://aistudio.google.com/app/apikey",
-    models: ["gemini-2.5-pro", "gemini-2.0-flash"],
+    models: [
+      "gemini-2.5-pro",    // flagship
+      "gemini-2.5-flash",  // fast + cheap
+      "gemini-2.0-flash",  // stable
+    ],
   },
   {
     key: "kimi",
     label: "Kimi (Moonshot)",
     color: "#7c3aed",
-    description: "Moonshot model — 128K context, strong for document analysis",
+    description: "Moonshot — 128K context, strong for document analysis",
     envKey: "KIMI_API_KEY",
     docsUrl: "https://platform.moonshot.cn/console/api-keys",
-    models: ["moonshot-v1-128k"],
+    models: [
+      "moonshot-v1-128k",
+      "moonshot-v1-32k",
+    ],
   },
 ];
 

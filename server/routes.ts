@@ -336,6 +336,39 @@ function runTaskWaves(projectId: number, tasks: Task[], agents: Agent[]) {
   processNextTask();
 }
 
+// Approximate cost per 1K tokens by model (USD) — used for simulation estimates
+const MODEL_COST_PER_1K: Record<string, { in: number; out: number }> = {
+  "claude-opus-4-7":   { in: 0.015,   out: 0.075 },
+  "claude-sonnet-4-6": { in: 0.003,   out: 0.015 },
+  "claude-haiku-3-5":  { in: 0.00025, out: 0.00125 },
+  "gpt-4.1":           { in: 0.002,   out: 0.008 },
+  "gpt-4.1-mini":      { in: 0.0004,  out: 0.0016 },
+  "o4-mini":           { in: 0.0011,  out: 0.0044 },
+  "o3":                { in: 0.01,    out: 0.04 },
+  "gemini-2.5-pro":    { in: 0.00125, out: 0.005 },
+  "gemini-2.5-flash":  { in: 0.00015, out: 0.0006 },
+  "gemini-2.0-flash":  { in: 0.0001,  out: 0.0004 },
+  "moonshot-v1-128k":  { in: 0.0012,  out: 0.0012 },
+  "moonshot-v1-32k":   { in: 0.0008,  out: 0.0008 },
+};
+
+function recordSimulatedTokens(agent: Agent, projectId: number) {
+  const tokensIn  = Math.floor(800  + Math.random() * 3200);
+  const tokensOut = Math.floor(200  + Math.random() * 1800);
+  const rates = MODEL_COST_PER_1K[agent.modelId] ?? { in: 0.002, out: 0.008 };
+  const costUsd = parseFloat(((tokensIn / 1000) * rates.in + (tokensOut / 1000) * rates.out).toFixed(6));
+  storage.recordTokenUsage({
+    provider: agent.provider,
+    modelId: agent.modelId,
+    agentId: agent.id,
+    projectId,
+    tokensIn,
+    tokensOut,
+    costUsd,
+  });
+  broadcast({ type: "budget_update", summary: storage.getBudgetSummary() });
+}
+
 function completeTask(
   projectId: number,
   task: Task,
@@ -350,6 +383,10 @@ function completeTask(
   setAgentStatus(task.assignedTo, "done", null);
   emitEvent(projectId, task.assignedTo, agentName, "completed task",
     `✓ Finished: ${task.title}`, "success");
+
+  // Record simulated token usage for this agent's model
+  const agent = agents.find((a) => a.id === task.assignedTo);
+  if (agent) recordSimulatedTokens(agent, projectId);
 
   // Manager acknowledges progress
   const progress = Math.round((completedCount / totalTasks) * 100);
@@ -603,5 +640,24 @@ export function registerRoutes(httpServer: Server, app: Express) {
       }
     }
     res.json({ ok: true });
+  });
+
+  // ── Budget / token usage ────────────────────────────────────────────────────────
+
+  app.get("/api/budget", (_req, res) => {
+    res.json(storage.getBudgetSummary());
+  });
+
+  app.get("/api/budget/raw", (req, res) => {
+    const since = req.query.since ? parseInt(String(req.query.since)) : undefined;
+    res.json(storage.getTokenUsage(since));
+  });
+
+  app.post("/api/budget/record", (req, res) => {
+    const { provider, modelId, agentId, projectId, tokensIn, tokensOut, costUsd } = req.body;
+    if (!provider || !modelId || !agentId) return res.status(400).json({ error: "provider, modelId and agentId required" });
+    const record = storage.recordTokenUsage({ provider, modelId, agentId, projectId, tokensIn: tokensIn ?? 0, tokensOut: tokensOut ?? 0, costUsd: costUsd ?? 0 });
+    broadcast({ type: "budget_update", summary: storage.getBudgetSummary() });
+    res.json(record);
   });
 }

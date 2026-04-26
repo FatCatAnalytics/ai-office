@@ -8,9 +8,10 @@ import OfficeDashboard from "./pages/OfficeDashboard";
 import AgentsPage from "./pages/AgentsPage";
 import TaskBoardPage from "./pages/TaskBoardPage";
 import SettingsPage from "./pages/SettingsPage";
+import BudgetPage from "./pages/BudgetPage";
 import { useWebSocket } from "./hooks/useWebSocket";
 import {
-  LayoutDashboard, Users, LayoutGrid, Settings, Send,
+  LayoutDashboard, Users, LayoutGrid, Settings, Send, DollarSign,
   Wifi, WifiOff, Crown, Monitor, Server, Bug, Palette, Rocket,
   Database, BarChart3, Shield, Briefcase, Circle, ChevronRight,
 } from "lucide-react";
@@ -34,6 +35,7 @@ function AppShell() {
     { href: "/", icon: LayoutDashboard, label: "Office Floor" },
     { href: "/board", icon: LayoutGrid, label: "Task Board" },
     { href: "/agents", icon: Users, label: "Agents" },
+    { href: "/budget", icon: DollarSign, label: "Budget" },
     { href: "/settings", icon: Settings, label: "Settings" },
   ];
 
@@ -143,6 +145,7 @@ function AppShell() {
             <TaskBoardPage tasks={tasks} project={project} agents={agents}/>
           </Route>
           <Route path="/agents" component={AgentsPage}/>
+          <Route path="/budget" component={BudgetPage}/>
           <Route path="/settings" component={SettingsPage}/>
         </Switch>
       </div>

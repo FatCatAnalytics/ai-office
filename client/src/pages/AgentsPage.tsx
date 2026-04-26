@@ -41,7 +41,7 @@ interface AgentFormData {
 
 const defaultForm: AgentFormData = {
   id: "", name: "", role: "", spriteType: "frontend",
-  provider: "anthropic", modelId: "claude-opus-4-5",
+  provider: "anthropic", modelId: "claude-opus-4-7",
   systemPrompt: "", capabilities: "", color: "#6366f1", icon: "Monitor",
   reportsTo: "manager",
 };

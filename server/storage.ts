@@ -8,6 +8,7 @@ import type {
   Task, InsertTask,
   AgentEvent, InsertAgentEvent,
   Setting,
+  TokenUsage, InsertTokenUsage,
 } from "@shared/schema";
 
 const sqlite = new Database("data.db");
@@ -74,6 +75,17 @@ sqlite.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
+  CREATE TABLE IF NOT EXISTS token_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    project_id INTEGER,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    timestamp INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
   );
 `);
 
@@ -262,6 +274,21 @@ export interface IStorage {
   getSetting(key: string): string | undefined;
   setSetting(key: string, value: string): void;
   getAllSettings(): Record<string, string>;
+
+  // Token usage / budget
+  recordTokenUsage(data: InsertTokenUsage): TokenUsage;
+  getTokenUsage(since?: number): TokenUsage[];
+  getBudgetSummary(): BudgetModelRow[];
+}
+
+export interface BudgetModelRow {
+  provider: string;
+  modelId: string;
+  requests: number;
+  tokensIn: number;
+  tokensOut: number;
+  totalTokens: number;
+  costUsd: number;
 }
 
 class SQLiteStorage implements IStorage {
@@ -354,6 +381,49 @@ class SQLiteStorage implements IStorage {
   getAllSettings(): Record<string, string> {
     const rows = db.select().from(schema.settings).all();
     return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  }
+
+  // ── Token usage ──
+  recordTokenUsage(data: InsertTokenUsage): TokenUsage {
+    return db.insert(schema.tokenUsage).values({
+      ...data,
+      timestamp: Date.now(),
+    }).returning().get()!;
+  }
+
+  getTokenUsage(since?: number): TokenUsage[] {
+    const rows = db.select().from(schema.tokenUsage)
+      .orderBy(desc(schema.tokenUsage.timestamp))
+      .all();
+    if (since) return rows.filter(r => r.timestamp >= since);
+    return rows;
+  }
+
+  getBudgetSummary(): BudgetModelRow[] {
+    const rows = db.select().from(schema.tokenUsage).all();
+    const map = new Map<string, BudgetModelRow>();
+    for (const r of rows) {
+      const key = `${r.provider}::${r.modelId}`;
+      const existing = map.get(key);
+      if (existing) {
+        existing.requests += 1;
+        existing.tokensIn += r.tokensIn;
+        existing.tokensOut += r.tokensOut;
+        existing.totalTokens += r.tokensIn + r.tokensOut;
+        existing.costUsd += r.costUsd;
+      } else {
+        map.set(key, {
+          provider: r.provider,
+          modelId: r.modelId,
+          requests: 1,
+          tokensIn: r.tokensIn,
+          tokensOut: r.tokensOut,
+          totalTokens: r.tokensIn + r.tokensOut,
+          costUsd: r.costUsd,
+        });
+      }
+    }
+    return [...map.values()].sort((a, b) => b.costUsd - a.costUsd);
   }
 }
 

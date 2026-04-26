@@ -63,19 +63,35 @@ export interface Task {
 export const MODEL_CATALOG: Record<string, { label: string; models: string[] }> = {
   anthropic: {
     label: "Anthropic",
-    models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-3-5"],
+    models: [
+      "claude-opus-4-7",   // latest flagship
+      "claude-sonnet-4-6", // latest balanced
+      "claude-haiku-3-5",  // fast + cheap
+    ],
   },
   openai: {
     label: "OpenAI",
-    models: ["gpt-4o", "gpt-4o-mini", "o3", "o1"],
+    models: [
+      "gpt-4.1",       // latest GPT-4 class
+      "gpt-4.1-mini",  // cost-efficient
+      "o4-mini",       // fast reasoning
+      "o3",            // advanced reasoning
+    ],
   },
   google: {
     label: "Google",
-    models: ["gemini-2.5-pro", "gemini-2.0-flash"],
+    models: [
+      "gemini-2.5-pro",    // flagship
+      "gemini-2.5-flash",  // fast + cheap
+      "gemini-2.0-flash",  // stable
+    ],
   },
   kimi: {
     label: "Kimi (Moonshot)",
-    models: ["moonshot-v1-128k"],
+    models: [
+      "moonshot-v1-128k",
+      "moonshot-v1-32k",
+    ],
   },
 };
 
