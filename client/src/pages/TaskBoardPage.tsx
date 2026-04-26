@@ -149,7 +149,7 @@ export default function TaskBoardPage() {
 
   const { data: tasks = [], isLoading } = useQuery<Task[]>({
     queryKey: ["/api/tasks", activeProject?.id],
-    queryFn: () => apiRequest("GET", activeProject ? `/api/projects/${activeProject.id}/tasks` : "/api/tasks"),
+    queryFn: () => apiRequest("GET", activeProject ? `/api/projects/${activeProject.id}/tasks` : "/api/tasks").then(r => r.json()),
     enabled: !!activeProject,
     refetchInterval: 3000,
   });

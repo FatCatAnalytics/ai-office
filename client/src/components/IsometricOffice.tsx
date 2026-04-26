@@ -209,55 +209,84 @@ function OfficeRoom() {
   // Window positions on left wall: row 4, 10, 16 at col=0
   const leftWindows  = [4, 10, 16];
 
-  // Floor: render every tile with alternating wood pattern
+  // Floor: herringbone-style wood with 3 tones + grain variation
   const floorTiles = [];
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      // Warm wood tones, slight checker variation
-      const v = ((c + r) % 2 === 0) ? 0 : 1;
-      const lum = 48 + v*4 + ((c*3+r*7) % 8);
+      // Herringbone: alternate tile direction every 2 columns
+      const block = Math.floor(c / 2) + Math.floor(r / 2);
+      const v = block % 3; // 3 wood tones
+      const grain = (c * 5 + r * 11 + c * r) % 9;
+      const sat  = [50, 54, 48][v];
+      const lum  = [44, 50, 47][v] + grain * 0.6;
+      const strokeCol = (c + r) % 2 === 0
+        ? "rgba(0,0,0,0.09)" : "rgba(0,0,0,0.05)";
       floorTiles.push(
         <polygon key={`t${c}-${r}`}
           points={tilePoly(c, r)}
-          fill={`hsl(28,${52+v*4}%,${lum}%)`}
-          stroke="rgba(0,0,0,0.06)" strokeWidth="0.5"
+          fill={`hsl(26,${sat}%,${lum.toFixed(1)}%)`}
+          stroke={strokeCol} strokeWidth="0.6"
         />
       );
     }
   }
 
-  // Zone carpet / area fills (subtle coloured floor areas)
+  // Zone carpet / area fills — richer opacity + inner highlight
   const zoneAreas = ZONES.map(z => (
-    <polygon key={`za-${z.id}`}
-      points={zonePoly(z.col, z.row, z.w, z.d)}
-      fill={z.color}
-      opacity="0.06"
-    />
+    <g key={`za-${z.id}`}>
+      <polygon
+        points={zonePoly(z.col, z.row, z.w, z.d)}
+        fill={z.color}
+        opacity="0.11"
+      />
+      {/* subtle inner highlight strip along the top edge */}
+      <polygon
+        points={zonePoly(z.col, z.row, z.w, 1)}
+        fill={z.color}
+        opacity="0.07"
+      />
+    </g>
   ));
 
-  // Zone dashed outlines
+  // Zone dashed outlines — glow layer behind + crisp dashed line on top
   const zoneOutlines = ZONES.map(z => (
-    <polygon key={`zo-${z.id}`}
-      points={zonePoly(z.col, z.row, z.w, z.d)}
-      fill="none"
-      stroke={z.color}
-      strokeWidth="2.5"
-      strokeDasharray="10 6"
-      opacity="0.85"
-    />
+    <g key={`zo-${z.id}`}>
+      {/* glow blur behind the outline */}
+      <polygon
+        points={zonePoly(z.col, z.row, z.w, z.d)}
+        fill="none"
+        stroke={z.color}
+        strokeWidth="7"
+        opacity="0.18"
+        style={{ filter: "blur(4px)" }}
+      />
+      {/* crisp dashed outline */}
+      <polygon
+        points={zonePoly(z.col, z.row, z.w, z.d)}
+        fill="none"
+        stroke={z.color}
+        strokeWidth="2.5"
+        strokeDasharray="10 6"
+        opacity="0.92"
+      />
+    </g>
   ));
 
-  // Zone labels
+  // Zone labels — frosted glass pill with subtle border
   const zoneLabels = ZONES.map(z => {
     const [lx, ly] = zoneLabel(z.col, z.row, z.w);
     return (
       <g key={`zl-${z.id}`}>
+        {/* outer glow ring */}
+        <rect x={lx-54} y={ly-15} width={108} height={22} rx="11"
+          fill={z.color} opacity="0.18" style={{ filter:"blur(3px)" }}/>
+        {/* frosted pill */}
         <rect x={lx-52} y={ly-13} width={104} height={20} rx="10"
-          fill="rgba(8,14,26,0.82)" />
+          fill="rgba(8,14,26,0.88)" stroke={z.color} strokeWidth="1" strokeOpacity="0.4"/>
         <text x={lx} y={ly+2}
           textAnchor="middle" fill={z.color}
           fontSize="11" fontFamily="Inter,sans-serif" fontWeight="700"
-          letterSpacing="0.04em">
+          letterSpacing="0.05em">
           {z.label}
         </text>
       </g>
@@ -417,11 +446,11 @@ function OfficeRoom() {
       <g key={i}>
         <circle cx={lx} cy={lY} r={6} fill="#dde2ea" opacity="0.95"/>
         <ellipse cx={lx} cy={lY+WALL_H*0.9}
-          rx={55} ry={22}
-          fill="rgba(255,242,200,0.10)"/>
+          rx={58} ry={24}
+          fill="rgba(255,242,200,0.22)"/>
         <polygon
-          points={`${lx-6},${lY+4} ${lx+6},${lY+4} ${lx+50},${lY+WALL_H*0.88} ${lx-50},${lY+WALL_H*0.88}`}
-          fill="rgba(255,242,200,0.055)"/>
+          points={`${lx-6},${lY+4} ${lx+6},${lY+4} ${lx+52},${lY+WALL_H*0.88} ${lx-52},${lY+WALL_H*0.88}`}
+          fill="rgba(255,242,200,0.075)"/>
       </g>
     );
   });
@@ -495,12 +524,14 @@ function OfficeRoom() {
     >
       <defs>
         <linearGradient id="leftWallG" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%"   stopColor="#8e949e"/>
-          <stop offset="100%" stopColor="#b8bec8"/>
+          <stop offset="0%"   stopColor="#7a8090"/>
+          <stop offset="60%"  stopColor="#adb3be"/>
+          <stop offset="100%" stopColor="#c0c6d0"/>
         </linearGradient>
         <linearGradient id="rightWallG" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%"   stopColor="#c8cdd5"/>
-          <stop offset="100%" stopColor="#a8adb8"/>
+          <stop offset="0%"   stopColor="#d0d5dd"/>
+          <stop offset="50%"  stopColor="#b8bcc6"/>
+          <stop offset="100%" stopColor="#949aa6"/>
         </linearGradient>
         <linearGradient id="ceilG" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%"   stopColor="#22283a"/>
