@@ -28,7 +28,7 @@ const STATUS_DOT: Record<string, string> = {
 
 // ─── Shared shell around all routes ──────────────────────────────────────────
 function AppShell() {
-  const { agents, events, project, tasks, connected, agentMode, setAgentMode } = useWebSocket();
+  const { agents, events, project, tasks, connected, agentMode, setAgentMode, liveStreams } = useWebSocket();
   const [showModal, setShowModal] = useState(false);
   const [location] = useLocation();
 
@@ -148,6 +148,7 @@ function AppShell() {
               agents={agents} events={events} project={project} tasks={tasks}
               connected={connected} showModal={showModal} setShowModal={setShowModal}
               agentMode={agentMode} setAgentMode={setAgentMode}
+              liveStreams={liveStreams}
             />
           </Route>
           <Route path="/board">

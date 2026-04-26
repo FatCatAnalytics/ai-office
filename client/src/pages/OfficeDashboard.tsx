@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { apiRequest } from "@/lib/queryClient";
 import type { Agent, AgentEvent, Project, Task } from "../types";
+import type { LiveStream } from "../hooks/useWebSocket";
 import {
   Crown, Monitor, Server, Bug, Palette, Rocket, Database, BarChart3, Shield, Briefcase,
   Play, Pause, ChevronDown, Activity, Zap, DollarSign,
@@ -92,8 +93,52 @@ function AgentDesk({ agent }: { agent: Agent }) {
   );
 }
 
+// ─── Live stream bubble (Stage 3) ──────────────────────────────────────────────
+function LiveStreamBubble({ stream }: { stream: LiveStream }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // Auto-scroll the bubble as new tokens arrive
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [stream.text]);
+
+  // Tail of the stream — show last ~600 chars to keep the panel compact
+  const tail = stream.text.length > 600
+    ? "…" + stream.text.slice(-600)
+    : stream.text;
+
+  return (
+    <div className="slide-in mx-2 mb-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-2">
+      <div className="flex items-center gap-1.5 mb-1">
+        <Loader2 size={10} className="text-cyan-400 animate-spin" />
+        <span className="text-xs font-semibold text-cyan-300">{stream.agentName}</span>
+        <span className="text-xs text-slate-500 truncate flex-1" style={{ fontSize: 10 }}>
+          {stream.taskTitle}
+        </span>
+      </div>
+      <div
+        ref={ref}
+        className="text-xs text-slate-300 font-mono leading-snug whitespace-pre-wrap max-h-24 overflow-y-auto custom-scroll"
+        style={{ fontSize: 10 }}
+      >
+        {tail}
+        <span className="inline-block w-1.5 h-3 bg-cyan-400/70 ml-0.5 align-middle animate-pulse" />
+      </div>
+    </div>
+  );
+}
+
 // ─── Activity Feed ─────────────────────────────────────────────────────────────
-function ActivityFeed({ events, connected }: { events: AgentEvent[]; connected: boolean }) {
+function ActivityFeed({
+  events,
+  connected,
+  liveStreams,
+}: {
+  events: AgentEvent[];
+  connected: boolean;
+  liveStreams: Record<string, LiveStream>;
+}) {
+  const activeStreams = Object.values(liveStreams).sort((a, b) => b.updatedAt - a.updatedAt);
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-800">
@@ -109,30 +154,37 @@ function ActivityFeed({ events, connected }: { events: AgentEvent[]; connected: 
           )}
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto custom-scroll px-2 py-1.5 space-y-0.5">
-        {events.length === 0 && (
+      <div className="flex-1 overflow-y-auto custom-scroll py-1.5">
+        {/* Live streaming bubbles (above events when live tokens are arriving) */}
+        {activeStreams.map((s) => (
+          <LiveStreamBubble key={s.agentId} stream={s} />
+        ))}
+
+        {events.length === 0 && activeStreams.length === 0 && (
           <div className="flex flex-col items-center justify-center h-24 gap-2 text-slate-600">
             <Terminal size={16} />
             <span className="text-xs">Submit a project to start</span>
           </div>
         )}
-        {events.map((ev, i) => {
-          const StatusIcon = EVENT_STATUS_ICON[ev.status] || Info;
-          const color = EVENT_STATUS_COLOR[ev.status] || "text-slate-400";
-          return (
-            <div key={ev.id ?? i} className="slide-in flex gap-2 py-1.5 px-2 rounded-lg hover:bg-slate-800/50 transition-colors">
-              <StatusIcon size={11} className={`${color} flex-shrink-0 mt-0.5`} />
-              <div className="flex-1 min-w-0">
-                <div className="text-xs leading-snug">
-                  <span className="font-semibold text-slate-200">{ev.agentName}</span>{" "}
-                  <span className="text-slate-400">{ev.action}</span>
+        <div className="px-2 space-y-0.5">
+          {events.map((ev, i) => {
+            const StatusIcon = EVENT_STATUS_ICON[ev.status] || Info;
+            const color = EVENT_STATUS_COLOR[ev.status] || "text-slate-400";
+            return (
+              <div key={ev.id ?? i} className="slide-in flex gap-2 py-1.5 px-2 rounded-lg hover:bg-slate-800/50 transition-colors">
+                <StatusIcon size={11} className={`${color} flex-shrink-0 mt-0.5`} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs leading-snug">
+                    <span className="font-semibold text-slate-200">{ev.agentName}</span>{" "}
+                    <span className="text-slate-400">{ev.action}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 leading-relaxed truncate" style={{ fontSize: 10 }}>{ev.detail}</div>
+                  <div className="text-slate-600 font-mono mt-0.5" style={{ fontSize: 9 }}>{formatTime(ev.timestamp)}</div>
                 </div>
-                <div className="text-xs text-slate-500 leading-relaxed truncate" style={{ fontSize: 10 }}>{ev.detail}</div>
-                <div className="text-slate-600 font-mono mt-0.5" style={{ fontSize: 9 }}>{formatTime(ev.timestamp)}</div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -637,10 +689,11 @@ interface DashboardProps {
   setShowModal: (v: boolean) => void;
   agentMode: "simulation" | "live";
   setAgentMode: (m: "simulation" | "live") => void;
+  liveStreams: Record<string, LiveStream>;
 }
 
 // ─── Main dashboard ─────────────────────────────────────────────────────────────
-export default function OfficeDashboard({ agents, events, project, tasks, connected, showModal, setShowModal, agentMode, setAgentMode }: DashboardProps) {
+export default function OfficeDashboard({ agents, events, project, tasks, connected, showModal, setShowModal, agentMode, setAgentMode, liveStreams }: DashboardProps) {
   const [activeView, setActiveView] = useState<"sims" | "board">("sims");
 
   // Sync agentMode from server on mount
@@ -776,7 +829,7 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
           style={{ width: 220 }}>
           {/* Activity feed - takes most height */}
           <div className="flex flex-col overflow-hidden" style={{ flex: "1 1 0" }}>
-            <ActivityFeed events={events} connected={connected} />
+            <ActivityFeed events={events} connected={connected} liveStreams={liveStreams} />
           </div>
           {/* Task flow */}
           <div className="flex flex-col overflow-hidden border-t border-slate-800" style={{ flex: "1.2 1 0" }}>

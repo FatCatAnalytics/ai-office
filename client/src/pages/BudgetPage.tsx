@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { DollarSign, Zap, ArrowDownLeft, ArrowUpRight, RefreshCw, TrendingUp, Activity } from "lucide-react";
 import { PROVIDER_COLORS } from "../types";
@@ -62,11 +63,23 @@ function StatCard({ icon: Icon, label, value, sub, color }: {
 }
 
 export default function BudgetPage() {
+  const qc = useQueryClient();
   const { data: rows = [], isLoading, refetch } = useQuery<BudgetRow[]>({
     queryKey: ["/api/budget"],
     queryFn: () => apiRequest("GET", "/api/budget").then(r => r.json()),
     refetchInterval: 5000,
   });
+
+  // Live runs broadcast `aioffice:budget_update` from useWebSocket whenever a
+  // worker records token usage. Invalidating the query gives near-instant
+  // updates during streaming runs (the 5s polling interval is the fallback).
+  useEffect(() => {
+    const onBudgetUpdate = () => {
+      qc.invalidateQueries({ queryKey: ["/api/budget"] });
+    };
+    window.addEventListener("aioffice:budget_update", onBudgetUpdate);
+    return () => window.removeEventListener("aioffice:budget_update", onBudgetUpdate);
+  }, [qc]);
 
   const totalCost   = rows.reduce((s, r) => s + r.costUsd, 0);
   const totalTokens = rows.reduce((s, r) => s + r.totalTokens, 0);

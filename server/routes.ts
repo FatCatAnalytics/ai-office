@@ -5,6 +5,7 @@ import path from "path";
 import fs from "fs";
 import { storage } from "./storage";
 import type { Agent, Task, Project } from "@shared/schema";
+import { runLiveOrchestration } from "./liveOrchestrator";
 
 // ─── WebSocket broadcast ───────────────────────────────────────────────────────
 const wsClients = new Set<WebSocket>();
@@ -192,17 +193,43 @@ function runManagerOrchestration(projectId: number) {
   const manager = agents.find((a) => a.id === "manager");
   if (!manager) return;
 
-  // Check agent mode — "live" will use real AI calls (Stage 3); simulation uses mocks
+  // Check agent mode — "live" runs real AI calls (Stage 3); simulation uses mocks
   const agentMode = storage.getSetting("agent_mode") ?? "simulation";
-  const anthropicKey = storage.getSetting("anthropic_api_key");
-  const isLiveMode = agentMode === "live" && !!anthropicKey;
+  const managerKeySetting = `${manager.provider}_api_key`;
+  const managerKey = storage.getSetting(managerKeySetting);
+  const isLiveMode = agentMode === "live" && !!managerKey;
 
   // Phase 0: Manager starts planning
   setAgentStatus("manager", "thinking", "Analysing project requirements");
   emitEvent(projectId, "manager", manager.name, "received project",
     isLiveMode
-      ? `[LIVE] Connecting to Anthropic — analysing "${project.name}" with real AI...`
+      ? `[LIVE] ${manager.provider}/${manager.modelId} — analysing "${project.name}" with real AI...`
       : `[SIM] Analysing "${project.name}" — breaking down into tasks for the team`, "info");
+
+  // ── Live mode: hand off to the live orchestrator ─────────────────────
+  if (isLiveMode) {
+    runLiveOrchestration(projectId, {
+      broadcast,
+      emitEvent,
+      setAgentStatus,
+      generateSimulatedFiles,
+    }).catch((err) => {
+      console.error("[live] orchestration error:", err);
+      emitEvent(projectId, "manager", manager.name, "orchestration error",
+        String(err?.message ?? err), "error");
+      setAgentStatus("manager", "idle", null);
+      storage.updateProject(projectId, { status: "blocked" });
+      broadcast({ type: "project_update", projectId, status: "blocked" });
+    });
+    return;
+  }
+
+  // ── Simulation mode (Stage 2 path) ──────────────────────────────────
+  if (agentMode === "live" && !managerKey) {
+    emitEvent(projectId, "manager", manager.name, "missing API key",
+      `Live mode requires a ${manager.provider} API key — falling back to simulation. Add a key in Settings.`,
+      "warning");
+  }
 
   storage.updateProject(projectId, { status: "planning" });
   broadcast({ type: "project_update", projectId, status: "planning" });

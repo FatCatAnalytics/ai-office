@@ -1,6 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { Agent, AgentEvent, Project, Task } from "../types";
 
+// Live streaming state per agent. Cleared when the task completes.
+export interface LiveStream {
+  agentId: string;
+  agentName: string;
+  taskTitle: string;
+  text: string;
+  updatedAt: number;
+}
+
 function getWsUrl() {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host;
@@ -16,6 +25,7 @@ export function useWebSocket() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [connected, setConnected] = useState(false);
   const [agentMode, setAgentMode] = useState<"simulation" | "live">("simulation");
+  const [liveStreams, setLiveStreams] = useState<Record<string, LiveStream>>({});
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -108,6 +118,41 @@ export function useWebSocket() {
             case "file_created":
               window.dispatchEvent(new CustomEvent("aioffice:file_created", { detail: msg }));
               break;
+
+            // budget_update — fan out to BudgetPage which can re-fetch on demand
+            case "budget_update":
+              window.dispatchEvent(new CustomEvent("aioffice:budget_update", { detail: msg }));
+              break;
+
+            // Live token streaming — accumulate per-agent buffer for the activity feed
+            case "stream":
+              if (msg.agentId && typeof msg.delta === "string") {
+                setLiveStreams((prev) => {
+                  const existing = prev[msg.agentId];
+                  // If the task changed, reset the buffer
+                  if (!existing || existing.taskTitle !== msg.taskTitle) {
+                    return {
+                      ...prev,
+                      [msg.agentId]: {
+                        agentId: msg.agentId,
+                        agentName: msg.agentName ?? msg.agentId,
+                        taskTitle: msg.taskTitle ?? "",
+                        text: msg.delta,
+                        updatedAt: Date.now(),
+                      },
+                    };
+                  }
+                  return {
+                    ...prev,
+                    [msg.agentId]: {
+                      ...existing,
+                      text: existing.text + msg.delta,
+                      updatedAt: Date.now(),
+                    },
+                  };
+                });
+              }
+              break;
           }
         } catch {
           // ignore parse errors
@@ -126,5 +171,28 @@ export function useWebSocket() {
     };
   }, [connect]);
 
-  return { agents, events, project, tasks, connected, agentMode, setAgentMode };
+  // Auto-clear stale streams once an agent goes idle/done
+  useEffect(() => {
+    setLiveStreams((prev) => {
+      let changed = false;
+      const next: Record<string, LiveStream> = {};
+      for (const [agentId, stream] of Object.entries(prev)) {
+        const agent = agents.find((a) => a.id === agentId);
+        // Drop the buffer once the agent goes back to idle/done so the next task
+        // starts with a clean slate. Also drop anything older than 60s with no agent activity.
+        if (!agent || agent.status === "idle" || agent.status === "done") {
+          changed = true;
+          continue;
+        }
+        if (Date.now() - stream.updatedAt > 60_000) {
+          changed = true;
+          continue;
+        }
+        next[agentId] = stream;
+      }
+      return changed ? next : prev;
+    });
+  }, [agents]);
+
+  return { agents, events, project, tasks, connected, agentMode, setAgentMode, liveStreams };
 }
