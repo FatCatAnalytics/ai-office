@@ -23,34 +23,60 @@ const SPRITE_MAP: Record<string, string> = {
 };
 
 // ─── World & room geometry ────────────────────────────────────────────────────
-// The background PNG (1024×1024) is rendered at BG_SCALE × its natural size.
-// All floor-position math is expressed in WORLD coordinates (BG_SCALE * px).
-const BG_SCALE  = 3.2;          // render the PNG at 3.2× → 3276×3276 px
-const BG_PX     = 1024 * BG_SCALE;  // 3276.8 → ~3277
+// The PNG (1024×1024) is the single beautiful background tile.
+// We render it at BG_SCALE, then place 3 more floor-only copies (clipped to
+// the floor diamond) tiled adjacent to extend the room in all directions.
+const BG_SCALE  = 2.8;                  // slightly smaller so room fits well
+const BG_PX     = 1024 * BG_SCALE;     // 2867.2 px
 
-// World canvas is larger than the PNG so there's dark space to pan into
-const WORLD_W   = BG_PX * 1.6;
-const WORLD_H   = BG_PX * 1.3;
+// Isometric edge vectors of one floor tile (in world px, from pixel analysis):
+//   Right-edge: Top→Right = (356, 126) img px × BG_SCALE
+//   Left-edge:  Top→Left  = (-340, 126) img px × BG_SCALE
+const EDGE_R: [number, number] = [356 * BG_SCALE,  126 * BG_SCALE]; // (996.8, 352.8)
+const EDGE_L: [number, number] = [-340 * BG_SCALE, 126 * BG_SCALE]; // (-952, 352.8)
 
-// Where the PNG sits inside the world (centred horizontally, slightly down)
-const BG_X      = (WORLD_W - BG_PX) / 2;
-const BG_Y      = (WORLD_H - BG_PX) / 2 - 80;
+// The 3 extra tile offsets (shift by 2× edge vectors to get adjacent tiles)
+const TILE_OFFSETS: [number, number][] = [
+  [EDGE_R[0] * 2,  EDGE_R[1] * 2],   // Right tile:   (+1993.6, +705.6)
+  [EDGE_L[0] * 2,  EDGE_L[1] * 2],   // Left tile:    (-1904,   +705.6)
+  [EDGE_R[0] * 2 + EDGE_L[0] * 2,    // Front tile:   (+89.6,   +1411.2)
+   EDGE_R[1] * 2 + EDGE_L[1] * 2],
+];
 
-// ── Floor diamond geometry (measured in original 1024px image coordinates) ──
-// Top-tip: (512, 494), Bottom-tip: (512, 858)
-// Left-tip at y≈620: x=172,  Right-tip at y≈620: x=868
-// Wall ridge (back corner of floor): (512, 494) in image
-// We convert these to WORLD coords:  worldX = BG_X + imgX * BG_SCALE
+// Clip-path percentages for the floor diamond within the 1024×1024 image:
+// Top(50%,48.2%), Right(84.8%,60.5%), Bottom(50%,83.8%), Left(16.8%,60.5%)
+// We add a tiny bleed (+2%) so seams disappear between tiles.
+const FLOOR_CLIP =
+  "polygon(50% 46%, 87% 59%, 50% 86%, 14% 59%)";
 
+// Anchor PNG at a fixed position — centre of world
+const WORLD_W = BG_PX * 2.4;
+const WORLD_H = BG_PX * 2.0;
+const BG_X    = (WORLD_W - BG_PX) / 2;
+const BG_Y    = (WORLD_H - BG_PX) / 2 - BG_PX * 0.12;
+
+// ── Floor diamond landmarks in world coords ──
+// (measured in image coords, converted: worldX = BG_X + imgX*BG_SCALE)
 function imgToWorld(ix: number, iy: number): [number, number] {
   return [BG_X + ix * BG_SCALE, BG_Y + iy * BG_SCALE];
 }
 
-// Key floor landmarks in world coords
-const FLOOR_TOP    = imgToWorld(512, 494);   // back corner (top of diamond)
+// Corners of the PRIMARY tile's floor diamond
+const FLOOR_TOP    = imgToWorld(512, 494);   // back corner
 const FLOOR_LEFT   = imgToWorld(172, 620);   // left corner
 const FLOOR_RIGHT  = imgToWorld(868, 620);   // right corner
-const FLOOR_BOTTOM = imgToWorld(512, 858);   // front corner (bottom tip)
+const FLOOR_BOTTOM = imgToWorld(512, 858);   // front corner
+
+// Full combined floor spans all 4 tiles:
+// Leftmost point  = FLOOR_LEFT  + EDGE_L*2
+// Rightmost point = FLOOR_RIGHT + EDGE_R*2
+// Topmost point   = FLOOR_TOP   (original tile — highest in Y)
+// Bottommost      = FLOOR_BOTTOM + EDGE_R*2 + EDGE_L*2
+const COMBINED_LEFT:   [number,number] = [FLOOR_LEFT[0]   + EDGE_L[0]*2, FLOOR_LEFT[1]   + EDGE_L[1]*2];
+const COMBINED_RIGHT:  [number,number] = [FLOOR_RIGHT[0]  + EDGE_R[0]*2, FLOOR_RIGHT[1]  + EDGE_R[1]*2];
+const COMBINED_TOP:    [number,number] = FLOOR_TOP;
+const COMBINED_BOTTOM: [number,number] = [FLOOR_BOTTOM[0] + EDGE_R[0]*2 + EDGE_L[0]*2,
+                                          FLOOR_BOTTOM[1] + EDGE_R[1]*2 + EDGE_L[1]*2];
 
 // ─── Zoom / pan ───────────────────────────────────────────────────────────────
 const ZOOM_MIN  = 0.12;
@@ -76,10 +102,11 @@ function floorPoint(u: number, v: number): [number, number] {
   //   horizontal midline at v=0.5: from FLOOR_LEFT to FLOOR_RIGHT
   //   at v=0:  converges to FLOOR_TOP
   //   at v=1:  converges to FLOOR_BOTTOM
-  const topX    = FLOOR_TOP[0],    topY    = FLOOR_TOP[1];
-  const leftX   = FLOOR_LEFT[0],   leftY   = FLOOR_LEFT[1];
-  const rightX  = FLOOR_RIGHT[0],  rightY  = FLOOR_RIGHT[1];
-  const botX    = FLOOR_BOTTOM[0], botY    = FLOOR_BOTTOM[1];
+  // Use COMBINED corners so agents span all 4 tiles
+  const topX    = COMBINED_TOP[0],    topY    = COMBINED_TOP[1];
+  const leftX   = COMBINED_LEFT[0],   leftY   = COMBINED_LEFT[1];
+  const rightX  = COMBINED_RIGHT[0],  rightY  = COMBINED_RIGHT[1];
+  const botX    = COMBINED_BOTTOM[0], botY    = COMBINED_BOTTOM[1];
 
   // Left edge at param v: lerp top→left (v:0→0.5) then left→bottom (v:0.5→1)
   let lx: number, ly: number, rx: number, ry: number;
@@ -104,9 +131,9 @@ function computePositions(count: number): [number, number][] {
   const cols = count <= 4 ? 2 : count <= 8 ? 3 : 4;
   const rows = Math.ceil(count / cols);
 
-  // Safe zone: u 0.18..0.82, v 0.12..0.82
-  const uMin = 0.18, uMax = 0.82;
-  const vMin = 0.12, vMax = 0.80;
+  // Safe zone across all 4 tiles: u 0.08..0.92, v 0.06..0.90
+  const uMin = 0.08, uMax = 0.92;
+  const vMin = 0.06, vMax = 0.90;
 
   const positions: [number, number][] = [];
   for (let r = 0; r < rows; r++) {
@@ -123,352 +150,65 @@ function computePositions(count: number): [number, number][] {
   return positions;
 }
 
-// Sprite size in world pixels — proportional to the floor size
-function spriteWorldPx(count: number): number {
-  const floorH = FLOOR_BOTTOM[1] - FLOOR_TOP[1]; // ~1165 world px
-  // Each agent should be roughly 1/7th the floor height for 10 agents
-  const base = floorH * 0.165;
-  if (count <= 4)  return base * 1.15;
-  if (count <= 7)  return base * 1.0;
-  return base * 0.88;
+// Sprite size: fixed relative to a single tile's floor height so they always
+// look proportional to the room regardless of agent count.
+// Single-tile floor height = (858-494)*BG_SCALE in world px.
+function spriteWorldPx(_count: number): number {
+  return (858 - 494) * BG_SCALE * 0.175; // ~178px at BG_SCALE=2.8
 }
 
-// ─── Extended room SVG (walls + windows beyond the PNG edges) ─────────────────
-// The PNG shows a corner room. We extend it by drawing matching wall planes
-// to the left and right of the PNG so the space feels larger.
-function ExtendedRoom() {
-  // Wall colour from the PNG walls: approximately #b8bcc4 (left) and #d0d4da (right)
-  // Back ridge in image: approx y=370 at x=512 (in image coords), so world y:
-  const [ridgeX,  ridgeY]  = imgToWorld(512, 370);
-  const [ridgeL]           = imgToWorld(39,  560);   // left wall top-edge at image left
-  const [ridgeR]           = imgToWorld(981, 560);   // right wall top-edge at image right
-  // Floor left tip and right tip
-  const [flLx, flLy] = FLOOR_LEFT;
-  const [flRx, flRy] = FLOOR_RIGHT;
-  // Bottom of image content (below the floor front)
-  const [, botImgY] = imgToWorld(512, 877);
-
-  // Left wall extension: from image left edge (col 39) extending further left
-  // The left wall in the PNG goes from top-left down to floor-left.
-  // We project the wall plane further left by mirroring the slope.
-  // Wall slope on left side: dx/dy ≈ (512-39)/(560-370) ≈ 473/190 ≈ 2.49 per y
-  const wallSlope = (512 - 39) / (560 - 370);  // ~2.49
-  const extWidth = BG_PX * 0.7;  // extend this many world px on each side
-
-  // Left extension top edge
-  const lExtTopX = BG_X;
-  const lExtTopY = BG_Y + 370 * BG_SCALE;
-  // Left extension floor edge: same slope going further left
-  const lExtFloorX = flLx - extWidth;
-  const lExtFloorY = flLy + extWidth / wallSlope * 0.4;
-
-  // Right extension
-  const rExtTopX = BG_X + BG_PX;
-  const rExtTopY = BG_Y + 370 * BG_SCALE;
-  const rExtFloorX = flRx + extWidth;
-  const rExtFloorY = flRy + extWidth / wallSlope * 0.4;
-
-  // Wall top: we go up to a ceiling line
-  const ceilY = BG_Y + 144 * BG_SCALE;  // top of image content
-
+// ─── Room tiles ───────────────────────────────────────────────────────────────
+// The primary PNG is the beautiful corner room rendered at BG_SCALE.
+// Three extra copies are placed adjacent (clipped to floor-diamond only)
+// so the room extends in all 3 outward directions, creating a 2×2 tile floor.
+// No custom SVG walls — the PNG walls remain as-is on the primary tile.
+function RoomTiles() {
   return (
-    <svg
-      style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
-      width={WORLD_W} height={WORLD_H}
-      overflow="visible"
-    >
-      <defs>
-        {/* Left wall gradient — cool grey, lit from above */}
-        <linearGradient id="lwg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%"   stopColor="#c8ccd4"/>
-          <stop offset="60%"  stopColor="#b0b4bc"/>
-          <stop offset="100%" stopColor="#989ca4"/>
-        </linearGradient>
-        {/* Right wall gradient — slightly warmer */}
-        <linearGradient id="rwg" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%"   stopColor="#d4d8de"/>
-          <stop offset="60%"  stopColor="#c0c4ca"/>
-          <stop offset="100%" stopColor="#a8acb4"/>
-        </linearGradient>
-        {/* Floor extension gradient — warm wood */}
-        <linearGradient id="floorExt" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor="#c87030"/>
-          <stop offset="100%" stopColor="#a05020"/>
-        </linearGradient>
-        {/* Window sky gradient */}
-        <linearGradient id="nightSky" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor="#06101e"/>
-          <stop offset="50%"  stopColor="#0d1f36"/>
-          <stop offset="100%" stopColor="#162840"/>
-        </linearGradient>
-        {/* Ceiling gradient */}
-        <linearGradient id="ceilGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor="#2a2e38"/>
-          <stop offset="100%" stopColor="#1a1e28"/>
-        </linearGradient>
-        {/* Baseboard highlight */}
-        <linearGradient id="baseGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor="#e8e4dc"/>
-          <stop offset="100%" stopColor="#c8c4bc"/>
-        </linearGradient>
-        {/* Light cone gradient */}
-        <radialGradient id="lightCone" cx="50%" cy="0%" r="100%">
-          <stop offset="0%"   stopColor="rgba(255,240,200,0.18)"/>
-          <stop offset="100%" stopColor="rgba(255,240,200,0)"/>
-        </radialGradient>
-        {/* Spotlight on floor */}
-        <radialGradient id="spotFloor" cx="50%" cy="50%" r="50%">
-          <stop offset="0%"   stopColor="rgba(255,240,180,0.22)"/>
-          <stop offset="100%" stopColor="rgba(255,240,180,0)"/>
-        </radialGradient>
-        <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="12" result="blur"/>
-          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
-        <filter id="windowGlow" x="-30%" y="-30%" width="160%" height="160%">
-          <feGaussianBlur stdDeviation="6" result="blur"/>
-          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
-      </defs>
+    <div style={{ position: "absolute", top: 0, left: 0, width: WORLD_W, height: WORLD_H }}>
 
-      {/* ── LEFT WALL EXTENSION ─────────────────────────────────────────────── */}
-      {/* Main wall plane */}
-      <polygon
-        points={[
-          `${lExtTopX},${ceilY}`,
-          `${BG_X},${ceilY}`,
-          `${flLx},${flLy}`,
-          `${lExtFloorX},${lExtFloorY}`,
-        ].join(" ")}
-        fill="url(#lwg)"
-      />
-      {/* Baseboard on left extension */}
-      <polygon
-        points={[
-          `${flLx},${flLy}`,
-          `${lExtFloorX},${lExtFloorY}`,
-          `${lExtFloorX},${lExtFloorY + 22 * BG_SCALE * 0.3}`,
-          `${flLx},${flLy + 22 * BG_SCALE * 0.3}`,
-        ].join(" ")}
-        fill="url(#baseGrad)"
-        opacity="0.85"
+      {/* ── PRIMARY TILE: full PNG with walls, art, plants, lights ── */}
+      <img
+        src={bgImg}
+        alt="office"
+        draggable={false}
+        style={{
+          position: "absolute",
+          left: BG_X,
+          top:  BG_Y,
+          width:  BG_PX,
+          height: BG_PX,
+          userSelect: "none",
+          imageRendering: "auto",
+        }}
       />
 
-      {/* Windows on left extension */}
-      {[0.28, 0.68].map((uf, wi) => {
-        // Window position along the left wall
-        const wx = lExtTopX + (BG_X - lExtTopX) * uf;
-        const wFloorX = lExtFloorX + (flLx - lExtFloorX) * uf;
-        const wFloorY = lExtFloorY + (flLy - lExtFloorY) * uf;
-        const wCeilY  = ceilY;
-        // Interpolate x along the wall surface
-        const wallH = wFloorY - wCeilY;
-        const frameT = 0.15, frameB = 0.72;
-        const fTop  = wCeilY + wallH * frameT;
-        const fBot  = wCeilY + wallH * frameB;
-        const fW    = (BG_X - lExtTopX) * 0.18;
-        // Window as a parallelogram (isometric perspective)
-        const skewX = (wFloorX - wx) / (wFloorY - wCeilY);
-        const p = (y: number) => wx + skewX * (y - wCeilY);
-        const pts = [
-          `${p(fTop) - fW/2},${fTop}`,
-          `${p(fTop) + fW/2},${fTop}`,
-          `${p(fBot) + fW/2},${fBot}`,
-          `${p(fBot) - fW/2},${fBot}`,
-        ].join(" ");
-        return (
-          <g key={wi} filter="url(#windowGlow)">
-            {/* Sky */}
-            <polygon points={pts} fill="url(#nightSky)"/>
-            {/* City skyline */}
-            <CityView
-              p={[p(fTop)-fW/2, fTop, p(fBot)-fW/2, fBot]}
-              fW={fW} seed={wi * 7}
-            />
-            {/* Frame */}
-            <polygon points={pts} fill="none"
-              stroke="#dde4ec" strokeWidth={3 * BG_SCALE * 0.15}/>
-            {/* Sill */}
-            <line
-              x1={p(fBot)-fW/2} y1={fBot}
-              x2={p(fBot)+fW/2} y2={fBot}
-              stroke="#e8e4dc" strokeWidth={5 * BG_SCALE * 0.15}
-            />
-          </g>
-        );
-      })}
-
-      {/* ── RIGHT WALL EXTENSION ────────────────────────────────────────────── */}
-      <polygon
-        points={[
-          `${BG_X + BG_PX},${ceilY}`,
-          `${rExtTopX + extWidth},${ceilY}`,
-          `${rExtFloorX},${rExtFloorY}`,
-          `${flRx},${flRy}`,
-        ].join(" ")}
-        fill="url(#rwg)"
-      />
-      {/* Baseboard */}
-      <polygon
-        points={[
-          `${flRx},${flRy}`,
-          `${rExtFloorX},${rExtFloorY}`,
-          `${rExtFloorX},${rExtFloorY + 22 * BG_SCALE * 0.3}`,
-          `${flRx},${flRy + 22 * BG_SCALE * 0.3}`,
-        ].join(" ")}
-        fill="url(#baseGrad)"
-        opacity="0.80"
-      />
-
-      {/* Windows on right extension */}
-      {[0.25, 0.55, 0.82].map((uf, wi) => {
-        const wallStartX = BG_X + BG_PX;
-        const wallEndX   = rExtTopX + extWidth;
-        const wx = wallStartX + (wallEndX - wallStartX) * uf;
-        const wFloorX = flRx + (rExtFloorX - flRx) * uf;
-        const wFloorY = flRy + (rExtFloorY - flRy) * uf;
-        const wallH   = wFloorY - ceilY;
-        const frameT  = 0.14, frameB = 0.70;
-        const fTop    = ceilY + wallH * frameT;
-        const fBot    = ceilY + wallH * frameB;
-        const fW      = (wallEndX - wallStartX) * 0.20;
-        const skewX   = (wFloorX - wx) / (wFloorY - ceilY);
-        const p = (y: number) => wx + skewX * (y - ceilY);
-        const pts = [
-          `${p(fTop) - fW/2},${fTop}`,
-          `${p(fTop) + fW/2},${fTop}`,
-          `${p(fBot) + fW/2},${fBot}`,
-          `${p(fBot) - fW/2},${fBot}`,
-        ].join(" ");
-        return (
-          <g key={wi} filter="url(#windowGlow)">
-            <polygon points={pts} fill="url(#nightSky)"/>
-            <CityView
-              p={[p(fTop)-fW/2, fTop, p(fBot)-fW/2, fBot]}
-              fW={fW} seed={wi * 13 + 5}
-            />
-            <polygon points={pts} fill="none"
-              stroke="#dde4ec" strokeWidth={3 * BG_SCALE * 0.15}/>
-            <line x1={p(fBot)-fW/2} y1={fBot} x2={p(fBot)+fW/2} y2={fBot}
-              stroke="#e8e4dc" strokeWidth={5 * BG_SCALE * 0.15}/>
-          </g>
-        );
-      })}
-
-      {/* ── CEILING EXTENSION (fill gap above PNG on sides) ─────────────────── */}
-      {/* Left ceiling */}
-      <polygon
-        points={[
-          `0,0`,
-          `${BG_X},0`,
-          `${BG_X},${ceilY}`,
-          `0,${ceilY + 200}`,
-        ].join(" ")}
-        fill="url(#ceilGrad)"
-      />
-      {/* Right ceiling */}
-      <polygon
-        points={[
-          `${BG_X + BG_PX},0`,
-          `${WORLD_W},0`,
-          `${WORLD_W},${ceilY + 200}`,
-          `${BG_X + BG_PX},${ceilY}`,
-        ].join(" ")}
-        fill="url(#ceilGrad)"
-      />
-
-      {/* ── CEILING LIGHTS (over extended area) ─────────────────────────────── */}
-      {/* Extension ceiling lights */}
-      {[
-        [lExtTopX + extWidth * 0.3, ceilY + 20],
-        [lExtTopX + extWidth * 0.7, ceilY + 20],
-        [rExtTopX + extWidth * 0.35, ceilY + 20],
-        [rExtTopX + extWidth * 0.70, ceilY + 20],
-      ].map(([lx, ly], i) => (
-        <g key={i} filter="url(#softGlow)">
-          <rect x={lx - 18 * BG_SCALE * 0.3} y={ly - 5 * BG_SCALE * 0.3}
-            width={36 * BG_SCALE * 0.3} height={10 * BG_SCALE * 0.3}
-            rx={4} fill="#d8dce4" opacity="0.9"/>
-          <ellipse cx={lx} cy={ly + 300}
-            rx={140 * BG_SCALE * 0.3} ry={60 * BG_SCALE * 0.3}
-            fill="url(#spotFloor)" opacity="0.7"/>
-        </g>
+      {/* ── 3 EXTENSION TILES: floor diamond only, clipped ── */}
+      {TILE_OFFSETS.map(([dx, dy], i) => (
+        <img
+          key={i}
+          src={bgImg}
+          alt=""
+          draggable={false}
+          style={{
+            position: "absolute",
+            left: BG_X + dx,
+            top:  BG_Y + dy,
+            width:  BG_PX,
+            height: BG_PX,
+            userSelect: "none",
+            imageRendering: "auto",
+            // Clip to just the floor diamond — hides the walls/ceiling/plants
+            // of each copy so only the wood floor is visible
+            clipPath: FLOOR_CLIP,
+            // Slight brightness variation makes tiles look distinct
+            filter: `brightness(${[0.94, 0.97, 0.91][i]}) saturate(${[1.02, 0.98, 1.04][i]})`,
+          }}
+        />
       ))}
-
-      {/* ── THE ROOM BACKGROUND PNG (placed on top of extensions) ─────────── */}
-      {/* rendered as a foreignObject so React handles the img import */}
-    </svg>
+    </div>
   );
 }
 
-// City skyline drawn inside a window quad
-function CityView({ p, fW, seed }: { p: [number, number, number, number]; fW: number; seed: number }) {
-  const [x0, y0, x1, y1] = p;  // top-left corner and bottom-left corner of window
-  const wH = y1 - y0;
-
-  // Deterministic pseudo-random from seed
-  const rng = (n: number) => Math.abs(Math.sin(seed * 9301 + n * 49297) % 1);
-
-  const buildings = Array.from({ length: 8 }, (_, i) => ({
-    u:    0.04 + i * 0.12 + rng(i) * 0.04,
-    h:    0.45 + rng(i + 10) * 0.45,
-    w:    0.08 + rng(i + 20) * 0.05,
-    hue:  220 + rng(i + 30) * 30,
-    lit:  rng(i + 40) > 0.4,
-    lit2: rng(i + 50) > 0.6,
-    lit3: rng(i + 60) > 0.55,
-  }));
-
-  const stars = Array.from({ length: 12 }, (_, i) => ({
-    u: rng(i + 100),
-    v: rng(i + 110) * 0.55,
-    r: rng(i + 120) > 0.7 ? 2 : 1.2,
-  }));
-
-  // Interpolate a point along the left edge of the window parallelogram
-  const lerp = (v: number): [number, number] => [x0 + (x1 - x0) * v, y0 + (y1 - y0) * v];
-
-  return (
-    <g>
-      {/* Stars */}
-      {stars.map((s, i) => {
-        const [lx, ly] = lerp(s.v);
-        const sx = lx + s.u * fW;
-        return <circle key={i} cx={sx} cy={ly} r={s.r} fill="white" opacity={0.5 + rng(i)*0.4}/>;
-      })}
-      {/* Moon */}
-      {(() => {
-        const [mx, my] = lerp(0.08);
-        return (
-          <g>
-            <circle cx={mx + fW * 0.78} cy={my + wH * 0.12} r={fW * 0.045}
-              fill="#f0e8c8" opacity="0.85"/>
-            <circle cx={mx + fW * 0.80} cy={my + wH * 0.10} r={fW * 0.035}
-              fill="#0d1f36" opacity="0.9"/>
-          </g>
-        );
-      })()}
-      {/* Buildings */}
-      {buildings.map((b, i) => {
-        const [bLx, bLy] = lerp(1.0);
-        const bx = x0 + b.u * fW;
-        const bTop = y1 - wH * b.h;
-        const bW = b.w * fW;
-        const bH = y1 - bTop;
-        return (
-          <g key={i}>
-            <rect x={bx} y={bTop} width={bW} height={bH}
-              fill={`hsl(${b.hue},18%,${11 + (i%4)*2}%)`}/>
-            {/* Lit windows on building */}
-            {b.lit  && <rect x={bx+bW*0.15} y={bTop+bH*0.18} width={bW*0.25} height={bH*0.06} rx={1} fill="#f59e0b" opacity="0.9"/>}
-            {b.lit2 && <rect x={bx+bW*0.55} y={bTop+bH*0.30} width={bW*0.25} height={bH*0.06} rx={1} fill="#f59e0b" opacity="0.7"/>}
-            {b.lit3 && <rect x={bx+bW*0.15} y={bTop+bH*0.50} width={bW*0.25} height={bH*0.06} rx={1} fill="#93c5fd" opacity="0.6"/>}
-          </g>
-        );
-      })}
-    </g>
-  );
-}
 
 // ─── Progress ring ─────────────────────────────────────────────────────────────
 function ProgressRing({ pct, color, size }: { pct:number; color:string; size:number }) {
@@ -573,7 +313,7 @@ function MiniMap({ pan, zoom, vpW, vpH, agents, uvPositions }: {
   const vpRectH = (vpH / zoom) * scaleY;
 
   // Floor outline in minimap
-  const floorPts = [FLOOR_TOP, FLOOR_RIGHT, FLOOR_BOTTOM, FLOOR_LEFT]
+  const floorPts = [COMBINED_TOP, COMBINED_RIGHT, COMBINED_BOTTOM, COMBINED_LEFT]
     .map(([x,y]) => `${x*scaleX},${y*scaleY}`).join(" ");
 
   return (
@@ -857,7 +597,7 @@ export default function IsometricOffice({ agents, project }: Props) {
       if (!initialFitDone.current) {
         initialFitDone.current = true;
         // Zoom so the floor diamond fills ~85% of the viewport width
-        const floorWidth = FLOOR_RIGHT[0] - FLOOR_LEFT[0];
+        const floorWidth = COMBINED_RIGHT[0] - COMBINED_LEFT[0];
         const fz = clamp((w * 0.85) / floorWidth, ZOOM_MIN, ZOOM_MAX);
         setZoom(fz);
         const [fcx, fcy] = floorPoint(0.5, 0.45);
@@ -931,7 +671,7 @@ export default function IsometricOffice({ agents, project }: Props) {
   }, [clampPan]);
 
   const handleReset = useCallback(() => {
-    const floorWidth = FLOOR_RIGHT[0] - FLOOR_LEFT[0];
+    const floorWidth = COMBINED_RIGHT[0] - COMBINED_LEFT[0];
     const fz = clamp((vpDims.w*0.85)/floorWidth, ZOOM_MIN, ZOOM_MAX);
     setZoom(fz);
     const [fcx, fcy] = floorPoint(0.5, 0.45);
@@ -977,24 +717,8 @@ export default function IsometricOffice({ agents, project }: Props) {
         transformOrigin:"0 0", transform:`scale(${zoom})`, willChange:"transform",
       }}>
 
-        {/* ── SVG extended walls + windows (behind the PNG) ── */}
-        <ExtendedRoom />
-
-        {/* ── Original room PNG — the beautiful background ── */}
-        <img
-          src={bgImg}
-          alt="office"
-          draggable={false}
-          style={{
-            position:"absolute",
-            left: BG_X,
-            top:  BG_Y,
-            width:  BG_PX,
-            height: BG_PX,
-            userSelect:"none",
-            filter:"brightness(0.96) contrast(1.02) saturate(1.05)",
-          }}
-        />
+        {/* ── Room: original PNG + 3 clipped floor-extension tiles ── */}
+        <RoomTiles />
 
         {/* ── Delegation arcs ── */}
         <DelegationArcs agents={agents} uvPositions={uvPositions} spriteSize={SPRITE_SIZE}/>
