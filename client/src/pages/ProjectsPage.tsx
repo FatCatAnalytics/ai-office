@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   FolderOpen, Edit3, Trash2, Play, Clock, Calendar, AlertTriangle,
-  CheckCircle2, Loader2, FileText, X, Save, Folders,
+  CheckCircle2, Loader2, FileText, X, Save, Folders, Square,
   ShieldCheck, ShieldAlert, ChevronDown, ChevronUp,
 } from "lucide-react";
 import type { Project, QaReview, CoverageItem } from "../types";
@@ -16,6 +16,7 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
   qa_review: { color: "#a855f7", label: "QA Review" },
   blocked:   { color: "#ef4444", label: "Blocked" },
   completed: { color: "#10b981", label: "Completed" },
+  cancelled: { color: "#94a3b8", label: "Cancelled" },
 };
 
 function parseCoverage(json: string | null | undefined): CoverageItem[] {
@@ -293,15 +294,18 @@ function DeleteProjectModal({ project, onClose, onConfirm }: {
 
 // ── Project card ─────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, onEdit, onDelete, onResume }: {
+function ProjectCard({ project, onEdit, onDelete, onResume, onCancel }: {
   project: Project;
   onEdit: (p: Project) => void;
   onDelete: (p: Project) => void;
   onResume: (p: Project) => void;
+  onCancel: (p: Project) => void;
 }) {
   const status = STATUS_META[project.status] ?? { color: "#64748b", label: project.status };
   const formats = parseFormats(project.outputFormats);
   const isLocked = project.status === "active" || project.status === "planning" || project.status === "qa_review";
+  // Stage 4.14: a running project can be stopped to halt token spend.
+  const canCancel = isLocked;
   const canResume = project.status === "blocked";
   const [qaOpen, setQaOpen] = useState(false);
 
@@ -466,6 +470,15 @@ function ProjectCard({ project, onEdit, onDelete, onResume }: {
 
       {/* Actions */}
       <div className="flex items-center gap-1.5 pt-3 border-t border-slate-800">
+        {canCancel && (
+          <button onClick={() => onCancel(project)}
+            title="Stop this project and halt token usage"
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors bg-rose-500/15 text-rose-300 border border-rose-500/40 hover:bg-rose-500/25"
+            data-testid={`button-cancel-${project.id}`}>
+            <Square size={10} fill="currentColor" />
+            Stop
+          </button>
+        )}
         {canResume && (
           <button onClick={() => onResume(project)}
             className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/25"
@@ -550,6 +563,26 @@ export default function ProjectsPage() {
     }
   };
 
+  // Stage 4.14: stop a running project to halt token usage. We confirm first
+  // because in-flight task results are discarded.
+  const handleCancel = async (p: Project) => {
+    const ok = window.confirm(
+      `Stop "${p.name}"?\n\nThis aborts every in-flight LLM call for this project ` +
+      `and marks it as Cancelled. Already-completed tasks are kept.`
+    );
+    if (!ok) return;
+    setResumeError(null);
+    try {
+      const r = await apiRequest("POST", `/api/projects/${p.id}/cancel`);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? "Cancel failed");
+      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+    } catch (e) {
+      setResumeError(`${p.name}: ${(e as Error).message}`);
+      setTimeout(() => setResumeError(null), 5000);
+    }
+  };
+
   const sorted = [...projects].sort((a, b) => b.createdAt - a.createdAt);
 
   return (
@@ -591,6 +624,7 @@ export default function ProjectsPage() {
                 onEdit={setEditing}
                 onDelete={setDeleting}
                 onResume={handleResume}
+                onCancel={handleCancel}
               />
             ))}
           </div>

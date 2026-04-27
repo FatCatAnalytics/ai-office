@@ -51,6 +51,68 @@ const WAVE_CONCURRENCY = 3;
 // Max replans the manager is allowed per project.
 const MAX_REPLANS = 1;
 
+// ─── Stage 4.14 — cancellation registry ───────────────────────────────────
+// Maintains an AbortController per running project so the operator can stop
+// a project mid-flight to halt token spend. The controller's signal is
+// threaded into every fetch via `streamCompletion`, and we also poll
+// `signal.aborted` between waves so no new worker spawns after cancel.
+//
+// Lifecycle:
+//   • runLiveOrchestration / resumeLiveOrchestration register an entry on entry
+//     and clear it on exit (try / finally).
+//   • cancelProject(id) calls .abort() on the live controller (if any) and
+//     marks the project + its in-flight tasks as cancelled. Idempotent.
+const runningProjects = new Map<number, AbortController>();
+
+export function isProjectRunning(projectId: number): boolean {
+  return runningProjects.has(projectId);
+}
+
+/**
+ * Cancel a running project. Aborts the in-flight LLM/tool calls, marks the
+ * project `cancelled`, and re-flags any in_progress / todo tasks as blocked
+ * with a "Cancelled by user" reason. No-op if the project isn't running.
+ * Returns true if a running project was cancelled, false otherwise.
+ */
+export function cancelProject(
+  projectId: number,
+  deps: LiveOrchestratorDeps,
+  reason = "Cancelled by user"
+): boolean {
+  const controller = runningProjects.get(projectId);
+  if (!controller) return false;
+
+  // 1. Signal every active fetch to abort. The orchestrator's wave loop also
+  //    checks signal.aborted between waves, so no new workers will start.
+  controller.abort();
+
+  // 2. Mark in-flight + queued tasks as blocked-by-cancel so the kanban
+  //    reflects reality immediately (don't wait for the worker's catch).
+  const tasks = storage.getTasks(projectId);
+  for (const t of tasks) {
+    if (t.status === "in_progress" || t.status === "todo") {
+      storage.updateTask(t.id, { status: "blocked", blockedReason: reason });
+      deps.broadcast({ type: "task_update", task: { ...t, status: "blocked", blockedReason: reason } });
+    }
+  }
+
+  // 3. Flip the project to cancelled and emit a manager event so the activity
+  //    feed shows what happened. The orchestrator's finally-block will still
+  //    run and clear the registry entry.
+  storage.updateProject(projectId, { status: "cancelled" });
+  deps.broadcast({ type: "project_update", projectId, status: "cancelled" });
+
+  const manager = storage.getAgent("manager");
+  deps.emitEvent(
+    projectId, "manager", manager?.name ?? "Manager Agent",
+    "project cancelled",
+    reason,
+    "warning"
+  );
+  deps.setAgentStatus("manager", "idle", null);
+  return true;
+}
+
 // Truncate a long string with an indicator, preserving start + end.
 function trimToBudget(text: string, budget: number): string {
   if (text.length <= budget) return text;
@@ -549,7 +611,8 @@ async function runWorkerTask(
   task: Task,
   agent: Agent,
   priorOutputs: PriorOutput[],
-  deps: LiveOrchestratorDeps
+  deps: LiveOrchestratorDeps,
+  signal?: AbortSignal
 ): Promise<string> {
   const sharedContext = buildSharedContext(priorOutputs);
 
@@ -612,6 +675,10 @@ async function runWorkerTask(
         maxTokens: 3072,
         temperature: 0.7,
         tools: tools.length > 0 ? tools : undefined,
+        // Stage 4.14: cancel-aware fetch — if the operator hits Stop, every
+        // active LLM/tool call aborts and the worker's catch block will
+        // surface the AbortError as the task reason.
+        signal,
       },
       {
         onDelta: (d) => stream.push(d),
@@ -654,7 +721,8 @@ async function runWaveConcurrent(
   agents: Agent[],
   priorOutputs: PriorOutput[],
   deps: LiveOrchestratorDeps,
-  waveIndex: number
+  waveIndex: number,
+  signal?: AbortSignal
 ): Promise<{ successes: PriorOutput[]; failures: { task: Task; reason: string }[] }> {
   const successes: PriorOutput[] = [];
   const failures: { task: Task; reason: string }[] = [];
@@ -662,6 +730,9 @@ async function runWaveConcurrent(
   let cursor = 0;
   async function worker(): Promise<void> {
     while (true) {
+      // Stop the worker loop the moment a cancel is requested — prevents new
+      // tasks in this wave from being claimed after the operator hits Stop.
+      if (signal?.aborted) return;
       const idx = cursor++;
       if (idx >= tasksInWave.length) return;
       const task = tasksInWave[idx];
@@ -675,7 +746,7 @@ async function runWaveConcurrent(
       storage.updateTask(task.id, { status: "in_progress" });
       deps.broadcast({ type: "task_update", task: { ...task, status: "in_progress", waveIndex } });
       try {
-        const output = await runWorkerTask(project, task, agent, priorOutputs, deps);
+        const output = await runWorkerTask(project, task, agent, priorOutputs, deps, signal);
         storage.updateTask(task.id, { status: "done" });
         deps.broadcast({ type: "task_update", task: { ...task, status: "done", waveIndex } });
         deps.setAgentStatus(agent.id, "done", null);
@@ -716,6 +787,30 @@ export async function runLiveOrchestration(
   const agents = storage.getAgents();
   const manager = agents.find(a => a.id === "manager");
   if (!manager) return;
+
+  // Stage 4.14: register a fresh AbortController so cancelProject() can
+  // halt this run mid-flight. Cleared in the finally block below.
+  const controller = new AbortController();
+  runningProjects.set(projectId, controller);
+  try {
+    await runLiveOrchestrationInner(projectId, project, agents, manager, deps, controller.signal);
+  } finally {
+    runningProjects.delete(projectId);
+  }
+}
+
+async function runLiveOrchestrationInner(
+  projectId: number,
+  project: Project,
+  agents: Agent[],
+  manager: Agent,
+  deps: LiveOrchestratorDeps,
+  signal: AbortSignal,
+): Promise<void> {
+  // Helper: short-circuit the rest of the orchestrator if cancel was requested.
+  // cancelProject() has already updated the project + tasks + emitted events,
+  // so all we do here is bail out cleanly.
+  const bailIfCancelled = (): boolean => signal.aborted;
 
   storage.updateProject(projectId, { status: "planning" });
   deps.broadcast({ type: "project_update", projectId, status: "planning" });
@@ -794,6 +889,10 @@ export async function runLiveOrchestration(
   let remainingWaves: Task[][] = waves.map(w => w.map(p => keyToTask.get(p.key)!).filter(Boolean));
 
   while (remainingWaves.length > 0) {
+    // Stage 4.14: bail out cleanly if cancelled between waves — cancelProject()
+    // has already updated state, we just stop spawning new work.
+    if (bailIfCancelled()) return;
+
     const wave = remainingWaves.shift()!;
     if (wave.length === 0) continue;
 
@@ -804,7 +903,7 @@ export async function runLiveOrchestration(
       "info"
     );
 
-    const { successes, failures } = await runWaveConcurrent(project, wave, agents, priorOutputs, deps, waveIdx);
+    const { successes, failures } = await runWaveConcurrent(project, wave, agents, priorOutputs, deps, waveIdx, signal);
     priorOutputs.push(...successes);
     allFailures.push(...failures);
     completedCount += successes.length;
@@ -817,6 +916,9 @@ export async function runLiveOrchestration(
     const costToday = parseFloat(usageRows.reduce((s, r) => s + r.costUsd, 0).toFixed(4));
     storage.updateProject(projectId, { progress, tasksCompleted: completedCount, tokensUsed, costToday });
     deps.broadcast({ type: "project_update", projectId, progress, tasksCompleted: completedCount, tokensUsed, costToday });
+
+    // Don't replan if the operator cancelled — just exit.
+    if (bailIfCancelled()) return;
 
     // If anything failed AND we still have replans available, try once.
     if (failures.length > 0 && replansUsed < MAX_REPLANS && remainingWaves.length > 0) {
@@ -885,6 +987,9 @@ export async function runLiveOrchestration(
       }
     }
   }
+
+  // Final cancellation check — don't burn QA tokens on a stopped run.
+  if (bailIfCancelled()) return;
 
   // ── Phase 4: QA sign-off (only when every task finished cleanly) ──
   const total = allCreated.length;
@@ -982,6 +1087,26 @@ export async function resumeLiveOrchestration(
   const manager = agents.find(a => a.id === "manager");
   if (!manager) return;
 
+  // Stage 4.14: register cancel controller for the resumed run too.
+  const controller = new AbortController();
+  runningProjects.set(projectId, controller);
+  try {
+    await resumeLiveOrchestrationInner(projectId, project, agents, manager, deps, controller.signal);
+  } finally {
+    runningProjects.delete(projectId);
+  }
+}
+
+async function resumeLiveOrchestrationInner(
+  projectId: number,
+  project: Project,
+  agents: Agent[],
+  manager: Agent,
+  deps: LiveOrchestratorDeps,
+  signal: AbortSignal,
+): Promise<void> {
+  const bailIfCancelled = (): boolean => signal.aborted;
+
   const resumable = storage.getResumableTasks(projectId);
   if (resumable.length === 0) {
     deps.emitEvent(
@@ -1063,6 +1188,7 @@ export async function resumeLiveOrchestration(
     .filter(t => t.blockedReason !== "Superseded by replan").length;
 
   for (let wIdx = 0; wIdx < waves.length; wIdx++) {
+    if (bailIfCancelled()) return;
     const wave = waves[wIdx];
     if (wave.length === 0) continue;
 
@@ -1072,7 +1198,7 @@ export async function resumeLiveOrchestration(
       "info"
     );
 
-    const { successes, failures } = await runWaveConcurrent(project, wave, agents, priorOutputs, deps, wIdx);
+    const { successes, failures } = await runWaveConcurrent(project, wave, agents, priorOutputs, deps, wIdx, signal);
     priorOutputs.push(...successes);
     allFailures.push(...failures);
     completedCount += successes.length;
@@ -1084,6 +1210,8 @@ export async function resumeLiveOrchestration(
     storage.updateProject(projectId, { progress, tasksCompleted: completedCount, tokensUsed, costToday });
     deps.broadcast({ type: "project_update", projectId, progress, tasksCompleted: completedCount, tokensUsed, costToday });
   }
+
+  if (bailIfCancelled()) return;
 
   // Wrap up — if everything finished cleanly, run QA sign-off; otherwise block.
   const allDone = allFailures.length === 0 && completedCount >= total;

@@ -5,7 +5,7 @@ import path from "path";
 import fs from "fs";
 import { storage } from "./storage";
 import type { Agent, Task, Project } from "@shared/schema";
-import { runLiveOrchestration, resumeLiveOrchestration } from "./liveOrchestrator";
+import { runLiveOrchestration, resumeLiveOrchestration, cancelProject, isProjectRunning } from "./liveOrchestrator";
 import { refreshAllProviders } from "./modelsRefresh";
 
 // ─── WebSocket broadcast ───────────────────────────────────────────────────────
@@ -724,6 +724,40 @@ export function registerRoutes(httpServer: Server, app: Express) {
     const counts = storage.deleteProject(id);
     broadcast({ type: "project_deleted", projectId: id });
     res.json({ ok: true, deleted: counts });
+  });
+
+  // Stage 4.14: stop a running project mid-flight to halt token spend.
+  // Aborts every active LLM/tool fetch and marks the project as cancelled.
+  app.post("/api/projects/:id/cancel", (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "invalid project id" });
+
+    const existing = storage.getProject(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+
+    // Cancellation is only meaningful while the orchestrator is running.
+    const cancellableStates = ["planning", "active", "qa_review"] as const;
+    if (!cancellableStates.includes(existing.status as typeof cancellableStates[number])) {
+      return res.status(409).json({
+        error: `Cannot cancel a ${existing.status} project. Only running projects (planning/active/qa_review) can be stopped.`,
+      });
+    }
+
+    if (!isProjectRunning(id)) {
+      // Status says it's running but we have no controller — server probably
+      // restarted with a stale row. Mark cancelled directly so the UI unsticks.
+      storage.updateProject(id, { status: "cancelled" });
+      broadcast({ type: "project_update", projectId: id, status: "cancelled" });
+      return res.json({ ok: true, cancelled: true, note: "Project was not actively running; flagged as cancelled." });
+    }
+
+    const cancelled = cancelProject(id, {
+      broadcast,
+      emitEvent,
+      setAgentStatus,
+      generateSimulatedFiles,
+    });
+    res.json({ ok: true, cancelled });
   });
 
   app.post("/api/projects/:id/resume", (req, res) => {
