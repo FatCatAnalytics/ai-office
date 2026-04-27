@@ -5,12 +5,12 @@ import type { Agent } from "../types";
 import { MODEL_CATALOG, SPRITE_TYPES, PROVIDER_COLORS } from "../types";
 import {
   Crown, Monitor, Server, Bug, Palette, Rocket, Database, BarChart3,
-  Shield, Briefcase, Plus, Pencil, Trash2, X, Save, ChevronDown,
+  Shield, Briefcase, Globe, Plus, Pencil, Trash2, X, Save, ChevronDown,
   GitBranch, Users, Circle, CheckCircle2, Loader2, AlertTriangle,
 } from "lucide-react";
 
 const ICON_MAP: Record<string, React.ElementType> = {
-  Crown, Monitor, Server, Bug, Palette, Rocket, Database, BarChart3, Shield, Briefcase,
+  Crown, Monitor, Server, Bug, Palette, Rocket, Database, BarChart3, Shield, Briefcase, Globe,
 };
 
 const STATUS_COLORS: Record<string, string> = {

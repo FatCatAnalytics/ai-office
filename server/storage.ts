@@ -333,6 +333,39 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     color: "#0ea5e9",
     icon: "Briefcase",
   },
+  // Stage 4.8: Data Harvester — long-context extraction specialist. Defaults to
+  // Kimi (cheapest long-context model) because the work is extraction/parsing,
+  // not novel reasoning. Operator can pin a different low-tier model in Settings.
+  {
+    id: "harvester",
+    name: "Data Harvester",
+    role: "Research & Extraction",
+    spriteType: "harvester", // own slot — sprite falls back to datascientist art
+    provider: "kimi",
+    modelId: "moonshot-v1-128k",
+    systemPrompt: [
+      "You are the Data Harvester. You collect, extract, and structure data from any source: web pages, HTML, JSON APIs, RSS feeds, PDFs, sitemaps, search results, public datasets, GitHub repos, social profiles, and bulk text dumps.",
+      "",
+      "Operating principles:",
+      "• Always cite the URL and the exact field/selector you pulled each value from.",
+      "• Output structured data (JSON or markdown tables) by default — never prose-only when a table is possible.",
+      "• When given a URL, return what is actually there. If you cannot fetch it, say so explicitly with the reason; do not invent values.",
+      "• De-duplicate, normalise dates to ISO 8601, normalise currencies to a stated unit, and flag missing values as null rather than guessing.",
+      "• For multi-page sources, paginate methodically and report when more pages exist.",
+      "• Respect robots.txt and obvious rate-limit signals. Prefer official APIs and feeds over HTML scraping when both exist.",
+      "• You are cost-optimised: keep output dense and structured. Long prose is the wrong shape.",
+    ].join("\n"),
+    capabilities: JSON.stringify([
+      "web-scraping", "html-parsing", "json-extraction", "rss", "sitemaps",
+      "pdf-extraction", "data-cleaning", "deduplication", "normalisation",
+      "research", "api-collection", "bulk-extraction", "structured-output",
+    ]),
+    reportsTo: "manager",
+    status: "idle",
+    currentTask: null,
+    color: "#84cc16", // lime — distinct from datascientist orange + data-zone purple
+    icon: "Globe",
+  },
 ];
 
 // ─── Storage interface ────────────────────────────────────────────────────────

@@ -25,6 +25,9 @@ import pmImg            from "@assets/sprite_pm.png";
 interface Props { agents: Agent[]; project: Project | null; }
 
 const SPRITE_MAP: Record<string, string> = {
+  // Stage 4.8: harvester re-uses the data scientist sprite for now — swap to a
+  // dedicated asset later if desired.
+  harvester: datascientistImg,
   manager: managerImg, frontend: frontendImg, backend: backendImg,
   qa: qaImg, uiux: uiuxImg, devops: devopsImg,
   dbarchitect: dbarchitectImg, datascientist: datascientistImg,
@@ -147,6 +150,7 @@ const AGENT_DESK_MAP: Record<string, [string, number]> = {
   devops:       ["devops",   0],
   dbarchitect:  ["backend",  1],
   datascientist:["data",     0],
+  harvester:    ["data",     1], // Stage 4.8: Data Harvester sits next to Data Scientist
   secengineer:  ["devops",   1],
   pm:           ["frontend", 1],
 };

@@ -151,7 +151,7 @@ export const MODEL_CATALOG: Record<string, { label: string; models: string[] }> 
 
 export const SPRITE_TYPES = [
   "manager", "frontend", "backend", "qa", "uiux", "devops",
-  "dbarchitect", "datascientist", "secengineer", "pm",
+  "dbarchitect", "datascientist", "harvester", "secengineer", "pm",
 ];
 
 export const PROVIDER_COLORS: Record<string, string> = {
