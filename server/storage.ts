@@ -592,6 +592,7 @@ class SQLiteStorage implements IStorage {
     const STAGE_410_KEY = "stage_4_10_roster_migrated_at";
     const STAGE_413_KEY = "stage_4_13_research_prompts_migrated_at";
     const STAGE_415_KEY = "stage_4_15_manifest_prompts_migrated_at";
+    const STAGE_416_KEY = "stage_4_16_manifest_token_budget_migrated_at";
     const alreadyMigrated = this.getSetting(STAGE_410_KEY);
 
     if (!alreadyMigrated) {
@@ -623,6 +624,7 @@ class SQLiteStorage implements IStorage {
       this.setSetting(STAGE_410_KEY, String(Date.now()));
       this.setSetting(STAGE_413_KEY, String(Date.now())); // 4.10 ran fresh → 4.13 prompts already in
       this.setSetting(STAGE_415_KEY, String(Date.now())); // 4.10 ran fresh → 4.15 manifest prompts already in
+      this.setSetting(STAGE_416_KEY, String(Date.now())); // 4.10 ran fresh → 4.16 token-budget guidance already in
       return;
     }
 
@@ -646,12 +648,15 @@ class SQLiteStorage implements IStorage {
       this.setSetting(STAGE_413_KEY, String(Date.now()));
     }
 
-    // Stage 4.15 one-shot migration: rewrite the systemPrompt for the 7
-    // research agents so existing DBs pick up the DeliverableManifest contract.
-    // DEFAULT_AGENTS already has MANIFEST_INSTRUCTIONS appended via the loop
-    // above, so we just push the current systemPrompt into the DB.
-    const alreadyMigrated415 = this.getSetting(STAGE_415_KEY);
-    if (!alreadyMigrated415) {
+    // Stage 4.15 / 4.16 one-shot migration: rewrite the systemPrompt for the
+    // 7 research agents so existing DBs pick up the DeliverableManifest
+    // contract (4.15) and the token-budget guidance added in 4.16.
+    // DEFAULT_AGENTS already has the latest MANIFEST_INSTRUCTIONS appended via
+    // the loop above, so we just push the current systemPrompt into the DB.
+    // The 4.16 marker is separate so each new revision of MANIFEST_INSTRUCTIONS
+    // can re-trigger this without disturbing 4.15-era prompt edits.
+    const alreadyMigrated416 = this.getSetting(STAGE_416_KEY);
+    if (!alreadyMigrated416) {
       const researchIds = Object.keys(AGENT_TOOLS);
       for (const agent of DEFAULT_AGENTS) {
         if (!researchIds.includes(agent.id)) continue;
@@ -663,7 +668,9 @@ class SQLiteStorage implements IStorage {
             .run();
         }
       }
+      // Backfill the 4.15 marker too, in case this is a DB that skipped 4.15.
       this.setSetting(STAGE_415_KEY, String(Date.now()));
+      this.setSetting(STAGE_416_KEY, String(Date.now()));
     }
 
     // Steady-state boot: only insert genuinely new defaults; never overwrite.

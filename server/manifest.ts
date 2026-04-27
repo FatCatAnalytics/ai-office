@@ -81,6 +81,13 @@ Rules:
 - Every fact in summary_md and every row in tables must be backed by an entry in sources.
 - If a task does not warrant a table (pure prose narrative), omit the "tables" field entirely. Do not produce empty tables.
 - DO NOT wrap the JSON in extra markdown. DO NOT emit multiple JSON blocks. ONE block, at the end.
+
+Token-budget guidance (Stage 4.16):
+- Keep summary_md to ~400 words MAXIMUM — a tight executive summary, not a full report. Detail belongs in tables.
+- Keep "Notes" / free-text columns to one short clause (≤80 chars). Put the URL in a separate "Source" column or in the manifest-level sources array, not in every row.
+- If you have more than ~80 rows for a single table, prioritise breadth (most important entries) over exhaustiveness. A complete table of 60 rows beats a truncated table of 120.
+- Emit the JSON in compact form (one row per line is fine, but no extra indentation inside row arrays). The renderer formats output, you save tokens.
+- Numeric and short string cells only — do NOT put paragraph-length descriptions inside cells.
 `.trim();
 
 // ─── Parser ─────────────────────────────────────────────────────────────────
@@ -105,6 +112,17 @@ export function extractManifest(raw: string): DeliverableManifest | null {
     if (parsed) return parsed;
   }
 
+  // Stage 4.16: handle truncated output. If the model hit max_tokens mid-JSON,
+  // there will be an OPENING fence but no closing fence. Pull from opening
+  // fence to end-of-string and try the repair pass.
+  const openFenceRegex = /```(?:json)?\s*\n?(\{[\s\S]*)$/;
+  const openMatch = openFenceRegex.exec(raw);
+  if (openMatch) {
+    const truncated = openMatch[1];
+    const repaired = tryParseTruncatedManifest(truncated);
+    if (repaired) return repaired;
+  }
+
   // Last resort: scan for the largest balanced { … } in the raw text. Helps
   // when the model forgot the fence but still produced JSON.
   const start = raw.indexOf("{");
@@ -112,6 +130,7 @@ export function extractManifest(raw: string): DeliverableManifest | null {
     let depth = 0;
     let inString = false;
     let escape = false;
+    let lastBalancedEnd = -1;
     for (let i = start; i < raw.length; i++) {
       const ch = raw[i];
       if (escape) { escape = false; continue; }
@@ -122,14 +141,87 @@ export function extractManifest(raw: string): DeliverableManifest | null {
       else if (ch === "}") {
         depth--;
         if (depth === 0) {
+          lastBalancedEnd = i;
           const candidate = raw.slice(start, i + 1);
           const parsed = tryParseManifest(candidate);
           if (parsed) return parsed;
         }
       }
     }
+    // Stage 4.16: still truncated after walking the whole string. Try repair
+    // on the tail (no balanced closing brace was ever found).
+    if (depth > 0 && lastBalancedEnd < 0) {
+      const repaired = tryParseTruncatedManifest(raw.slice(start));
+      if (repaired) return repaired;
+    }
   }
   return null;
+}
+
+/**
+ * Stage 4.16: best-effort recovery for JSON manifests that were cut off by
+ * the model's max_tokens limit. Walks the input maintaining a stack of
+ * open structures (strings, arrays, objects) and at end-of-input closes
+ * each in the right order. Throws away the incomplete trailing row/object
+ * so the JSON parses, then validates as a manifest.
+ *
+ * This converts the failure mode "empty CSV with raw prose" into
+ * "CSV with N-1 valid rows + warning" — strictly better.
+ */
+function tryParseTruncatedManifest(truncated: string): DeliverableManifest | null {
+  // First, try parsing as-is (maybe it was complete after all).
+  const direct = tryParseManifest(truncated);
+  if (direct) return direct;
+
+  // Strip any trailing Markdown fence remnants (e.g. partial "```").
+  let s = truncated.replace(/```\s*$/, "").trimEnd();
+  if (!s.startsWith("{")) return null;
+
+  // Walk char-by-char, tracking the structural stack. Remember the position
+  // of each "safe" boundary — i.e. just after a complete top-level value
+  // inside an array/object. If we hit end-of-input mid-token, we rewind to
+  // the most recent safe boundary inside the deepest open container.
+  type Frame = { kind: "obj" | "arr"; lastSafe: number };
+  const stack: Frame[] = [];
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (escape) { escape = false; continue; }
+    if (ch === "\\") { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") { stack.push({ kind: "obj", lastSafe: i }); continue; }
+    if (ch === "[") { stack.push({ kind: "arr", lastSafe: i + 1 }); continue; }
+    if (ch === "}" || ch === "]") {
+      stack.pop();
+      continue;
+    }
+    if (ch === ",") {
+      // Comma at the top of a frame means "a complete value just ended".
+      if (stack.length > 0) stack[stack.length - 1].lastSafe = i;
+    }
+  }
+
+  // If the string was actually well-formed top-to-bottom, we'd have caught it
+  // in the direct parse. So we know we're inside at least one open container.
+  // Truncate at the deepest frame's lastSafe boundary, then close every open
+  // frame in reverse order.
+  if (inString) {
+    // Drop the unfinished string entirely — rewind to deepest safe point.
+  }
+  if (stack.length === 0) return null;
+
+  let cutAt = stack[stack.length - 1].lastSafe;
+  // Trim trailing whitespace and any partial token after cutAt.
+  let prefix = s.slice(0, cutAt).replace(/[,\s]+$/, "");
+  // Close each open frame.
+  for (let i = stack.length - 1; i >= 0; i--) {
+    prefix += stack[i].kind === "obj" ? "}" : "]";
+  }
+
+  return tryParseManifest(prefix);
 }
 
 function tryParseManifest(jsonText: string): DeliverableManifest | null {

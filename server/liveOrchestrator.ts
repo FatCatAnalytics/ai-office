@@ -700,12 +700,13 @@ async function runWorkerTask(
         modelId: routed.modelId,
         apiKey,
         messages,
-        // Stage 4.15: bumped 3072 → 4096 because research agents now have to
-        // emit a structured manifest in addition to the prose summary, which
-        // pushes longer outputs. Combined with llm.ts max_tokens cap-hit
-        // recovery, this prevents Claude truncating mid-thought into garbled
-        // multi-language internal monologue.
-        maxTokens: 4096,
+        // Stage 4.16: research agents that emit DeliverableManifest tables
+        // routinely need 6–8k output tokens (a 60–90 row portfolio table is
+        // ~4k tokens on its own, plus prose summary). 4096 caused mid-row
+        // truncation in project #19. Non-research agents pay for the bigger
+        // budget but rarely use it — the worker still terminates on stop_reason
+        // "end_turn" which usually fires well below the cap.
+        maxTokens: tools.length > 0 ? 8192 : 4096,
         temperature: 0.7,
         tools: tools.length > 0 ? tools : undefined,
         // Stage 4.14: cancel-aware fetch — if the operator hits Stop, every
