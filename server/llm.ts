@@ -290,11 +290,20 @@ async function callKimiHost(
   return { res };
 }
 
+// Reasoning-tier Kimi models (kimi-k2.x and newer) require temperature = 1.
+// Non-reasoning models (moonshot-v1-*) accept the standard 0–1 range.
+function kimiTemperatureFor(modelId: string, requested: number | undefined): number {
+  if (/^kimi-k\d/i.test(modelId) || /^kimi-2\.[5-9]/i.test(modelId) || /^moonshot-v[2-9]/i.test(modelId)) {
+    return 1;
+  }
+  return requested ?? 0.7;
+}
+
 async function streamKimi(req: StreamRequest, handlers: StreamHandlers): Promise<StreamResult> {
   const body = {
     model: req.modelId,
     messages: req.messages,
-    temperature: req.temperature ?? 0.7,
+    temperature: kimiTemperatureFor(req.modelId, req.temperature),
     max_tokens: req.maxTokens ?? 2048,
     stream: true,
   };
