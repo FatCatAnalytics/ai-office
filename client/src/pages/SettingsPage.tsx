@@ -69,6 +69,80 @@ const PROVIDERS: ProviderConfig[] = [
   },
 ];
 
+// ─── Stage 4.13: Tavily key card ──────────────────────────────────────────
+function TavilyKeyCard({ savedKey, onSave }: { savedKey: string; onSave: (value: string) => void }) {
+  const [value, setValue] = useState(savedKey || "");
+  const [showKey, setShowKey] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => { setValue(savedKey || ""); setDirty(false); }, [savedKey]);
+
+  const hasKey = savedKey && savedKey.length > 5;
+  const handleChange = (v: string) => { setValue(v); setDirty(v !== savedKey); };
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5 flex flex-col gap-4" data-testid="provider-card-tavily">
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold"
+            style={{ background:"#22d3ee22", border:"1.5px solid #22d3ee66", color:"#22d3ee" }}>T</div>
+          <div>
+            <div className="text-sm font-semibold text-slate-100">Tavily</div>
+            <div className="text-xs text-slate-500 mt-0.5">Web search + content extraction for research agents (Stage 4.13)</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {hasKey ? (
+            <><CheckCircle2 size={14} className="text-emerald-400"/>
+              <span className="text-xs text-emerald-400 font-medium">Connected</span></>
+          ) : (
+            <><AlertTriangle size={14} className="text-amber-400"/>
+              <span className="text-xs text-amber-400 font-medium">Not configured</span></>
+          )}
+        </div>
+      </div>
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700/50">
+        <span className="text-xs text-slate-500">Env var:</span>
+        <code className="text-xs text-cyan-400 font-mono">TAVILY_API_KEY</code>
+        <a href="https://tavily.com" target="_blank" rel="noopener noreferrer"
+          className="ml-auto text-xs text-slate-600 hover:text-slate-400 flex items-center gap-1 transition-colors">
+          <Globe size={11}/> Get key
+        </a>
+      </div>
+      <div className="flex flex-col gap-2">
+        <label className="text-xs text-slate-400">API Key</label>
+        <div className="relative">
+          <input
+            type={showKey ? "text" : "password"}
+            value={value}
+            onChange={e => handleChange(e.target.value)}
+            placeholder="tvly-..."
+            className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 pr-10 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 font-mono"
+            data-testid="input-api-key-tavily"
+          />
+          <button onClick={() => setShowKey(s => !s)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors">
+            {showKey ? <EyeOff size={14}/> : <Eye size={14}/>}
+          </button>
+        </div>
+      </div>
+      <div className="text-[10px] text-slate-500 leading-relaxed">
+        Used by research agents (deep-search, source-discovery, annual-reports-search, industry-research, web-scraper, doc-specialist, data-val-specialist) for live web search and URL extraction. Without this key those agents fall back to model memory and may produce empty research outputs.
+      </div>
+      <button
+        onClick={() => { onSave(value); setDirty(false); }}
+        disabled={!dirty && !!hasKey}
+        className="flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+        style={{ background: dirty ? "linear-gradient(135deg, #22d3eecc, #22d3ee88)" : undefined,
+          border: dirty ? "none" : "1px solid #334155",
+          color: dirty ? "#fff" : "#64748b" }}
+        data-testid="button-save-key-tavily">
+        <Save size={12}/> {dirty ? "Save API Key" : "Saved"}
+      </button>
+    </div>
+  );
+}
+
 function ProviderCard({ provider, savedKey, onSave }: {
   provider: ProviderConfig; savedKey: string; onSave: (value: string) => void;
 }) {
@@ -567,6 +641,17 @@ export default function SettingsPage() {
               />
             ))}
           </div>
+        </div>
+
+        {/* Stage 4.13: Web search tools */}
+        <div>
+          <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+            <Globe size={11}/> Web Search Tools
+          </h3>
+          <TavilyKeyCard
+            savedKey={settings["tavily_api_key"] ?? ""}
+            onSave={(v) => saveMut.mutate({ tavily_api_key: v })}
+          />
         </div>
 
         {/* Models registry */}

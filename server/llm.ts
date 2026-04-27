@@ -6,7 +6,14 @@
 // All providers stream incremental text deltas via the `onDelta` callback and
 // return final token counts. Token usage is reported via onUsage, which the
 // caller persists and broadcasts to the Budget tab.
+//
+// Stage 4.13: when `tools` is set on the request the adapter switches into
+// non-streaming tool-loop mode — it lets the model emit tool_calls, executes
+// them, and re-prompts with the tool results until the model returns a final
+// text answer. Token usage is summed across the whole loop.
 // ─────────────────────────────────────────────────────────────────────────────
+
+import { executeTool, type ToolDefinition } from "./tools";
 
 export type Provider = "anthropic" | "openai" | "google" | "kimi";
 
@@ -23,11 +30,19 @@ export interface StreamRequest {
   maxTokens?: number;
   temperature?: number;
   signal?: AbortSignal;
+  // Stage 4.13: optional tool definitions. When set, the adapter routes through
+  // the tool-loop path for the chosen provider. The loop runs the model,
+  // executes any tool_calls server-side, feeds results back, and repeats until
+  // the model emits a final answer (or MAX_TOOL_ITERS is hit).
+  tools?: ToolDefinition[];
 }
 
 export interface StreamHandlers {
   onDelta?: (text: string) => void;
   onUsage?: (usage: { tokensIn: number; tokensOut: number }) => void;
+  // Stage 4.13: emitted when the model invokes a tool. Useful for the
+  // activity feed so operators see what the agent is fetching.
+  onToolCall?: (info: { name: string; args: string; result: string }) => void;
 }
 
 export interface StreamResult {
@@ -35,6 +50,10 @@ export interface StreamResult {
   tokensIn: number;
   tokensOut: number;
 }
+
+// Maximum tool-call rounds per request. Each iteration is one model call +
+// one tool execution. Keeps runaway loops bounded.
+const MAX_TOOL_ITERS = 6;
 
 // ─── Cost rates (USD per 1K tokens) ─────────────────────────────────────────
 // Used for per-call cost calculation. Keep in sync with MODEL_COST_PER_1K
@@ -377,6 +396,378 @@ async function streamKimi(req: StreamRequest, handlers: StreamHandlers): Promise
   return { text, tokensIn, tokensOut };
 }
 
+// ─── Stage 4.13 — tool-call loops per provider ─────────────────────────────
+// All four loops follow the same shape:
+//   1. Send the conversation + tool definitions to the provider (non-streaming)
+//   2. If the model returns a final text answer → done
+//   3. If it returns tool_calls → execute them, append the assistant turn and
+//      tool result(s) to the conversation, loop
+// We cap iterations at MAX_TOOL_ITERS to bound cost and latency.
+// Token usage is summed across every round so the budget tab stays accurate.
+// On the FINAL iteration (or when we hit the iteration cap) we ask the model
+// to produce a written deliverable, streaming the result so the activity feed
+// still gets live tokens.
+
+// ─── OpenAI / Kimi (OpenAI-compatible) ─────────────────────────────────────
+interface OpenAIToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+interface OpenAIChoiceMessage {
+  role: "assistant";
+  content: string | null;
+  tool_calls?: OpenAIToolCall[];
+}
+
+async function callOpenAICompatible(
+  endpoint: string,
+  apiKey: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ message: OpenAIChoiceMessage; tokensIn: number; tokensOut: number }> {
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.text().catch(() => "");
+    throw new Error(`${endpoint} ${res.status}: ${err.slice(0, 200)}`);
+  }
+  const json: any = await res.json();
+  const message: OpenAIChoiceMessage = json.choices?.[0]?.message ?? { role: "assistant", content: "" };
+  return {
+    message,
+    tokensIn: json.usage?.prompt_tokens ?? 0,
+    tokensOut: json.usage?.completion_tokens ?? 0,
+  };
+}
+
+async function runOpenAIWithTools(
+  req: StreamRequest,
+  handlers: StreamHandlers,
+  flavour: "openai" | "kimi",
+): Promise<StreamResult> {
+  // Both OpenAI and Kimi accept the same tools shape.
+  const toolsParam = (req.tools ?? []).map(t => ({
+    type: "function" as const,
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+
+  // Working conversation. We mutate this as we loop.
+  const convo: any[] = req.messages.map(m => ({ role: m.role, content: m.content }));
+
+  let totalIn = 0;
+  let totalOut = 0;
+
+  // Choose endpoint + temperature handling per flavour.
+  const buildEndpointAndTemp = () => {
+    if (flavour === "kimi") {
+      return {
+        endpoint: "https://api.moonshot.ai/v1/chat/completions",
+        fallback: "https://api.moonshot.cn/v1/chat/completions",
+        temperature: kimiTemperatureFor(req.modelId, req.temperature),
+      };
+    }
+    return {
+      endpoint: "https://api.openai.com/v1/chat/completions",
+      fallback: undefined as string | undefined,
+      temperature: req.temperature ?? 0.7,
+    };
+  };
+
+  const cfg = buildEndpointAndTemp();
+
+  for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
+    const isLast = iter === MAX_TOOL_ITERS - 1;
+    const body: Record<string, unknown> = {
+      model: req.modelId,
+      messages: convo,
+      temperature: cfg.temperature,
+      max_tokens: req.maxTokens ?? 2048,
+      tools: toolsParam,
+      // Force a final answer on the last permitted round.
+      tool_choice: isLast ? "none" : "auto",
+    };
+
+    let resp;
+    try {
+      resp = await callOpenAICompatible(cfg.endpoint, req.apiKey, body, req.signal);
+    } catch (e) {
+      if (cfg.fallback && /401/.test((e as Error).message)) {
+        resp = await callOpenAICompatible(cfg.fallback, req.apiKey, body, req.signal);
+      } else {
+        throw e;
+      }
+    }
+    totalIn += resp.tokensIn;
+    totalOut += resp.tokensOut;
+
+    const msg = resp.message;
+    const toolCalls = msg.tool_calls ?? [];
+
+    if (toolCalls.length === 0) {
+      // Final answer. Stream it out as one delta so the UI gets the text.
+      const text = msg.content ?? "";
+      if (text) handlers.onDelta?.(text);
+      handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
+      return { text, tokensIn: totalIn, tokensOut: totalOut };
+    }
+
+    // Append assistant turn (with tool_calls) so the next round has context.
+    convo.push({ role: "assistant", content: msg.content ?? "", tool_calls: toolCalls });
+
+    // Execute each tool call serially. Tavily is fast; serialising keeps the
+    // logs readable and avoids blasting their rate limit.
+    for (const tc of toolCalls) {
+      const name = tc.function?.name ?? "";
+      const argsStr = tc.function?.arguments ?? "{}";
+      const result = await executeTool(name, argsStr, req.signal);
+      handlers.onToolCall?.({ name, args: argsStr, result });
+      convo.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: result,
+      });
+    }
+  }
+
+  // Hit the iteration cap without a final answer. Surface what we have.
+  handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
+  return {
+    text: "(Tool-call loop hit the iteration cap without producing a final answer. Increase MAX_TOOL_ITERS or simplify the task.)",
+    tokensIn: totalIn,
+    tokensOut: totalOut,
+  };
+}
+
+// ─── Anthropic ─────────────────────────────────────────────────────────────
+// Anthropic's tools shape: { name, description, input_schema }.
+// Tool calls come back as content blocks of type "tool_use" { id, name, input }.
+// Tool results are appended as a USER turn with content [{ type:"tool_result",
+// tool_use_id, content }].
+
+interface AnthropicToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+interface AnthropicTextBlock { type: "text"; text: string; }
+type AnthropicContentBlock = AnthropicToolUseBlock | AnthropicTextBlock;
+
+async function callAnthropicWithTools(
+  apiKey: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ content: AnthropicContentBlock[]; tokensIn: number; tokensOut: number; stopReason: string }> {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.text().catch(() => "");
+    throw new Error(`Anthropic API ${res.status}: ${err.slice(0, 200)}`);
+  }
+  const json: any = await res.json();
+  return {
+    content: (json.content ?? []) as AnthropicContentBlock[],
+    tokensIn: json.usage?.input_tokens ?? 0,
+    tokensOut: json.usage?.output_tokens ?? 0,
+    stopReason: json.stop_reason ?? "",
+  };
+}
+
+async function runAnthropicWithTools(req: StreamRequest, handlers: StreamHandlers): Promise<StreamResult> {
+  const system = req.messages.filter(m => m.role === "system").map(m => m.content).join("\n\n");
+  // Anthropic conversation: array of { role, content } where content can be a
+  // string or an array of blocks. We start from the non-system messages.
+  const convo: any[] = req.messages
+    .filter(m => m.role !== "system")
+    .map(m => ({ role: m.role, content: m.content }));
+
+  const toolsParam = (req.tools ?? []).map(t => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.parameters,
+  }));
+
+  let totalIn = 0;
+  let totalOut = 0;
+
+  for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
+    const body: Record<string, unknown> = {
+      model: req.modelId,
+      max_tokens: req.maxTokens ?? 2048,
+      temperature: req.temperature ?? 0.7,
+      ...(system ? { system } : {}),
+      messages: convo,
+      tools: toolsParam,
+    };
+
+    const resp = await callAnthropicWithTools(req.apiKey, body, req.signal);
+    totalIn += resp.tokensIn;
+    totalOut += resp.tokensOut;
+
+    const toolUses = resp.content.filter((b): b is AnthropicToolUseBlock => b.type === "tool_use");
+    const textBlocks = resp.content.filter((b): b is AnthropicTextBlock => b.type === "text");
+
+    if (toolUses.length === 0 || resp.stopReason === "end_turn") {
+      const text = textBlocks.map(b => b.text).join("");
+      if (text) handlers.onDelta?.(text);
+      handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
+      return { text, tokensIn: totalIn, tokensOut: totalOut };
+    }
+
+    // Push assistant turn with the original content blocks intact (Anthropic
+    // requires the exact tool_use blocks back in the conversation).
+    convo.push({ role: "assistant", content: resp.content });
+
+    // Execute each tool_use and reply with one user turn carrying tool_result
+    // blocks (one per tool_use, same order).
+    const resultBlocks: any[] = [];
+    for (const tu of toolUses) {
+      const result = await executeTool(tu.name, tu.input as Record<string, unknown>, req.signal);
+      handlers.onToolCall?.({ name: tu.name, args: JSON.stringify(tu.input), result });
+      resultBlocks.push({ type: "tool_result", tool_use_id: tu.id, content: result });
+    }
+    convo.push({ role: "user", content: resultBlocks });
+  }
+
+  handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
+  return {
+    text: "(Tool-call loop hit the iteration cap without producing a final answer.)",
+    tokensIn: totalIn,
+    tokensOut: totalOut,
+  };
+}
+
+// ─── Google Gemini ─────────────────────────────────────────────────────────
+// Gemini tools: tools=[{ functionDeclarations:[{ name, description, parameters }]}]
+// Function calls come back as parts with `functionCall: { name, args }`.
+// Tool results are sent back as a part with `functionResponse: { name, response }`.
+
+interface GeminiPart {
+  text?: string;
+  functionCall?: { name: string; args: Record<string, unknown> };
+  functionResponse?: { name: string; response: Record<string, unknown> };
+}
+
+async function callGoogleWithTools(
+  modelId: string,
+  apiKey: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ parts: GeminiPart[]; tokensIn: number; tokensOut: number; finishReason: string }> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.text().catch(() => "");
+    throw new Error(`Google API ${res.status}: ${err.slice(0, 200)}`);
+  }
+  const json: any = await res.json();
+  const cand = json.candidates?.[0];
+  return {
+    parts: (cand?.content?.parts ?? []) as GeminiPart[],
+    tokensIn: json.usageMetadata?.promptTokenCount ?? 0,
+    tokensOut: json.usageMetadata?.candidatesTokenCount ?? 0,
+    finishReason: cand?.finishReason ?? "",
+  };
+}
+
+async function runGoogleWithTools(req: StreamRequest, handlers: StreamHandlers): Promise<StreamResult> {
+  const systemMsgs = req.messages.filter(m => m.role === "system");
+  const otherMsgs = req.messages.filter(m => m.role !== "system");
+
+  // Build the contents array. We'll mutate it across iterations.
+  const contents: any[] = otherMsgs.map(m => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+
+  const tools = [{
+    functionDeclarations: (req.tools ?? []).map(t => ({
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    })),
+  }];
+
+  let totalIn = 0;
+  let totalOut = 0;
+
+  for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
+    const body: Record<string, unknown> = {
+      contents,
+      generationConfig: {
+        temperature: req.temperature ?? 0.7,
+        maxOutputTokens: req.maxTokens ?? 2048,
+      },
+      tools,
+    };
+    if (systemMsgs.length > 0) {
+      body.systemInstruction = { parts: [{ text: systemMsgs.map(m => m.content).join("\n\n") }] };
+    }
+
+    const resp = await callGoogleWithTools(req.modelId, req.apiKey, body, req.signal);
+    totalIn += resp.tokensIn;
+    totalOut += resp.tokensOut;
+
+    const fnCalls = resp.parts.filter(p => !!p.functionCall);
+    const textParts = resp.parts.filter(p => typeof p.text === "string" && p.text.length > 0);
+
+    if (fnCalls.length === 0) {
+      const text = textParts.map(p => p.text!).join("");
+      if (text) handlers.onDelta?.(text);
+      handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
+      return { text, tokensIn: totalIn, tokensOut: totalOut };
+    }
+
+    // Push the model turn (including function calls) so it has continuity.
+    contents.push({ role: "model", parts: resp.parts });
+
+    // Execute each function call and reply in a single user turn carrying
+    // functionResponse parts (one per call).
+    const responseParts: GeminiPart[] = [];
+    for (const p of fnCalls) {
+      const fc = p.functionCall!;
+      const result = await executeTool(fc.name, fc.args ?? {}, req.signal);
+      handlers.onToolCall?.({ name: fc.name, args: JSON.stringify(fc.args ?? {}), result });
+      responseParts.push({
+        functionResponse: {
+          name: fc.name,
+          // Gemini wants `response` to be a JSON object, not a bare string.
+          response: { content: result },
+        },
+      });
+    }
+    contents.push({ role: "user", parts: responseParts });
+  }
+
+  handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
+  return {
+    text: "(Tool-call loop hit the iteration cap without producing a final answer.)",
+    tokensIn: totalIn,
+    tokensOut: totalOut,
+  };
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 export async function streamCompletion(
   req: StreamRequest,
@@ -384,6 +775,19 @@ export async function streamCompletion(
 ): Promise<StreamResult> {
   if (!req.apiKey) {
     throw new Error(`Missing API key for provider "${req.provider}"`);
+  }
+
+  // Stage 4.13: route tool-enabled calls through the per-provider tool loop.
+  // The non-tool path (fast, streaming) is preserved for everything else.
+  if (req.tools && req.tools.length > 0) {
+    switch (req.provider) {
+      case "anthropic": return runAnthropicWithTools(req, handlers);
+      case "openai":    return runOpenAIWithTools(req, handlers, "openai");
+      case "kimi":      return runOpenAIWithTools(req, handlers, "kimi");
+      case "google":    return runGoogleWithTools(req, handlers);
+      default:
+        throw new Error(`Unknown provider "${(req as StreamRequest).provider}"`);
+    }
   }
 
   switch (req.provider) {

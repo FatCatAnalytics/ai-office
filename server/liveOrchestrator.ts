@@ -18,11 +18,12 @@
 //      requested; markdown / json / csv / python paths are unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { storage } from "./storage";
+import { storage, toolsForAgent } from "./storage";
 import { streamCompletion, calculateCost, settingKeyForProvider, type Provider, type LLMMessage } from "./llm";
 import { renderPdf, renderXlsx, type RenderMeta } from "./renderers";
 import { routeForComplexity, routeForCriticalCall, normaliseComplexity, type Complexity } from "./modelRouter";
 import { reviewProjectQA } from "./qaReviewer";
+import { resolveTools, tavilyConfigured } from "./tools";
 import type { Agent, Task, Project } from "@shared/schema";
 
 export interface LiveOrchestratorDeps {
@@ -577,18 +578,61 @@ async function runWorkerTask(
     },
   ];
 
+  // ── Stage 4.13 tool wiring ──
+  // Research agents get Tavily web tools. We resolve them here so a missing
+  // TAVILY_API_KEY surfaces as a single warning event instead of a per-call
+  // 401 cascade.
+  const toolNames = toolsForAgent(agent.id);
+  const tools = toolNames.length > 0 && tavilyConfigured()
+    ? resolveTools(toolNames)
+    : [];
+  if (toolNames.length > 0 && tools.length === 0) {
+    deps.emitEvent(
+      project.id, agent.id, agent.name, "tools disabled",
+      "TAVILY_API_KEY not set — agent will run without web tools and may produce empty results", "warning"
+    );
+  }
+
   deps.setAgentStatus(agent.id, "working", task.title);
   deps.emitEvent(
     project.id, agent.id, agent.name, "started task",
-    `[LIVE] ${routed.provider}/${routed.modelId} — ${task.title} (${complexity})`, "info"
+    `[LIVE] ${routed.provider}/${routed.modelId} — ${task.title} (${complexity}${tools.length > 0 ? " · web tools on" : ""})`,
+    "info"
   );
 
   const stream = makeStreamCoalescer(project.id, agent, task.title, deps);
   let result;
   try {
     result = await streamCompletion(
-      { provider: routed.provider, modelId: routed.modelId, apiKey, messages, maxTokens: 3072, temperature: 0.7 },
-      { onDelta: (d) => stream.push(d) }
+      {
+        provider: routed.provider,
+        modelId: routed.modelId,
+        apiKey,
+        messages,
+        maxTokens: 3072,
+        temperature: 0.7,
+        tools: tools.length > 0 ? tools : undefined,
+      },
+      {
+        onDelta: (d) => stream.push(d),
+        onToolCall: ({ name, args, result }) => {
+          // Surface tool activity in the live event feed so operators can see
+          // exactly which queries / URLs the agent is hitting.
+          let argSummary = args;
+          try {
+            const parsed = JSON.parse(args);
+            if (parsed.query) argSummary = `"${String(parsed.query).slice(0, 120)}"`;
+            else if (parsed.urls) argSummary = (parsed.urls as string[]).slice(0, 3).join(", ");
+          } catch { /* keep raw args */ }
+          const ok = !result.startsWith("Error:");
+          deps.emitEvent(
+            project.id, agent.id, agent.name,
+            ok ? "used tool" : "tool error",
+            `🔍 ${name}(${argSummary}) → ${result.length.toLocaleString()} chars`,
+            ok ? "info" : "warning"
+          );
+        },
+      }
     );
   } finally {
     stream.end();
