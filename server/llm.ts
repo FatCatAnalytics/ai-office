@@ -418,6 +418,13 @@ interface OpenAIChoiceMessage {
   role: "assistant";
   content: string | null;
   tool_calls?: OpenAIToolCall[];
+  // Kimi reasoning models (kimi-k*, kimi-2.5+, moonshot-v2+) return a separate
+  // `reasoning_content` field alongside `content`. When the assistant turn
+  // contains tool_calls, Moonshot REQUIRES this field to be echoed back on
+  // the next request — otherwise the API rejects with:
+  //   "thinking is enabled but reasoning_content is missing in assistant
+  //    tool call message at index N"
+  reasoning_content?: string | null;
 }
 
 async function callOpenAICompatible(
@@ -520,7 +527,17 @@ async function runOpenAIWithTools(
     }
 
     // Append assistant turn (with tool_calls) so the next round has context.
-    convo.push({ role: "assistant", content: msg.content ?? "", tool_calls: toolCalls });
+    // Kimi reasoning models require us to echo back `reasoning_content` when
+    // the assistant message contains tool_calls (see OpenAIChoiceMessage).
+    const assistantTurn: Record<string, unknown> = {
+      role: "assistant",
+      content: msg.content ?? "",
+      tool_calls: toolCalls,
+    };
+    if (flavour === "kimi" && msg.reasoning_content != null) {
+      assistantTurn.reasoning_content = msg.reasoning_content;
+    }
+    convo.push(assistantTurn);
 
     // Execute each tool call serially. Tavily is fast; serialising keeps the
     // logs readable and avoids blasting their rate limit.
