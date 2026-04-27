@@ -89,6 +89,10 @@ export interface Model {
   costPer1kOut: number | null;
   tier: "low" | "medium" | "high" | string;
   preferredFor: "low" | "medium" | "high" | "none" | string;
+  // Stage 4.9: JSON-encoded array of tier names this model belongs to
+  // (e.g. '["medium","high"]'). The router rotates through pool members
+  // when no default is pinned.
+  poolTiers: string;
   enabled: number;     // 0 | 1
   isNew: number;       // 0 | 1
   discoveredAt: number;

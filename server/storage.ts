@@ -19,6 +19,20 @@ import type {
 const sqlite = new Database("data.db");
 export const db = drizzle(sqlite, { schema });
 
+// Stage 4.9: parse the pool_tiers JSON column safely. Older rows may contain
+// the legacy default '[]' or even an empty string after a partial migration.
+function parsePoolTiers(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr)
+      ? arr.filter((x): x is string => typeof x === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 // Initialize tables (CREATE IF NOT EXISTS — safe to run every boot)
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS agents (
@@ -135,6 +149,20 @@ try {
 try {
   sqlite.exec(`ALTER TABLE models ADD COLUMN preferred_for TEXT NOT NULL DEFAULT 'none'`);
 } catch { /* column already exists */ }
+// Stage 4.9: enroll a model in MULTIPLE tier pools (the router rotates through
+// any pool member when no default is pinned). preferred_for stays as the single
+// default per tier; pool_tiers is a JSON array of tier names this model belongs to.
+try {
+  sqlite.exec(`ALTER TABLE models ADD COLUMN pool_tiers TEXT NOT NULL DEFAULT '[]'`);
+} catch { /* column already exists */ }
+// One-shot: any existing pinned model is auto-enrolled in its pinned tier so
+// upgraded DBs keep their previous behaviour.
+try {
+  sqlite.exec(
+    `UPDATE models SET pool_tiers = json_array(preferred_for)
+     WHERE pool_tiers IN ('[]','') AND preferred_for IN ('low','medium','high')`,
+  );
+} catch { /* json1 missing or already migrated */ }
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS models (
     id TEXT PRIMARY KEY,
@@ -146,6 +174,7 @@ sqlite.exec(`
     cost_per_1k_out REAL,
     tier TEXT NOT NULL DEFAULT 'medium',
     preferred_for TEXT NOT NULL DEFAULT 'none',
+    pool_tiers TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
     is_new INTEGER NOT NULL DEFAULT 0,
     discovered_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
@@ -422,6 +451,9 @@ export interface IStorage {
   setModelEnabled(id: string, enabled: boolean): Model | undefined;
   setModelPreferredFor(id: string, preferredFor: string): Model | undefined;
   getPreferredModelForTier(tier: "low" | "medium" | "high"): Model | undefined;
+  // Stage 4.9: tier pool membership (multi-select per tier).
+  setModelPoolTiers(id: string, tiers: string[]): Model | undefined;
+  getPoolModelsForTier(tier: "low" | "medium" | "high"): Model[];
   acknowledgeNewModels(): void;
 
   // QA reviews
@@ -732,13 +764,27 @@ class SQLiteStorage implements IStorage {
   }
 
   setModelPreferredFor(id: string, preferredFor: string): Model | undefined {
-    // Pinning a model for a tier clears any other model's pin for that tier so
-    // there is exactly one preferred model per tier at any time.
+    // Pinning a model as DEFAULT for a tier clears any other model's default for
+    // that tier so there is exactly one default per tier at any time.
     if (preferredFor === "low" || preferredFor === "medium" || preferredFor === "high") {
       db.update(schema.models)
         .set({ preferredFor: "none" })
         .where(eq(schema.models.preferredFor, preferredFor))
         .run();
+      // Also auto-enroll this model in the tier pool. The router treats the
+      // default as the preferred pick within its pool, so being default implies
+      // membership.
+      const row = db.select().from(schema.models).where(eq(schema.models.id, id)).get();
+      if (row) {
+        const current = parsePoolTiers(row.poolTiers);
+        if (!current.includes(preferredFor)) {
+          const next = [...current, preferredFor];
+          db.update(schema.models)
+            .set({ poolTiers: JSON.stringify(next) })
+            .where(eq(schema.models.id, id))
+            .run();
+        }
+      }
     }
     return db.update(schema.models).set({ preferredFor }).where(eq(schema.models.id, id)).returning().get();
   }
@@ -748,6 +794,42 @@ class SQLiteStorage implements IStorage {
       .where(and(eq(schema.models.preferredFor, tier), eq(schema.models.enabled, 1)))
       .limit(1)
       .get();
+  }
+
+  // ── Stage 4.9: tier pool membership ──
+  // A model can be enrolled in any subset of {low, medium, high}. The router
+  // first tries the operator-pinned default for the tier; if that's missing or
+  // its provider key is unset, it falls back to any other pool member with a
+  // configured provider key.
+  setModelPoolTiers(id: string, tiers: string[]): Model | undefined {
+    const cleaned = Array.from(new Set(
+      tiers.filter((t): t is "low" | "medium" | "high" =>
+        t === "low" || t === "medium" || t === "high"),
+    ));
+    const row = db.select().from(schema.models).where(eq(schema.models.id, id)).get();
+    if (!row) return undefined;
+    // If the model was the default for a tier it just got removed from, drop
+    // the default flag (a default must always be a pool member).
+    let nextPreferred = row.preferredFor;
+    if ((row.preferredFor === "low" || row.preferredFor === "medium" || row.preferredFor === "high")
+        && !cleaned.includes(row.preferredFor)) {
+      nextPreferred = "none";
+    }
+    return db.update(schema.models)
+      .set({ poolTiers: JSON.stringify(cleaned), preferredFor: nextPreferred })
+      .where(eq(schema.models.id, id))
+      .returning()
+      .get();
+  }
+
+  getPoolModelsForTier(tier: "low" | "medium" | "high"): Model[] {
+    // Pull every enabled model that lists `tier` in its pool_tiers JSON array.
+    // We do the JSON parse in JS rather than in SQL to avoid relying on the
+    // optional json1 extension at query time.
+    const rows = db.select().from(schema.models)
+      .where(eq(schema.models.enabled, 1))
+      .all();
+    return rows.filter((r) => parsePoolTiers(r.poolTiers).includes(tier));
   }
 
   acknowledgeNewModels(): void {

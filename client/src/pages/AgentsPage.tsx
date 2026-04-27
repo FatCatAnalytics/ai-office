@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Agent } from "../types";
+import type { Agent, Model } from "../types";
 import { MODEL_CATALOG, SPRITE_TYPES, PROVIDER_COLORS } from "../types";
 import {
   Crown, Monitor, Server, Bug, Palette, Rocket, Database, BarChart3,
@@ -57,6 +57,14 @@ function AgentModal({
     color: agent.color, icon: agent.icon, reportsTo: agent.reportsTo ?? "manager",
   } : defaultForm);
 
+  // Stage 4.9: pull live registry models so newly-released ones (Gemini 3,
+  // GPT-5.5, Kimi K2.6, Opus 4-7…) appear in the agent picker without a code
+  // change. The static MODEL_CATALOG is still merged in as a fallback so the
+  // dropdown is never empty before the first registry refresh.
+  const { data: registry = [] } = useQuery<Model[]>({
+    queryKey: ["/api/models"],
+  });
+
   const createMut = useMutation({
     mutationFn: (data: Record<string, unknown>) => apiRequest("POST", "/api/agents", data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/agents"] }); onClose(); },
@@ -75,7 +83,37 @@ function AgentModal({
     else createMut.mutate(payload);
   };
 
-  const models = MODEL_CATALOG[form.provider]?.models ?? [];
+  // Merge: union of (a) every enabled model in the registry and (b) the static
+  // fallback list, deduped by modelId. Discovered providers (anything that
+  // shows up in the registry) are always offered even if MODEL_CATALOG doesn't
+  // know about them.
+  const providerOptions = (() => {
+    const fromRegistry = Array.from(new Set(
+      registry.filter((m) => m.enabled).map((m) => m.provider),
+    ));
+    const fromCatalog = Object.keys(MODEL_CATALOG);
+    return Array.from(new Set([...fromRegistry, ...fromCatalog])).sort();
+  })();
+
+  const providerLabel = (key: string) =>
+    MODEL_CATALOG[key]?.label ?? key.charAt(0).toUpperCase() + key.slice(1);
+
+  const modelsForProvider = (provider: string): string[] => {
+    const live = registry
+      .filter((m) => m.provider === provider && m.enabled)
+      .map((m) => m.modelId);
+    const fallback = MODEL_CATALOG[provider]?.models ?? [];
+    // Live entries first (most current), fallback fills any gaps.
+    return Array.from(new Set([...live, ...fallback]));
+  };
+
+  const models = modelsForProvider(form.provider);
+  // If the agent's saved modelId no longer exists in the merged list (e.g. the
+  // operator disabled it), keep it visible so the dropdown still reflects what
+  // is actually persisted — the operator can pick a new one if desired.
+  const modelsWithCurrent = form.modelId && !models.includes(form.modelId)
+    ? [form.modelId, ...models]
+    : models;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background:"rgba(0,0,0,0.75)" }}>
@@ -115,27 +153,39 @@ function AgentModal({
               data-testid="input-agent-role"/>
           </div>
 
-          {/* Provider + Model */}
+          {/* Provider + Model — live from registry, fallback to MODEL_CATALOG */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-slate-400 mb-1 block">Provider</label>
-              <select value={form.provider} onChange={e => setForm(f => ({
-                ...f, provider: e.target.value,
-                modelId: MODEL_CATALOG[e.target.value]?.models[0] ?? "",
-              }))}
+              <select value={form.provider} onChange={e => {
+                const next = e.target.value;
+                setForm(f => ({
+                  ...f,
+                  provider: next,
+                  modelId: modelsForProvider(next)[0] ?? "",
+                }));
+              }}
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500"
                 data-testid="select-provider">
-                {Object.entries(MODEL_CATALOG).map(([k, v]) => (
-                  <option key={k} value={k}>{v.label}</option>
+                {providerOptions.map((k) => (
+                  <option key={k} value={k}>{providerLabel(k)}</option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="text-xs text-slate-400 mb-1 block">Model</label>
+              <label className="text-xs text-slate-400 mb-1 block">
+                Model
+                <span className="text-slate-600 ml-1 font-normal">
+                  ({registry.filter((m) => m.provider === form.provider && m.enabled).length} live)
+                </span>
+              </label>
               <select value={form.modelId} onChange={e => setForm(f => ({ ...f, modelId: e.target.value }))}
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500"
                 data-testid="select-model">
-                {models.map(m => <option key={m} value={m}>{m}</option>)}
+                {modelsWithCurrent.length === 0 && (
+                  <option value="">— no models discovered yet —</option>
+                )}
+                {modelsWithCurrent.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
             </div>
           </div>

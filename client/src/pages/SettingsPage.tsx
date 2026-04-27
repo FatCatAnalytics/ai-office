@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Settings, Key, CheckCircle2, AlertTriangle, Save, Eye, EyeOff, Loader2, Zap, Globe, Sparkles, RefreshCw, Boxes } from "lucide-react";
+import { Settings, Key, CheckCircle2, AlertTriangle, Save, Eye, EyeOff, Loader2, Zap, Globe, Sparkles, RefreshCw, Boxes, Star } from "lucide-react";
 import type { Model } from "../types";
 
 interface ProviderConfig {
@@ -250,6 +250,15 @@ function ModelsPanel() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/models"] }),
   });
 
+  // Stage 4.9: enroll/unenroll a model in a tier pool. Multi-select: a model
+  // can be in any subset of {low, medium, high}. The default (preferredFor)
+  // is automatically a member; toggling it OFF demotes it to non-default.
+  const poolMut = useMutation({
+    mutationFn: ({ id, poolTiers }: { id: string; poolTiers: string[] }) =>
+      apiRequest("PATCH", `/api/models/${encodeURIComponent(id)}`, { poolTiers }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/models"] }),
+  });
+
   // Refetch when daily refresh broadcasts.
   useEffect(() => {
     const onRefreshed = () => queryClient.invalidateQueries({ queryKey: ["/api/models"] });
@@ -265,12 +274,30 @@ function ModelsPanel() {
   const providers = Object.keys(grouped).sort();
   const lastChecked = models.reduce((max, m) => Math.max(max, m.lastCheckedAt), 0);
 
+  // Helper: parse the pool_tiers JSON column. Server validates the shape, but
+  // we still defend against legacy '[]' / null / malformed values.
+  const poolFor = (m: Model): string[] => {
+    try {
+      const arr = JSON.parse(m.poolTiers || "[]");
+      return Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+
   // Pinned-by-tier summary so the operator can see at a glance which model the
   // router will pick for high-tier (Manager planning, QA), medium, and low.
+  // Stage 4.9: also list secondary pool members for each tier as a compact
+  // "+N more" hint.
   const pinned: Record<"low" | "medium" | "high", Model | undefined> = {
     low: models.find((m) => m.preferredFor === "low" && m.enabled),
     medium: models.find((m) => m.preferredFor === "medium" && m.enabled),
     high: models.find((m) => m.preferredFor === "high" && m.enabled),
+  };
+  const poolByTier: Record<"low" | "medium" | "high", Model[]> = {
+    low: models.filter((m) => poolFor(m).includes("low") && m.enabled),
+    medium: models.filter((m) => poolFor(m).includes("medium") && m.enabled),
+    high: models.filter((m) => poolFor(m).includes("high") && m.enabled),
   };
 
   return (
@@ -311,21 +338,33 @@ function ModelsPanel() {
           </span>
         </div>
 
-        {/* Routing pins summary */}
+        {/* Routing pins summary — default model + pool size per tier */}
         <div className="px-3 py-2 border-b border-slate-800 grid grid-cols-3 gap-2 text-[10px]">
           {(["high", "medium", "low"] as const).map((t) => {
             const m = pinned[t];
+            const pool = poolByTier[t];
+            const extras = pool.filter((p) => p.id !== m?.id).length;
             const tone =
               t === "high" ? "text-violet-300" :
               t === "medium" ? "text-cyan-300" :
               "text-emerald-300";
             return (
               <div key={t} className="rounded-lg bg-slate-950/60 border border-slate-800 px-2 py-1.5">
-                <div className={`uppercase tracking-wider font-bold ${tone}`} style={{ fontSize: 9 }}>
+                <div className={`uppercase tracking-wider font-bold ${tone} flex items-center gap-1`} style={{ fontSize: 9 }}>
                   {t}-tier {t === "high" ? "· manager + QA" : ""}
+                  {pool.length > 0 && (
+                    <span className="ml-auto px-1 rounded bg-slate-800 text-slate-300 font-mono" title={`${pool.length} model(s) in pool`}>
+                      {pool.length}
+                    </span>
+                  )}
                 </div>
                 <div className="font-mono text-slate-200 truncate" title={m ? `${m.provider}/${m.modelId}` : "using built-in chain"}>
                   {m ? m.modelId : <span className="text-slate-500">(built-in chain)</span>}
+                  {extras > 0 && (
+                    <span className="ml-1 text-slate-500" title={`+${extras} other model(s) in this tier's pool`}>
+                      +{extras}
+                    </span>
+                  )}
                 </div>
               </div>
             );
@@ -349,7 +388,25 @@ function ModelsPanel() {
                   {grouped[provider]
                     .slice()
                     .sort((a, b) => a.modelId.localeCompare(b.modelId))
-                    .map((m) => (
+                    .map((m) => {
+                      const pool = poolFor(m);
+                      const togglePool = (tier: "low" | "medium" | "high") => {
+                        const next = pool.includes(tier)
+                          ? pool.filter((t) => t !== tier)
+                          : [...pool, tier];
+                        poolMut.mutate({ id: m.id, poolTiers: next });
+                      };
+                      const toggleDefault = (tier: "low" | "medium" | "high") => {
+                        // Click the same default to clear it; click a different
+                        // tier to make this model the default for that tier.
+                        // Setting a default also enrolls the model in that pool
+                        // (server-side guarantee).
+                        pinMut.mutate({
+                          id: m.id,
+                          preferredFor: m.preferredFor === tier ? "none" : tier,
+                        });
+                      };
+                      return (
                       <div
                         key={m.id}
                         className="flex items-center gap-2 py-1"
@@ -361,43 +418,79 @@ function ModelsPanel() {
                             <Sparkles size={8} /> NEW
                           </span>
                         ) : null}
-                        {m.preferredFor && m.preferredFor !== "none" && (
-                          <span
-                            className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
-                              m.preferredFor === "high"
-                                ? "bg-violet-500/15 text-violet-200 border-violet-500/40"
-                                : m.preferredFor === "medium"
-                                ? "bg-cyan-500/15 text-cyan-200 border-cyan-500/40"
-                                : "bg-emerald-500/15 text-emerald-200 border-emerald-500/40"
-                            }`}
-                            title={`Pinned as the preferred ${m.preferredFor}-tier model`}
-                          >
-                            PIN·{m.preferredFor.toUpperCase()}
-                          </span>
-                        )}
                         <select
                           value={m.tier}
                           onChange={(e) => tierMut.mutate({ id: m.id, tier: e.target.value })}
                           className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300"
-                          title="Heuristic tier classification"
+                          title="Heuristic tier classification (used as a hint only)"
                           data-testid={`select-tier-${m.id}`}
                         >
                           <option value="low">low</option>
                           <option value="medium">medium</option>
                           <option value="high">high</option>
                         </select>
-                        <select
-                          value={m.preferredFor || "none"}
-                          onChange={(e) => pinMut.mutate({ id: m.id, preferredFor: e.target.value })}
-                          className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300"
-                          title="Pin this model as the operator's preferred choice for a tier"
-                          data-testid={`select-pin-${m.id}`}
-                        >
-                          <option value="none">pin: —</option>
-                          <option value="low">pin: low</option>
-                          <option value="medium">pin: medium</option>
-                          <option value="high">pin: high</option>
-                        </select>
+                        {/* Stage 4.9: per-tier pool toggles (multi-select).
+                            Click the letter chip to add/remove this model
+                            from that tier's routing pool. Click the star to
+                            make it the tier's DEFAULT pick.
+                            Tailwind JIT can't infer dynamic class strings, so
+                            tone variants are hard-coded literals below. */}
+                        <div className="flex items-center gap-0.5" title="Add to tier pool / set default">
+                          {(["low", "medium", "high"] as const).map((tier) => {
+                            const inPool = pool.includes(tier);
+                            const isDefault = m.preferredFor === tier;
+                            const POOL_ON: Record<typeof tier, string> = {
+                              low:    "bg-emerald-500/20 text-emerald-200 border-emerald-500/50",
+                              medium: "bg-cyan-500/20 text-cyan-200 border-cyan-500/50",
+                              high:   "bg-violet-500/20 text-violet-200 border-violet-500/50",
+                            };
+                            const DEFAULT_ON: Record<typeof tier, string> = {
+                              low:    "bg-emerald-500/40 text-emerald-100 border-emerald-500/70",
+                              medium: "bg-cyan-500/40 text-cyan-100 border-cyan-500/70",
+                              high:   "bg-violet-500/40 text-violet-100 border-violet-500/70",
+                            };
+                            const DEFAULT_HOVER: Record<typeof tier, string> = {
+                              low:    "bg-slate-800 text-slate-500 border-slate-700 hover:text-emerald-200",
+                              medium: "bg-slate-800 text-slate-500 border-slate-700 hover:text-cyan-200",
+                              high:   "bg-slate-800 text-slate-500 border-slate-700 hover:text-violet-200",
+                            };
+                            const chipClass = inPool
+                              ? POOL_ON[tier]
+                              : "bg-slate-800/80 text-slate-500 border-slate-700/60 hover:text-slate-300";
+                            const starClass = isDefault
+                              ? DEFAULT_ON[tier]
+                              : inPool
+                              ? DEFAULT_HOVER[tier]
+                              : "bg-slate-900 text-slate-700 border-slate-800 cursor-not-allowed";
+                            return (
+                              <span key={tier} className="inline-flex items-center">
+                                <button
+                                  onClick={() => togglePool(tier)}
+                                  className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-l border border-r-0 ${chipClass}`}
+                                  title={inPool
+                                    ? `Remove from ${tier}-tier pool`
+                                    : `Add to ${tier}-tier pool`}
+                                  data-testid={`button-pool-${tier}-${m.id}`}
+                                >
+                                  {tier.charAt(0).toUpperCase()}
+                                </button>
+                                <button
+                                  onClick={() => toggleDefault(tier)}
+                                  disabled={!inPool && !isDefault}
+                                  className={`text-[9px] px-1 py-0.5 rounded-r border ${starClass}`}
+                                  title={isDefault
+                                    ? `Default for ${tier}-tier (click to clear)`
+                                    : inPool
+                                    ? `Set as default for ${tier}-tier`
+                                    : `Add to ${tier}-tier pool first`}
+                                  data-testid={`button-default-${tier}-${m.id}`}
+                                >
+                                  <Star size={9} fill={isDefault ? "currentColor" : "none"} />
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
                         <button
                           onClick={() => enabledMut.mutate({ id: m.id, enabled: !m.enabled })}
                           className={`text-[10px] px-2 py-0.5 rounded border ${
@@ -405,12 +498,14 @@ function ModelsPanel() {
                               ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
                               : "bg-slate-800 text-slate-500 border-slate-700"
                           }`}
+                          title={m.enabled ? "Disable globally" : "Enable globally"}
                           data-testid={`button-toggle-${m.id}`}
                         >
                           {m.enabled ? "on" : "off"}
                         </button>
                       </div>
-                    ))}
+                      );
+                    })}
                 </div>
               </div>
             ))}

@@ -8,7 +8,7 @@
  *
  * The "world" is a large 2D canvas. The user pans/zooms freely.
  */
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import type { Agent, Project } from "../types";
 
 import managerImg       from "@assets/sprite_manager.png";
@@ -139,9 +139,11 @@ const EXPANSION = { col: 13, row: 19, w: 10, d: 6 };
 // Meeting area (lounge)
 const LOUNGE = { col: 21, row: 2, w: 3, d: 5 };
 
-// ─── Desk slot coordinates per agent type → zone + desk index ────────────────
-// Maps agent spriteType → [zoneId, deskIndex]
-const AGENT_DESK_MAP: Record<string, [string, number]> = {
+// ─── Desk slot allocation (Stage 4.9: per-agent, not per spriteType) ─────────
+// Each spriteType has a *preferred* seat. When multiple agents share a sprite
+// (e.g. two backend devs), only the first claims that seat — the rest fall
+// back to: same zone next free desk → hotdesk pool → any free desk anywhere.
+const SPRITE_PREFERRED_DESK: Record<string, [string, number]> = {
   manager:      ["manager",  0],
   frontend:     ["frontend", 0],
   backend:      ["backend",  0],
@@ -155,15 +157,104 @@ const AGENT_DESK_MAP: Record<string, [string, number]> = {
   pm:           ["frontend", 1],
 };
 
-function getAgentDeskPos(agent: Agent): [number, number] | null {
-  const entry = AGENT_DESK_MAP[agent.spriteType];
-  if (!entry) return null;
-  const [zoneId, deskIdx] = entry;
+// Sprite → home zone (used when preferred desk is taken)
+const SPRITE_AFFINITY_ZONE: Record<string, string> = {
+  manager:       "manager",
+  frontend:      "frontend",
+  pm:            "frontend",
+  backend:       "backend",
+  dbarchitect:   "backend",
+  qa:            "qa",
+  uiux:          "uiux",
+  devops:        "devops",
+  secengineer:   "devops",
+  datascientist: "data",
+  harvester:     "data",
+};
+
+export type DeskAssignmentMap = Map<string, [number, number]>;
+
+function zoneDeskPos(zoneId: string, deskIdx: number): [number, number] | null {
   const zone = ZONES.find(z => z.id === zoneId);
   if (!zone) return null;
-  const desk = zone.desks[deskIdx % zone.desks.length];
+  const desk = zone.desks[deskIdx];
   if (!desk) return null;
   return iso(zone.col + desk[0], zone.row + desk[1]);
+}
+
+// Build a stable agentId → [x,y] map. Allocation order: manager first, then
+// agents sorted by id so the assignment is deterministic across renders.
+function buildDeskAssignments(agents: Agent[]): DeskAssignmentMap {
+  const out: DeskAssignmentMap = new Map();
+  const taken = new Set<string>(); // "zoneId:deskIdx"
+  const claim = (zoneId: string, deskIdx: number): [number, number] | null => {
+    const key = `${zoneId}:${deskIdx}`;
+    if (taken.has(key)) return null;
+    const pos = zoneDeskPos(zoneId, deskIdx);
+    if (!pos) return null;
+    taken.add(key);
+    return pos;
+  };
+
+  // Deterministic order: manager first (visual anchor), then by agent id.
+  const ordered = [...agents].sort((a, b) => {
+    if (a.spriteType === "manager" && b.spriteType !== "manager") return -1;
+    if (b.spriteType === "manager" && a.spriteType !== "manager") return 1;
+    return a.id.localeCompare(b.id);
+  });
+
+  for (const agent of ordered) {
+    const sprite = agent.spriteType;
+
+    // 1) Preferred desk for this sprite
+    const pref = SPRITE_PREFERRED_DESK[sprite];
+    if (pref) {
+      const pos = claim(pref[0], pref[1]);
+      if (pos) { out.set(agent.id, pos); continue; }
+    }
+
+    // 2) Next free desk in the affinity zone
+    const affinityZoneId = SPRITE_AFFINITY_ZONE[sprite];
+    if (affinityZoneId) {
+      const zone = ZONES.find(z => z.id === affinityZoneId);
+      if (zone) {
+        let placed = false;
+        for (let i = 0; i < zone.desks.length; i++) {
+          const pos = claim(affinityZoneId, i);
+          if (pos) { out.set(agent.id, pos); placed = true; break; }
+        }
+        if (placed) continue;
+      }
+    }
+
+    // 3) Hotdesk pool
+    const hotZone = ZONES.find(z => z.id === "hotdesk");
+    if (hotZone) {
+      let placed = false;
+      for (let i = 0; i < hotZone.desks.length; i++) {
+        const pos = claim("hotdesk", i);
+        if (pos) { out.set(agent.id, pos); placed = true; break; }
+      }
+      if (placed) continue;
+    }
+
+    // 4) Any free desk anywhere
+    let placed = false;
+    for (const z of ZONES) {
+      for (let i = 0; i < z.desks.length; i++) {
+        const pos = claim(z.id, i);
+        if (pos) { out.set(agent.id, pos); placed = true; break; }
+      }
+      if (placed) break;
+    }
+    // If still not placed (office full), agent simply has no position — sprite/arc/minimap will skip.
+  }
+
+  return out;
+}
+
+function getAgentDeskPos(agent: Agent, deskMap: DeskAssignmentMap): [number, number] | null {
+  return deskMap.get(agent.id) ?? null;
 }
 
 // ─── SVG floor tile ───────────────────────────────────────────────────────────
@@ -700,10 +791,10 @@ function OfficeRoom() {
 }
 
 // ─── Delegation / communication arcs ─────────────────────────────────────────
-function CommArcs({ agents }: { agents: Agent[] }) {
+function CommArcs({ agents, deskMap }: { agents: Agent[]; deskMap: DeskAssignmentMap }) {
   const mgr = agents.find(a => a.spriteType === "manager");
   if (!mgr) return null;
-  const mPos = getAgentDeskPos(mgr);
+  const mPos = getAgentDeskPos(mgr, deskMap);
   if (!mPos) return null;
 
   const active = agents.filter(a =>
@@ -715,7 +806,7 @@ function CommArcs({ agents }: { agents: Agent[] }) {
     <svg style={{ position:"absolute", top:0, left:0, width:WORLD_W, height:WORLD_H,
       pointerEvents:"none", zIndex:10 }} overflow="visible">
       {active.map(a => {
-        const aPos = getAgentDeskPos(a);
+        const aPos = getAgentDeskPos(a, deskMap);
         if (!aPos) return null;
         const [mx, my] = mPos, [ax, ay] = aPos;
         const cy = (my + ay) / 2 - 80;
@@ -735,8 +826,8 @@ function CommArcs({ agents }: { agents: Agent[] }) {
 }
 
 // ─── Minimap ──────────────────────────────────────────────────────────────────
-function MiniMap({ pan, zoom, vpW, vpH, agents }: {
-  pan:[number,number]; zoom:number; vpW:number; vpH:number; agents:Agent[];
+function MiniMap({ pan, zoom, vpW, vpH, agents, deskMap }: {
+  pan:[number,number]; zoom:number; vpW:number; vpH:number; agents:Agent[]; deskMap:DeskAssignmentMap;
 }) {
   const W=130, H=100;
   const sx = W/WORLD_W, sy = H/WORLD_H;
@@ -759,7 +850,7 @@ function MiniMap({ pan, zoom, vpW, vpH, agents }: {
             fill={z.color} opacity="0.5"/>;
         })}
         {agents.map(a => {
-          const pos = getAgentDeskPos(a);
+          const pos = getAgentDeskPos(a, deskMap);
           if (!pos) return null;
           return <circle key={a.id} cx={pos[0]*sx} cy={pos[1]*sy} r={3.5}
             fill={a.status==="idle"?"#334155":a.color}
@@ -777,8 +868,8 @@ function MiniMap({ pan, zoom, vpW, vpH, agents }: {
 // ─── Agent sprite ─────────────────────────────────────────────────────────────
 const SPRITE_PX = 160; // world px
 
-function AgentSprite({ agent, zoom }: { agent: Agent; zoom: number }) {
-  const pos = getAgentDeskPos(agent);
+function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; deskMap: DeskAssignmentMap }) {
+  const pos = getAgentDeskPos(agent, deskMap);
   if (!pos) return null;
   const [wx, wy] = pos;
 
@@ -937,6 +1028,13 @@ function ZoomControls({ onIn,onOut,onReset,zoom }: {
 export default function IsometricOffice({ agents, project }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [vpDims, setVpDims] = useState({ w:1200, h:700 });
+  // Stage 4.9: per-agent desk allocation — prevents pile-ups when multiple
+  // agents share a spriteType. Recomputed only when agent ids/spriteTypes change.
+  const deskMap = useMemo(
+    () => buildDeskAssignments(agents),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [agents.map(a => `${a.id}:${a.spriteType}`).join("|")]
+  );
   const [pan,  setPan]      = useState<[number,number]>([0,0]);
   const [zoom, setZoom]     = useState(0.38);
   const initDone            = useRef(false);
@@ -1068,22 +1166,22 @@ export default function IsometricOffice({ agents, project }: Props) {
         <OfficeRoom/>
 
         {/* Communication arcs */}
-        <CommArcs agents={agents}/>
+        <CommArcs agents={agents} deskMap={deskMap}/>
 
         {/* Agent sprites — sorted by Y for correct depth */}
         {[...agents]
           .sort((a,b)=>{
-            const pa=getAgentDeskPos(a); const pb=getAgentDeskPos(b);
+            const pa=getAgentDeskPos(a, deskMap); const pb=getAgentDeskPos(b, deskMap);
             return (pa?.[1]??0)-(pb?.[1]??0);
           })
           .map(agent=>(
-            <AgentSprite key={agent.id} agent={agent} zoom={zoom}/>
+            <AgentSprite key={agent.id} agent={agent} zoom={zoom} deskMap={deskMap}/>
           ))
         }
       </div>
 
       {/* ═══ Fixed HUD ════════════════════════════════════════════════════════ */}
-      <MiniMap pan={pan} zoom={zoom} vpW={vpDims.w} vpH={vpDims.h} agents={agents}/>
+      <MiniMap pan={pan} zoom={zoom} vpW={vpDims.w} vpH={vpDims.h} agents={agents} deskMap={deskMap}/>
       <ZoomControls onIn={()=>{
         const nz=clamp(zoom+ZOOM_STEP*2,ZOOM_MIN,ZOOM_MAX);
         setPan(([px,py])=>{const cx=vpDims.w/2,cy=vpDims.h/2;return clampPan(cx-(cx-px)/zoom*nz,cy-(cy-py)/zoom*nz,nz);});

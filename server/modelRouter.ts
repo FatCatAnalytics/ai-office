@@ -8,10 +8,11 @@
 //   high   → Frontier reasoning model: Opus → GPT-5.5 → Sonnet → Gemini 3 Pro.
 //            Used for code, analysis, AND for Manager planning + QA sign-off.
 //
-// Resolution order for every routing call:
-//   1. Operator pin in the models registry (preferredFor === tier && enabled).
-//   2. Hardcoded preference chain below — first provider with a configured key.
-//   3. The agent's own modelId as a last resort so a configured agent always
+// Resolution order for every routing call (Stage 4.9):
+//   1. Operator-pinned DEFAULT for the tier (preferredFor === tier && enabled).
+//   2. Any other model enrolled in the tier pool (multi-select per tier).
+//   3. Hardcoded preference chain below — first provider with a configured key.
+//   4. The agent's own modelId as a last resort so a configured agent always
 //      has *something* to call.
 // QA review and Manager planning always go through the high-tier path.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,25 +62,40 @@ function hasKey(provider: Provider): boolean {
 }
 
 // Pick a model based on complexity. Resolution order:
-//   1. Operator pin in the models registry (preferredFor === complexity).
-//   2. Hardcoded TIER_PREFERENCES fall-through (first provider with a key).
-//   3. The agent's own modelId.
+//   1. Operator's pinned default for the tier (preferredFor === complexity).
+//   2. Any other pool member for the tier (operator-enabled multi-select).
+//   3. Hardcoded TIER_PREFERENCES fall-through (first provider with a key).
+//   4. The agent's own modelId.
 export function routeForComplexity(complexity: Complexity, fallbackAgent: Agent): RoutedModel {
-  // 1. Operator pin from the registry takes precedence so newly-released models
-  //    (Opus 4-7, GPT-5.5, Gemini 3 Pro, kimi-k2.6…) can be promoted from the UI
-  //    without a code change.
+  // 1. Operator-pinned DEFAULT for the tier.
   try {
     const pinned = storage.getPreferredModelForTier(complexity);
     if (pinned && hasKey(pinned.provider as Provider)) {
       return {
         provider: pinned.provider as Provider,
         modelId: pinned.modelId,
-        reason: `${complexity}-tier → operator pin (${pinned.displayName || pinned.modelId})`,
+        reason: `${complexity}-tier → operator default (${pinned.displayName || pinned.modelId})`,
       };
     }
   } catch { /* registry not yet migrated; fall through */ }
 
-  // 2. Hardcoded preference chain.
+  // 2. Any other model the operator added to this tier's pool. Picking the
+  //    first one with a configured provider key keeps things deterministic for
+  //    a given key set, while still letting operators stage multiple choices.
+  try {
+    const pool = storage.getPoolModelsForTier(complexity);
+    for (const m of pool) {
+      if (hasKey(m.provider as Provider)) {
+        return {
+          provider: m.provider as Provider,
+          modelId: m.modelId,
+          reason: `${complexity}-tier → pool member (${m.displayName || m.modelId})`,
+        };
+      }
+    }
+  } catch { /* migration race; fall through */ }
+
+  // 3. Hardcoded preference chain.
   const prefs = TIER_PREFERENCES[complexity] ?? TIER_PREFERENCES.medium;
   for (const pick of prefs) {
     if (hasKey(pick.provider)) return pick;

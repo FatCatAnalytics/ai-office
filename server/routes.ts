@@ -904,7 +904,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
   app.patch("/api/models/:id", (req, res) => {
     const id = req.params.id;
-    const { tier, enabled, preferredFor } = req.body ?? {};
+    const { tier, enabled, preferredFor, poolTiers } = req.body ?? {};
     let updated;
     if (typeof tier === "string") {
       if (!["low", "medium", "high"].includes(tier)) return res.status(400).json({ error: "tier must be low|medium|high" });
@@ -918,6 +918,16 @@ export function registerRoutes(httpServer: Server, app: Express) {
         return res.status(400).json({ error: "preferredFor must be low|medium|high|none" });
       }
       updated = storage.setModelPreferredFor(id, preferredFor);
+    }
+    // Stage 4.9: tier pool membership (multi-select). Accepts an array of tier
+    // names; each must be one of low|medium|high. An empty array clears all
+    // pool memberships for this model (and clears its default if it had one).
+    if (Array.isArray(poolTiers)) {
+      const bad = poolTiers.find((t) => typeof t !== "string" || !["low", "medium", "high"].includes(t));
+      if (bad !== undefined) {
+        return res.status(400).json({ error: "poolTiers entries must each be low|medium|high" });
+      }
+      updated = storage.setModelPoolTiers(id, poolTiers as string[]);
     }
     if (!updated) return res.status(404).json({ error: "model not found" });
     res.json(updated);
