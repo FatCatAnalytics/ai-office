@@ -265,6 +265,31 @@ async function streamGoogle(req: StreamRequest, handlers: StreamHandlers): Promi
 }
 
 // ─── Kimi (Moonshot) — OpenAI-compatible API ────────────────────────────────
+// Primary endpoint is api.moonshot.ai (international, full catalogue including
+// kimi-k2.6). On HTTP 401 we retry once on api.moonshot.cn for legacy
+// China-region keys.
+async function callKimiHost(
+  host: string,
+  body: unknown,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<{ res: Response; errText?: string }> {
+  const res = await fetch(`https://${host}/v1/chat/completions`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const errText = await res.text().catch(() => "");
+    return { res, errText };
+  }
+  return { res };
+}
+
 async function streamKimi(req: StreamRequest, handlers: StreamHandlers): Promise<StreamResult> {
   const body = {
     model: req.modelId,
@@ -274,19 +299,39 @@ async function streamKimi(req: StreamRequest, handlers: StreamHandlers): Promise
     stream: true,
   };
 
-  const res = await fetch("https://api.moonshot.cn/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${req.apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal: req.signal,
-  });
+  // Try international endpoint first.
+  let attempt = await callKimiHost("api.moonshot.ai", body, req.apiKey, req.signal);
+  let res = attempt.res;
+  let errText = attempt.errText;
+
+  // Legacy China-region key fallback on 401.
+  if (!res.ok && res.status === 401) {
+    const fallback = await callKimiHost("api.moonshot.cn", body, req.apiKey, req.signal);
+    if (fallback.res.ok && fallback.res.body) {
+      res = fallback.res;
+      errText = undefined;
+    } else {
+      // Keep the .ai 401 as the surfaced error (more actionable), but note we tried .cn.
+      errText = errText ?? fallback.errText;
+    }
+  }
 
   if (!res.ok || !res.body) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`Kimi API ${res.status}: ${errText.slice(0, 200)}`);
+    const snippet = (errText ?? "").slice(0, 200);
+    if (res.status === 401) {
+      throw new Error(
+        `Kimi API 401 (auth): key rejected by both api.moonshot.ai and api.moonshot.cn. ` +
+          `Verify the key at platform.kimi.ai/console/api-keys (or platform.moonshot.ai). ` +
+          `Detail: ${snippet}`,
+      );
+    }
+    if (res.status === 429) {
+      throw new Error(
+        `Kimi API 429 (billing/quota): account is rate-limited or out of credit. ` +
+          `Check balance at platform.kimi.ai. Detail: ${snippet}`,
+      );
+    }
+    throw new Error(`Kimi API ${res.status} (transient): ${snippet}`);
   }
 
   let text = "";
