@@ -68,6 +68,9 @@ export const tasks = sqliteTable("tasks", {
   complexity: text("complexity").notNull().default("medium"),
   // The actual modelId used for execution (after routing override). NULL until executed.
   modelUsed: text("model_used"),
+  // Raw markdown output from the worker agent (Stage 4.17). Captured for QA review and debugging.
+  // NULL until the task completes successfully.
+  output: text("output"),
   createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
   updatedAt: integer("updated_at").notNull().$defaultFn(() => Date.now()),
 });

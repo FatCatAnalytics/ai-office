@@ -146,6 +146,10 @@ try {
 try {
   sqlite.exec(`ALTER TABLE tasks ADD COLUMN model_used TEXT`);
 } catch { /* column already exists */ }
+// Stage 4.17: persist raw worker markdown output on the task row for QA review
+try {
+  sqlite.exec(`ALTER TABLE tasks ADD COLUMN output TEXT`);
+} catch { /* column already exists */ }
 // Stage 4.7: pin a model as the operator's preferred choice for a complexity tier.
 try {
   sqlite.exec(`ALTER TABLE models ADD COLUMN preferred_for TEXT NOT NULL DEFAULT 'none'`);
@@ -419,7 +423,7 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     spriteType: "frontend",
     provider: "kimi",
     modelId: "moonshot-v1-128k",
-    systemPrompt: "You are a Web Scraping and Data Extraction Agent. You extract structured data from specific web pages provided by the Manager or Deep Research Agent. You MUST use tavily_extract to fetch each target URL — do not invent or recall page contents from memory. If you need to find additional pages on a site (sub-pages, sister directories, pagination), use tavily_search with include_domains restricted to the target site, then tavily_extract on the discovered URLs. For each value you extract, cite the URL and (where possible) the section heading you pulled it from. Output JSON or markdown tables. De-duplicate, normalise dates to ISO 8601, normalise currencies to a stated unit, flag missing values as null rather than guessing. Prefer official APIs and feeds over HTML scraping when both exist.",
+    systemPrompt: "You are a Web Scraping and Data Extraction Agent. You extract structured data from specific web pages provided by the Manager or Deep Research Agent. You MUST use tavily_extract to fetch each target URL — do not invent or recall page contents from memory. If you need to find additional pages on a site (sub-pages, sister directories, pagination), use tavily_search with include_domains restricted to the target site, then tavily_extract on the discovered URLs. For each value you extract, cite the URL and (where possible) the section heading you pulled it from. Output JSON or markdown tables. De-duplicate, normalise dates to ISO 8601, normalise currencies to a stated unit, flag missing values as null rather than guessing.\n\nYou handle ANY listing-shaped dataset on the web \u2014 the same techniques apply across domains. Examples (non-exhaustive):\n\u2022 Portfolio companies on a PE/VC site\n\u2022 Product or SKU catalogues on an e-commerce or B2B site\n\u2022 News/PR streams, press releases, blog archives, or market-signal feeds for a list of corporates\n\u2022 Job postings, vacancy boards, RFP/tender notices\n\u2022 Filing or document indexes (SEC EDGAR, Companies House, regulator publication lists)\n\u2022 Office/branch/store/dealer locators, member directories, supplier rosters\n\u2022 Conference speakers, board members, leadership rosters, investor lists\n\u2022 Pricing tables, fee schedules, tariff lists\n\u2022 Reviews, ratings, complaint registers\n\u2022 Open datasets and CSV downloads on government / regulator portals\nYour job is the same in every case: return the COMPLETE list with consistent fields, not the visible first page.\n\nMODERN-SITE EXTRACTION STRATEGY (critical): Most listing pages on modern sites lazy-load their data via JavaScript, so a plain HTML extract returns only the first 20\u201330 visible items. ALWAYS try the data layer first before settling for partial scrapes:\n1. Inspect the extracted HTML for embedded JSON: search for `__NEXT_DATA__`, `window.__INITIAL_STATE__`, `window.__APOLLO_STATE__`, `window.__NUXT__`, `<script type=\"application/ld+json\">`, `<script type=\"application/json\">`, or `<script id=\"__NEXT_DATA__\">`. These typically contain the COMPLETE dataset (all rows, not just first page).\n2. If you see a Next.js / Nuxt / Redux / Apollo signature, parse the JSON from that script tag and walk the object graph to find the array of items \u2014 commonly under keys like `props.pageProps`, `initialState.entities`, `apolloState`, `data`, `items`, `results`, `nodes`, `edges`.\n3. Look for explicit JSON / RSS / sitemap endpoints visible in the HTML, network-style URLs in the page, or implied by the stack: `/api/`, `/_next/data/`, `/wp-json/wp/v2/`, `/graphql`, `/feed/`, `/feed.xml`, `/rss.xml`, `/atom.xml`, `/data.json`, `/oembed`. Try fetching those directly with tavily_extract \u2014 they almost always return the complete machine-readable list.\n4. Try `<site>/sitemap.xml`, `<site>/sitemap_index.xml`, or `<site>/robots.txt` to discover every detail-page URL on the site, then extract per-page data. Many sites split sitemaps by content type (sitemap-companies.xml, sitemap-press.xml, sitemap-jobs.xml).\n5. For paginated listings, look for total-count fields in the data layer (`total`, `totalCount`, `pagination.totalPages`, `meta.pagination`) and iterate page parameters (`?page=N`, `?offset=N`, `?cursor=...`) to walk the full set.\n6. Only fall back to text extraction of the rendered HTML if every structured-data path fails. When you fall back, EXPLICITLY note in your output that the result may be incomplete and recommend manual paging or a different source.\n\nIn your output, ALWAYS report: (a) the source class you actually used \u2014 JSON data layer / explicit API / sitemap walk / RSS feed / rendered HTML; (b) how many items you found; (c) the total expected count if the data layer exposed one. The manager uses these signals to decide whether to retry, paginate further, or accept the result.\n\nPrefer official APIs and feeds over HTML scraping when both exist. When the request is a listing, return the COMPLETE list, not \"top N\" or \"selected\" \u2014 if the source genuinely only exposes top N (e.g. an annual report disclosing only top-20 holdings), say so explicitly and recommend the alternative source that exposes the full set.",
     capabilities: JSON.stringify(["web-scraping", "html-parsing", "api-discovery", "table-extraction", "pagination", "structured-data", "json-extraction", "csv-export", "data-cleaning", "deduplication", "rate-limits"]),
     reportsTo: "manager",
     status: "idle",
@@ -593,6 +597,7 @@ class SQLiteStorage implements IStorage {
     const STAGE_413_KEY = "stage_4_13_research_prompts_migrated_at";
     const STAGE_415_KEY = "stage_4_15_manifest_prompts_migrated_at";
     const STAGE_416_KEY = "stage_4_16_manifest_token_budget_migrated_at";
+    const STAGE_417_KEY = "stage_4_17_scraper_prompts_migrated_at";
     const alreadyMigrated = this.getSetting(STAGE_410_KEY);
 
     if (!alreadyMigrated) {
@@ -625,6 +630,7 @@ class SQLiteStorage implements IStorage {
       this.setSetting(STAGE_413_KEY, String(Date.now())); // 4.10 ran fresh → 4.13 prompts already in
       this.setSetting(STAGE_415_KEY, String(Date.now())); // 4.10 ran fresh → 4.15 manifest prompts already in
       this.setSetting(STAGE_416_KEY, String(Date.now())); // 4.10 ran fresh → 4.16 token-budget guidance already in
+      this.setSetting(STAGE_417_KEY, String(Date.now())); // 4.10 ran fresh → 4.17 scraper + tables-first prompts already in
       return;
     }
 
@@ -671,6 +677,30 @@ class SQLiteStorage implements IStorage {
       // Backfill the 4.15 marker too, in case this is a DB that skipped 4.15.
       this.setSetting(STAGE_415_KEY, String(Date.now()));
       this.setSetting(STAGE_416_KEY, String(Date.now()));
+    }
+
+    // Stage 4.17 one-shot migration: re-push the systemPrompt for the 7
+    // research agents so existing DBs pick up:
+    //   • the rewritten domain-agnostic web-scraper prompt with data-layer
+    //     extraction strategy (__NEXT_DATA__, /api/, sitemap, etc.)
+    //   • the tables-first emission order in MANIFEST_INSTRUCTIONS so
+    //     truncation costs prose, not data.
+    // DEFAULT_AGENTS already has the latest prompts at boot, so we just
+    // overwrite the systemPrompt field on each research agent.
+    const alreadyMigrated417 = this.getSetting(STAGE_417_KEY);
+    if (!alreadyMigrated417) {
+      const researchIds = Object.keys(AGENT_TOOLS);
+      for (const agent of DEFAULT_AGENTS) {
+        if (!researchIds.includes(agent.id)) continue;
+        const existing = db.select().from(schema.agents).where(eq(schema.agents.id, agent.id)).get();
+        if (existing) {
+          db.update(schema.agents)
+            .set({ systemPrompt: agent.systemPrompt })
+            .where(eq(schema.agents.id, agent.id))
+            .run();
+        }
+      }
+      this.setSetting(STAGE_417_KEY, String(Date.now()));
     }
 
     // Steady-state boot: only insert genuinely new defaults; never overwrite.

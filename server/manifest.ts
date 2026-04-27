@@ -88,6 +88,13 @@ Token-budget guidance (Stage 4.16):
 - If you have more than ~80 rows for a single table, prioritise breadth (most important entries) over exhaustiveness. A complete table of 60 rows beats a truncated table of 120.
 - Emit the JSON in compact form (one row per line is fine, but no extra indentation inside row arrays). The renderer formats output, you save tokens.
 - Numeric and short string cells only — do NOT put paragraph-length descriptions inside cells.
+
+Tables-first emission order (Stage 4.17):
+- Inside the JSON object, emit fields in this order: "title", "tables", "sources", "summary_md". Put summary_md LAST.
+- Rationale: if your output is cut off by the token cap mid-stream, the renderer can still recover the title and complete tables — the data survives. Losing the summary is acceptable; losing the data is not.
+- Within "tables", emit the most important / largest data table first.
+- Within each table, emit rows in priority order so a truncation drops least-important rows first.
+- The fenced JSON block must still be the last thing in your overall response, but the field order INSIDE the JSON should be tables-before-summary.
 `.trim();
 
 // ─── Parser ─────────────────────────────────────────────────────────────────

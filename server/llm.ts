@@ -446,13 +446,58 @@ interface OpenAIChoiceMessage {
   reasoning_content?: string | null;
 }
 
+// Stage 4.17: transient-error retry. Provider edges (Moonshot/Cloudflare,
+// Anthropic, Gemini) occasionally return 502/503/504 or hard timeout for a
+// few seconds. We retry up to 3 times with exponential backoff (1s, 2s, 4s)
+// before surfacing the error. 4xx errors (auth, bad request, rate-limit)
+// pass through immediately — retry won't help and just burns time.
+//
+// Aborts (the user pressing Stop) bypass retry: if AbortError fires we throw
+// it back up immediately so cancelProject() stays snappy.
+const RETRY_MAX_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS = [1000, 2000, 4000];
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < RETRY_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      // 502/503/504 — transient gateway errors. Retry.
+      if (res.status === 502 || res.status === 503 || res.status === 504) {
+        const body = await res.text().catch(() => "");
+        lastErr = new Error(`${url} ${res.status}: ${body.slice(0, 200)}`);
+        if (attempt < RETRY_MAX_ATTEMPTS - 1) {
+          await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS[attempt]));
+          continue;
+        }
+        throw lastErr;
+      }
+      return res;
+    } catch (e) {
+      // AbortError (user-cancel) bypasses retry.
+      if ((e as Error)?.name === "AbortError") throw e;
+      lastErr = e;
+      // Network error / DNS failure / fetch threw — also transient.
+      if (attempt < RETRY_MAX_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS[attempt]));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr ?? new Error("fetchWithRetry: exhausted attempts");
+}
+
 async function callOpenAICompatible(
   endpoint: string,
   apiKey: string,
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<{ message: OpenAIChoiceMessage; tokensIn: number; tokensOut: number }> {
-  const res = await fetch(endpoint, {
+  const res = await fetchWithRetry(endpoint, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -622,7 +667,9 @@ async function callAnthropicWithTools(
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<{ content: AnthropicContentBlock[]; tokensIn: number; tokensOut: number; stopReason: string }> {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  // Stage 4.17: fetchWithRetry handles transient 502/503/504 from
+  // Anthropic's edge (rare but happens during their incident windows).
+  const res = await fetchWithRetry("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -755,7 +802,8 @@ async function callGoogleWithTools(
   signal?: AbortSignal,
 ): Promise<{ parts: GeminiPart[]; tokensIn: number; tokensOut: number; finishReason: string }> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const res = await fetch(url, {
+  // Stage 4.17: fetchWithRetry handles transient gateway errors.
+  const res = await fetchWithRetry(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),

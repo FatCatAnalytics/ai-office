@@ -781,7 +781,9 @@ async function runWaveConcurrent(
       deps.broadcast({ type: "task_update", task: { ...task, status: "in_progress", waveIndex } });
       try {
         const output = await runWorkerTask(project, task, agent, priorOutputs, deps, signal);
-        storage.updateTask(task.id, { status: "done" });
+        // Stage 4.17: persist raw markdown output on the task itself so QA can review
+        // worker reasoning (formatter agents read priorOutputs separately via files).
+        storage.updateTask(task.id, { status: "done", output });
         deps.broadcast({ type: "task_update", task: { ...task, status: "done", waveIndex } });
         deps.setAgentStatus(agent.id, "done", null);
         deps.emitEvent(
