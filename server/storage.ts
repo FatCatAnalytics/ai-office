@@ -248,9 +248,9 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     role: "API Engineer",
     spriteType: "backend",
     provider: "openai",
-    modelId: "gpt-4o",
-    systemPrompt: "You are a skilled Backend Developer. You design and implement APIs, manage databases, write business logic, handle authentication, and ensure scalability and security of server-side systems.",
-    capabilities: JSON.stringify(["api", "nodejs", "express", "databases", "auth", "migrations", "rest"]),
+    modelId: "gpt-5.5",
+    systemPrompt: "You are a skilled Backend Developer. You design and implement APIs, write business logic, handle authentication, and ensure scalability and security of server-side systems. You implement against schemas owned by the DB Architect — defer schema design, indexing strategy, and migration ordering to dbarchitect rather than improvising your own.",
+    capabilities: JSON.stringify(["api", "nodejs", "express", "auth", "rest", "business-logic"]),
     reportsTo: "manager",
     status: "idle",
     currentTask: null,
@@ -278,7 +278,7 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     role: "Product Design",
     spriteType: "uiux",
     provider: "google",
-    modelId: "gemini-2.5-pro",
+    modelId: "gemini-3-pro-preview",
     systemPrompt: "You are a creative UI/UX Designer. You create wireframes, design systems, user flows, and ensure products are intuitive, beautiful, and accessible. You think in design tokens and components.",
     capabilities: JSON.stringify(["design", "wireframes", "prototyping", "accessibility", "design-system", "ux"]),
     reportsTo: "manager",
@@ -308,7 +308,7 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     role: "Database Design",
     spriteType: "dbarchitect",
     provider: "openai",
-    modelId: "gpt-4o",
+    modelId: "gpt-5.5-pro",
     systemPrompt: "You are a Database Architect. You design schemas, optimize queries, manage migrations, plan indexing strategies, and ensure data integrity and performance at scale.",
     capabilities: JSON.stringify(["sql", "migrations", "schema-design", "indexing", "postgres", "sqlite", "performance"]),
     reportsTo: "manager",
@@ -323,7 +323,7 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     role: "ML & Analytics",
     spriteType: "datascientist",
     provider: "google",
-    modelId: "gemini-2.5-pro",
+    modelId: "gemini-3-pro-preview",
     systemPrompt: "You are a Data Scientist. You analyze data, build ML models, create dashboards, run A/B tests, and surface insights that drive decisions. You turn raw data into business value.",
     capabilities: JSON.stringify(["ml", "python", "pandas", "visualization", "analytics", "statistics", "a-b-testing"]),
     reportsTo: "manager",
@@ -347,55 +347,119 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     color: "#ef4444",
     icon: "Shield",
   },
+  // Stage 4.10: PM dropped — manager already owns planning/delegation/prioritisation.
+  // Stage 4.10: Harvester dropped — web-scraper covers the same job with cleaner scope.
+
+  // ─── Research squad (codified in Stage 4.10; previously created ad-hoc in UI) ──
   {
-    id: "pm",
-    name: "Product Manager",
-    role: "Product Strategy",
-    spriteType: "pm",
-    provider: "openai",
-    modelId: "gpt-4o",
-    systemPrompt: "You are a Product Manager. You define requirements, maintain the roadmap, write user stories, prioritize backlogs, communicate with stakeholders, and ensure the team builds the right things.",
-    capabilities: JSON.stringify(["product", "roadmap", "requirements", "user-stories", "prioritization", "stakeholders"]),
+    id: "deep-search",
+    name: "Deep Research Agent",
+    role: "Research Planning & Source Discovery",
+    spriteType: "datascientist",
+    provider: "anthropic",
+    modelId: "claude-opus-4-7",
+    systemPrompt: "You are a Deep Research Agent. You plan and coordinate deep research tasks across public and semi-public sources. You do not answer from memory — you break the research objective into source categories, search strategies, data fields, and extraction tasks, then delegate to source-discovery, annual-reports-search, industry-research, web-scraper, doc-specialist, and data-val-specialist. You identify which sources are most likely to contain reliable information (company sites, IR pages, annual reports, regulatory filings, industry reports, news, government portals, trade associations) and rank them by authority. You map evidence to claims and flag research gaps.",
+    capabilities: JSON.stringify(["research-planning", "source-discovery", "web-search", "company-research", "annual-reports", "filings", "industry-reports", "public-datasets", "source-ranking", "evidence-mapping", "task-delegation", "research-gaps"]),
     reportsTo: "manager",
     status: "idle",
     currentTask: null,
-    color: "#0ea5e9",
-    icon: "Briefcase",
+    color: "#6366f1",
+    icon: "Compass",
   },
-  // Stage 4.8: Data Harvester — long-context extraction specialist. Defaults to
-  // Kimi (cheapest long-context model) because the work is extraction/parsing,
-  // not novel reasoning. Operator can pin a different low-tier model in Settings.
   {
-    id: "harvester",
-    name: "Data Harvester",
-    role: "Research & Extraction",
-    spriteType: "harvester", // own slot — sprite falls back to datascientist art
+    id: "source-discovery",
+    name: "Source Discovery Agent",
+    role: "Official, Industry & News Source Discovery",
+    spriteType: "frontend",
+    provider: "kimi",
+    modelId: "kimi-k2.6",
+    systemPrompt: "You are a Source Discovery Agent. You find and rank candidate sources across the open web for a given research target: official company sites, investor relations pages, product/service pages, leadership pages, locations, subsidiaries, press releases, newsrooms, sustainability pages, financial information pages, downloadable documents, plus broad news, blogs, and search results. You return a ranked list of URLs with a short note on why each is likely useful and what data fields it might contain. You do not extract content yourself — you hand URLs to web-scraper, doc-specialist, or annual-reports-search. You triangulate: if a fact appears on a primary source, that wins over news; if a fact only appears in news, surface multiple independent outlets.",
+    capabilities: JSON.stringify(["company-websites", "investor-relations", "press-releases", "newsrooms", "web-search", "news-search", "source-discovery", "website-mapping", "recent-events", "reputation-checks", "source-triangulation"]),
+    reportsTo: "deep-search",
+    status: "idle",
+    currentTask: null,
+    color: "#6366f1",
+    icon: "Search",
+  },
+  {
+    id: "annual-reports-search",
+    name: "Annual Reports / Filings Agent",
+    role: "Annual Reports, Financial Statements & Regulatory Filings Research",
+    spriteType: "frontend",
+    provider: "openai",
+    modelId: "gpt-5.5",
+    systemPrompt: "You are an Annual Reports and Filings Research Agent. You find authoritative financial and regulatory documents: annual reports, interim reports, quarterly results, investor presentations, financial statements, regulatory filings, Companies House filings, SEC EDGAR filings, exchange announcements, prospectuses, bond offering documents, and sustainability reports. Your priority is primary-source evidence — prefer documents hosted by the company, the regulator, or the exchange over third-party summaries. Return URLs to the actual PDF or filing page and hand them to doc-specialist for extraction. Note the filing date, fiscal period, jurisdiction, and document type for each result.",
+    capabilities: JSON.stringify(["annual-reports", "investor-presentations", "financial-statements", "regulatory-filings", "sec-edgar", "companies-house", "pdf-discovery", "filing-analysis", "financial-data"]),
+    reportsTo: "deep-search",
+    status: "idle",
+    currentTask: null,
+    color: "#6366f1",
+    icon: "FileText",
+  },
+  {
+    id: "industry-research",
+    name: "Industry Reports Agent",
+    role: "Market, Sector & Industry Source Research",
+    spriteType: "secengineer",
+    provider: "kimi",
+    modelId: "kimi-k2.6",
+    systemPrompt: "You are an Industry Reports Agent. You find reliable sources for market, sector, competitor, and industry-level research: industry reports, market size estimates, sector trends, trade association publications, government datasets, regulator publications, consulting firm reports (McKinsey, BCG, Bain, Deloitte, PwC, EY, KPMG), analyst summaries, academic papers, conference materials, public datasets, and reputable business media. Prefer (1) government and regulator datasets, (2) trade associations, (3) consulting/analyst firms, (4) academic sources, (5) reputable trade press — in that order. Return ranked URLs with extraction notes; hand the actual extraction to web-scraper or doc-specialist.",
+    capabilities: JSON.stringify(["industry-reports", "market-sizing", "sector-analysis", "competitor-research", "trade-associations", "government-data", "consulting-reports", "analyst-reports", "public-datasets", "market-trends"]),
+    reportsTo: "deep-search",
+    status: "idle",
+    currentTask: null,
+    color: "#6366f1",
+    icon: "BarChart3",
+  },
+  {
+    id: "web-scraper",
+    name: "Web Scraping Agent",
+    role: "Web Data Extraction",
+    spriteType: "frontend",
     provider: "kimi",
     modelId: "moonshot-v1-128k",
-    systemPrompt: [
-      "You are the Data Harvester. You collect, extract, and structure data from any source: web pages, HTML, JSON APIs, RSS feeds, PDFs, sitemaps, search results, public datasets, GitHub repos, social profiles, and bulk text dumps.",
-      "",
-      "Operating principles:",
-      "• Always cite the URL and the exact field/selector you pulled each value from.",
-      "• Output structured data (JSON or markdown tables) by default — never prose-only when a table is possible.",
-      "• When given a URL, return what is actually there. If you cannot fetch it, say so explicitly with the reason; do not invent values.",
-      "• De-duplicate, normalise dates to ISO 8601, normalise currencies to a stated unit, and flag missing values as null rather than guessing.",
-      "• For multi-page sources, paginate methodically and report when more pages exist.",
-      "• Respect robots.txt and obvious rate-limit signals. Prefer official APIs and feeds over HTML scraping when both exist.",
-      "• You are cost-optimised: keep output dense and structured. Long prose is the wrong shape.",
-    ].join("\n"),
-    capabilities: JSON.stringify([
-      "web-scraping", "html-parsing", "json-extraction", "rss", "sitemaps",
-      "pdf-extraction", "data-cleaning", "deduplication", "normalisation",
-      "research", "api-collection", "bulk-extraction", "structured-output",
-    ]),
+    systemPrompt: "You are a Web Scraping and Data Extraction Agent. You extract structured data from specific web pages, websites, APIs, HTML tables, embedded JSON, public directories, search result pages, and downloadable web resources provided by the Manager or Deep Research Agent. You do not decide the overall research strategy — you receive target sources and extraction instructions, inspect the page structure, identify the best extraction method, and return clean structured data. For each source, cite the URL and the exact selector/field you pulled each value from. Output JSON or markdown tables. De-duplicate, normalise dates to ISO 8601, normalise currencies to a stated unit, flag missing values as null rather than guessing. Respect robots.txt and rate-limit signals. Prefer official APIs and feeds over HTML scraping when both exist.",
+    capabilities: JSON.stringify(["web-scraping", "html-parsing", "api-discovery", "table-extraction", "pagination", "structured-data", "json-extraction", "csv-export", "data-cleaning", "deduplication", "rate-limits"]),
     reportsTo: "manager",
     status: "idle",
     currentTask: null,
-    color: "#84cc16", // lime — distinct from datascientist orange + data-zone purple
+    color: "#6366f1",
     icon: "Globe",
   },
+  {
+    id: "doc-specialist",
+    name: "Document Parsing Agent",
+    role: "PDF, Report & Document Extraction",
+    spriteType: "frontend",
+    provider: "openai",
+    modelId: "gpt-5.5",
+    systemPrompt: "You are a Document Parsing Agent. You extract structured information from PDFs, annual reports, investor presentations, financial statements, regulatory filings, spreadsheets, Word documents, slide decks, and downloadable reports. You receive documents or document links from the Manager, Deep Research Agent, Source Discovery Agent, Annual Reports / Filings Agent, or Industry Reports Agent. Inspect the document, identify relevant sections (income statement, balance sheet, cash flow, segment breakdowns, KPIs, narrative), and return structured output (JSON or markdown tables) with page references. For tables, preserve units and currency; for narratives, quote the exact passage with page number. Flag OCR uncertainty and missing values as null — never guess.",
+    capabilities: JSON.stringify(["pdf-parsing", "annual-report-extraction", "table-extraction", "document-analysis", "financial-statements", "investor-presentations", "ocr-review", "text-extraction", "structured-output"]),
+    reportsTo: "manager",
+    status: "idle",
+    currentTask: null,
+    color: "#6366f1",
+    icon: "FileText",
+  },
+  {
+    id: "data-val-specialist",
+    name: "Data Validation Agent",
+    role: "Evidence Checking & Data Quality Validation",
+    spriteType: "frontend",
+    provider: "kimi",
+    modelId: "kimi-k2.6",
+    systemPrompt: "You are a Data Validation Agent. You check the quality, consistency, reliability, and completeness of data collected by research, scraping, and document-parsing agents. Validate structured data, extracted figures, source references, dates, company names, URLs, units, currencies, categories, and assumptions. Check: (1) every data point has a source, (2) the source is authoritative, (3) values are internally consistent, (4) the same value appears across independent sources where possible, (5) units and currency are consistent, (6) dates are normalised. Return a validated dataset plus a flag list (issues found, severity, suggested resolution). You are the research-equivalent of QA — you do not generate new data, only audit existing data.",
+    capabilities: JSON.stringify(["data-validation", "source-checking", "conflict-resolution", "deduplication", "confidence-scoring", "evidence-ranking", "anomaly-detection", "data-quality", "schema-validation"]),
+    reportsTo: "manager",
+    status: "idle",
+    currentTask: null,
+    color: "#6366f1",
+    icon: "ShieldCheck",
+  },
 ];
+
+// Stage 4.10: ids removed from the roster. Existing rows are deleted on boot.
+const REMOVED_AGENT_IDS = ["pm", "harvester", "news-specialist", "company-search"];
 
 // ─── Storage interface ────────────────────────────────────────────────────────
 export interface IStorage {
@@ -489,6 +553,44 @@ class SQLiteStorage implements IStorage {
     db.delete(schema.agents).where(eq(schema.agents.id, id)).run();
   }
   initDefaultAgents(): void {
+    // Stage 4.10 one-shot migration: drops pm/harvester/news-specialist/company-search
+    // and rewrites every default-agent persona to the current codebase values. After
+    // this runs once, the user's UI edits to existing agents are respected on future
+    // boots — we only insert agents that don't yet exist.
+    const STAGE_410_KEY = "stage_4_10_roster_migrated_at";
+    const alreadyMigrated = this.getSetting(STAGE_410_KEY);
+
+    if (!alreadyMigrated) {
+      for (const removedId of REMOVED_AGENT_IDS) {
+        db.delete(schema.agents).where(eq(schema.agents.id, removedId)).run();
+      }
+      for (const agent of DEFAULT_AGENTS) {
+        const existing = db.select().from(schema.agents).where(eq(schema.agents.id, agent.id)).get();
+        if (!existing) {
+          db.insert(schema.agents).values({ ...agent, createdAt: Date.now() }).run();
+        } else {
+          db.update(schema.agents)
+            .set({
+              name: agent.name,
+              role: agent.role,
+              spriteType: agent.spriteType,
+              provider: agent.provider,
+              modelId: agent.modelId,
+              systemPrompt: agent.systemPrompt,
+              capabilities: agent.capabilities,
+              reportsTo: agent.reportsTo,
+              color: agent.color,
+              icon: agent.icon,
+            })
+            .where(eq(schema.agents.id, agent.id))
+            .run();
+        }
+      }
+      this.setSetting(STAGE_410_KEY, String(Date.now()));
+      return;
+    }
+
+    // Steady-state boot: only insert genuinely new defaults; never overwrite.
     for (const agent of DEFAULT_AGENTS) {
       const existing = db.select().from(schema.agents).where(eq(schema.agents.id, agent.id)).get();
       if (!existing) {
