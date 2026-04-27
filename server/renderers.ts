@@ -15,6 +15,7 @@
 
 import PDFDocument from "pdfkit";
 import ExcelJS from "exceljs";
+import type { DeliverableManifest } from "./manifest";
 
 export interface RenderMeta {
   projectName: string;
@@ -23,6 +24,264 @@ export interface RenderMeta {
   agentName: string;
   modelId: string;
   generatedAt: Date;
+}
+
+// ─── Stage 4.15: manifest-driven renderers ─────────────────────────────────
+// When an agent produces a DeliverableManifest, render every format from
+// the same structured source. Tables become real spreadsheet sheets, prose
+// becomes proper paragraphs, and sources get a dedicated References section.
+
+/** Excel from a manifest: one sheet per table + Summary + Sources + Info. */
+export async function renderXlsxFromManifest(
+  m: DeliverableManifest,
+  meta: RenderMeta,
+): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = `${meta.agentName} (${meta.modelId})`;
+  wb.created = meta.generatedAt;
+  wb.title = m.title;
+
+  // 1. Summary sheet — title + prose, line-wrapped in column A.
+  const summary = wb.addWorksheet("Summary");
+  summary.getColumn(1).width = 110;
+  summary.getCell("A1").value = m.title;
+  summary.getCell("A1").font = { bold: true, size: 16, color: { argb: "FF0F172A" } };
+  summary.getRow(1).height = 24;
+  const proseLines = m.summary_md.split(/\r?\n/);
+  proseLines.forEach((ln, i) => {
+    const cell = summary.getCell(i + 3, 1);
+    cell.value = ln;
+    cell.alignment = { wrapText: true, vertical: "top" };
+  });
+
+  // 2. One sheet per table. Excel sheet names are capped at 31 chars and
+  //    must be unique, so we de-dupe with numeric suffixes.
+  const usedNames = new Set<string>(["Summary", "Sources", "Info"]);
+  for (const t of m.tables ?? []) {
+    let name = (t.name || "Data").slice(0, 31);
+    let suffix = 2;
+    while (usedNames.has(name)) {
+      const trimmed = (t.name || "Data").slice(0, 28);
+      name = `${trimmed} ${suffix}`.slice(0, 31);
+      suffix++;
+    }
+    usedNames.add(name);
+
+    const sheet = wb.addWorksheet(name);
+    if (t.caption) {
+      const capRow = sheet.addRow([t.caption]);
+      capRow.font = { italic: true, color: { argb: "FF475569" } };
+      sheet.addRow([]); // spacer
+    }
+    const headerRow = sheet.addRow(t.columns);
+    headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    headerRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0F172A" } };
+    headerRow.alignment = { vertical: "middle", horizontal: "left" };
+    headerRow.height = 22;
+    for (const row of t.rows) {
+      sheet.addRow(t.columns.map((_, i) => row[i] ?? ""));
+    }
+    // Auto-fit columns roughly
+    t.columns.forEach((h, idx) => {
+      let max = String(h ?? "").length;
+      for (const row of t.rows) {
+        const v = row[idx];
+        const len = v == null ? 0 : String(v).length;
+        if (len > max) max = len;
+      }
+      sheet.getColumn(idx + 1).width = Math.min(60, Math.max(10, max + 2));
+    });
+    // Freeze header (account for caption rows)
+    const headerRowIdx = t.caption ? 3 : 1;
+    sheet.views = [{ state: "frozen", ySplit: headerRowIdx }];
+    sheet.autoFilter = {
+      from: { row: headerRowIdx, column: 1 },
+      to: { row: headerRowIdx, column: t.columns.length },
+    };
+  }
+
+  // 3. Sources sheet — every cited URL with optional title + accessed date.
+  if (m.sources && m.sources.length > 0) {
+    const src = wb.addWorksheet("Sources");
+    src.columns = [
+      { header: "#",       key: "n",        width: 4 },
+      { header: "Title",   key: "title",    width: 60 },
+      { header: "URL",     key: "url",      width: 80 },
+      { header: "Accessed", key: "accessed", width: 14 },
+    ];
+    src.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    src.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0F172A" } };
+    m.sources.forEach((s, i) => {
+      src.addRow({ n: i + 1, title: s.title ?? "", url: s.url, accessed: s.accessed ?? "" });
+    });
+  }
+
+  // 4. Info sheet — provenance metadata.
+  const info = wb.addWorksheet("Info");
+  info.columns = [
+    { header: "Field", key: "field", width: 18 },
+    { header: "Value", key: "value", width: 80 },
+  ];
+  info.getRow(1).font = { bold: true };
+  info.addRow({ field: "Project",     value: meta.projectName });
+  info.addRow({ field: "Description", value: meta.projectDescription });
+  info.addRow({ field: "Task",        value: meta.taskTitle });
+  info.addRow({ field: "Agent",       value: meta.agentName });
+  info.addRow({ field: "Model",       value: meta.modelId });
+  info.addRow({ field: "Generated",   value: meta.generatedAt.toLocaleString() });
+  info.addRow({ field: "Source",      value: "manifest-v1" });
+
+  const arr = await wb.xlsx.writeBuffer();
+  return Buffer.from(arr);
+}
+
+/** PDF from a manifest: title block, prose, then formatted tables + sources. */
+export async function renderPdfFromManifest(
+  m: DeliverableManifest,
+  meta: RenderMeta,
+): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({
+        size: "A4",
+        margins: { top: 64, bottom: 64, left: 64, right: 64 },
+        info: {
+          Title: m.title,
+          Author: `${meta.agentName} (${meta.modelId})`,
+          Subject: meta.projectName,
+          Producer: "AI Office (Live)",
+        },
+      });
+      const chunks: Buffer[] = [];
+      doc.on("data", (c: Buffer) => chunks.push(c));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      // Title block
+      doc.font("Helvetica-Bold").fontSize(20).fillColor("#0f172a").text(m.title);
+      doc.moveDown(0.4);
+      doc.font("Helvetica").fontSize(10).fillColor("#475569");
+      doc.text(`${meta.projectName}    •    ${meta.agentName} (${meta.modelId})    •    ${meta.generatedAt.toLocaleString()}`);
+      doc.moveDown(0.2);
+      doc.moveTo(doc.page.margins.left, doc.y + 4)
+         .lineTo(doc.page.width - doc.page.margins.right, doc.y + 4)
+         .strokeColor("#e2e8f0").lineWidth(0.7).stroke();
+      doc.moveDown(0.8);
+
+      // Body — reuse the markdown renderer for the summary prose.
+      renderMarkdownishToPdf(doc, m.summary_md);
+
+      // Tables
+      for (const t of m.tables ?? []) {
+        doc.addPage();
+        doc.font("Helvetica-Bold").fontSize(14).fillColor("#0f172a").text(t.name);
+        if (t.caption) {
+          doc.moveDown(0.2);
+          doc.font("Helvetica-Oblique").fontSize(9).fillColor("#475569").text(t.caption);
+        }
+        doc.moveDown(0.5);
+        renderTableToPdf(doc, t.columns, t.rows);
+      }
+
+      // Sources
+      if (m.sources && m.sources.length > 0) {
+        doc.addPage();
+        doc.font("Helvetica-Bold").fontSize(14).fillColor("#0f172a").text("Sources");
+        doc.moveDown(0.5);
+        doc.font("Helvetica").fontSize(10).fillColor("#0f172a");
+        m.sources.forEach((s, i) => {
+          const label = s.title ?? s.url;
+          doc.text(`${i + 1}. `, { continued: true });
+          doc.fillColor("#0ea5e9").text(label, { link: s.url, underline: true, continued: false });
+          doc.fillColor("#475569").fontSize(9).text(s.url);
+          if (s.accessed) doc.fillColor("#94a3b8").fontSize(8).text(`accessed ${s.accessed}`);
+          doc.fillColor("#0f172a").fontSize(10);
+          doc.moveDown(0.4);
+        });
+      }
+
+      doc.end();
+    } catch (e) { reject(e); }
+  });
+}
+
+/** Lightweight table layout for PDF. Wraps long cells; striped rows. */
+function renderTableToPdf(
+  doc: PDFKit.PDFDocument,
+  columns: string[],
+  rows: (string | number | null)[][],
+): void {
+  const startX = doc.page.margins.left;
+  const usableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const colW = usableWidth / columns.length;
+  const padX = 4;
+  const padY = 3;
+  const fontSize = 9;
+
+  doc.font("Helvetica-Bold").fontSize(fontSize).fillColor("#ffffff");
+  // Header background
+  const headerH = fontSize + padY * 2;
+  doc.rect(startX, doc.y, usableWidth, headerH).fill("#0f172a");
+  let cx = startX;
+  const headerY = doc.y - headerH; // doc.y was advanced by .fill
+  // pdfkit's .fill resets path; re-set y to where we drew the rect
+  doc.y = headerY;
+  for (let i = 0; i < columns.length; i++) {
+    doc.fillColor("#ffffff").text(columns[i], cx + padX, doc.y + padY, {
+      width: colW - padX * 2,
+      height: headerH - padY,
+      ellipsis: true,
+      lineBreak: false,
+    });
+    cx += colW;
+  }
+  doc.y = headerY + headerH;
+
+  // Rows
+  doc.font("Helvetica").fontSize(fontSize).fillColor("#0f172a");
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r];
+    // Compute row height by tallest wrapped cell.
+    const rowTexts = columns.map((_, i) => {
+      const v = row[i];
+      return v === null || v === undefined ? "" : String(v);
+    });
+    const heights = rowTexts.map(txt => doc.heightOfString(txt, {
+      width: colW - padX * 2,
+      lineBreak: true,
+    }));
+    const rowH = Math.max(...heights, fontSize) + padY * 2;
+
+    // Page break if row would overflow.
+    if (doc.y + rowH > doc.page.height - doc.page.margins.bottom) {
+      doc.addPage();
+    }
+
+    // Striping
+    if (r % 2 === 1) {
+      const yBefore = doc.y;
+      doc.rect(startX, yBefore, usableWidth, rowH).fill("#f1f5f9");
+      doc.y = yBefore;
+      doc.fillColor("#0f172a");
+    }
+
+    cx = startX;
+    const yRow = doc.y;
+    for (let i = 0; i < columns.length; i++) {
+      doc.text(rowTexts[i], cx + padX, yRow + padY, {
+        width: colW - padX * 2,
+        lineBreak: true,
+      });
+      cx += colW;
+    }
+    doc.y = yRow + rowH;
+
+    // Bottom border
+    doc.moveTo(startX, doc.y).lineTo(startX + usableWidth, doc.y)
+       .strokeColor("#e2e8f0").lineWidth(0.5).stroke();
+  }
+  doc.moveDown(0.5);
+  doc.fillColor("#0f172a");
 }
 
 // ─── PDF ────────────────────────────────────────────────────────────────────

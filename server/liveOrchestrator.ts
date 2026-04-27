@@ -20,7 +20,8 @@
 
 import { storage, toolsForAgent } from "./storage";
 import { streamCompletion, calculateCost, settingKeyForProvider, type Provider, type LLMMessage } from "./llm";
-import { renderPdf, renderXlsx, type RenderMeta } from "./renderers";
+import { renderPdf, renderXlsx, renderPdfFromManifest, renderXlsxFromManifest, type RenderMeta } from "./renderers";
+import { extractManifest, manifestToMarkdown, manifestToCsv, manifestToJson, type DeliverableManifest } from "./manifest";
 import { routeForComplexity, routeForCriticalCall, normaliseComplexity, type Complexity } from "./modelRouter";
 import { reviewProjectQA } from "./qaReviewer";
 import { resolveTools, tavilyConfigured } from "./tools";
@@ -251,6 +252,20 @@ async function saveLiveOutput(
     generatedAt: new Date(),
   };
 
+  // Stage 4.15: research agents emit a structured DeliverableManifest. If we
+  // can parse one, every requested format is rendered FROM the manifest — so
+  // .csv contains real CSV (not markdown prose), .xlsx has real sheets, and
+  // .pdf has properly laid-out tables + sources. Falls back to legacy text
+  // rendering for non-research agents that didn't emit a manifest.
+  const manifest: DeliverableManifest | null = extractManifest(rawOutput);
+  if (manifest) {
+    deps.emitEvent(
+      projectId, agent.id, agent.name, "manifest parsed",
+      `✓ ${manifest.tables?.length ?? 0} table(s), ${manifest.sources?.length ?? 0} source(s)`,
+      "info"
+    );
+  }
+
   for (const fmt of formats) {
     const extMime = EXT_BY_FORMAT[fmt];
     if (!extMime) continue;
@@ -258,20 +273,33 @@ async function saveLiveOutput(
     let content: Buffer | string = rawOutput;
     try {
       if (fmt === "json") {
-        const parsed = extractJSON(rawOutput);
-        content = parsed ? JSON.stringify(parsed, null, 2) : rawOutput;
+        if (manifest) {
+          content = manifestToJson(manifest);
+        } else {
+          const parsed = extractJSON(rawOutput);
+          content = parsed ? JSON.stringify(parsed, null, 2) : rawOutput;
+        }
       } else if (fmt === "csv") {
-        const fenceCsv = rawOutput.match(/```(?:csv)?\s*([\s\S]*?)```/);
-        content = fenceCsv ? fenceCsv[1].trim() : rawOutput;
+        if (manifest) {
+          content = manifestToCsv(manifest);
+        } else {
+          const fenceCsv = rawOutput.match(/```(?:csv)?\s*([\s\S]*?)```/);
+          content = fenceCsv ? fenceCsv[1].trim() : rawOutput;
+        }
       } else if (fmt === "python") {
         const fencePy = rawOutput.match(/```(?:python|py)?\s*([\s\S]*?)```/);
         content = fencePy ? fencePy[1].trim() : rawOutput;
       } else if (fmt === "markdown") {
-        content = `# ${task.title}\n\n**Project:** ${project.name}  \n**Agent:** ${agent.name} (\`${agent.modelId}\`)  \n**Mode:** Live AI  \n**Completed:** ${new Date().toLocaleString()}\n\n---\n\n${rawOutput.trim()}\n`;
+        const body = manifest ? manifestToMarkdown(manifest) : rawOutput.trim();
+        content = `# ${task.title}\n\n**Project:** ${project.name}  \n**Agent:** ${agent.name} (\`${agent.modelId}\`)  \n**Mode:** Live AI  \n**Completed:** ${new Date().toLocaleString()}\n\n---\n\n${body}\n`;
       } else if (fmt === "pdf") {
-        content = await renderPdf(rawOutput, meta);
+        content = manifest
+          ? await renderPdfFromManifest(manifest, meta)
+          : await renderPdf(rawOutput, meta);
       } else if (fmt === "excel") {
-        content = await renderXlsx(rawOutput, meta);
+        content = manifest
+          ? await renderXlsxFromManifest(manifest, meta)
+          : await renderXlsx(rawOutput, meta);
       }
 
       const filename = `${slug}_${agent.id}.${extMime.ext}`;
@@ -672,7 +700,12 @@ async function runWorkerTask(
         modelId: routed.modelId,
         apiKey,
         messages,
-        maxTokens: 3072,
+        // Stage 4.15: bumped 3072 → 4096 because research agents now have to
+        // emit a structured manifest in addition to the prose summary, which
+        // pushes longer outputs. Combined with llm.ts max_tokens cap-hit
+        // recovery, this prevents Claude truncating mid-thought into garbled
+        // multi-language internal monologue.
+        maxTokens: 4096,
         temperature: 0.7,
         tools: tools.length > 0 ? tools : undefined,
         // Stage 4.14: cancel-aware fetch — if the operator hits Stop, every

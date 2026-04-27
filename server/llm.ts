@@ -53,7 +53,26 @@ export interface StreamResult {
 
 // Maximum tool-call rounds per request. Each iteration is one model call +
 // one tool execution. Keeps runaway loops bounded.
-const MAX_TOOL_ITERS = 6;
+// Stage 4.15: bumped 6 → 12. Research tasks routinely need 8–10 tool calls
+// (search, then extract several URLs, then maybe re-search). The previous cap
+// of 6 caused tool-loop runaway: agents would burn iterations on searches and
+// hit the cap before synthesising, returning a placeholder string. Combined
+// with forceSynthesisRound() below, we now cap calls AND guarantee a
+// deliverable on every code path.
+const MAX_TOOL_ITERS = 12;
+
+// Stage 4.15: when we hit the iteration cap, OR Anthropic returns
+// stop_reason="max_tokens" mid-tool-loop, we run ONE final round with tools
+// disabled so the model is forced to write a deliverable from whatever it has
+// already gathered. This replaces the previous behaviour of returning a
+// literal placeholder string ("Tool-call loop hit the iteration cap...")
+// which propagated into saved files.
+const SYNTHESIS_NUDGE =
+  "You have reached the tool-call budget for this task. STOP calling tools. " +
+  "Using only the search results and extracted content already gathered in " +
+  "this conversation, produce the final deliverable now. Follow the output " +
+  "contract from your system prompt exactly — prose summary plus the fenced " +
+  "JSON manifest. Do not call any more tools.";
 
 // ─── Cost rates (USD per 1K tokens) ─────────────────────────────────────────
 // Used for per-call cost calculation. Keep in sync with MODEL_COST_PER_1K
@@ -554,13 +573,33 @@ async function runOpenAIWithTools(
     }
   }
 
-  // Hit the iteration cap without a final answer. Surface what we have.
-  handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
-  return {
-    text: "(Tool-call loop hit the iteration cap without producing a final answer. Increase MAX_TOOL_ITERS or simplify the task.)",
-    tokensIn: totalIn,
-    tokensOut: totalOut,
+  // Stage 4.15: cap reached without a final text answer. Force one synthesis
+  // round with tool_choice="none" + an explicit user-message nudge. This
+  // produces a real deliverable instead of a placeholder string.
+  convo.push({ role: "user", content: SYNTHESIS_NUDGE });
+  const synthBody: Record<string, unknown> = {
+    model: req.modelId,
+    messages: convo,
+    temperature: cfg.temperature,
+    max_tokens: req.maxTokens ?? 2048,
+    tool_choice: "none",
   };
+  let synth;
+  try {
+    synth = await callOpenAICompatible(cfg.endpoint, req.apiKey, synthBody, req.signal);
+  } catch (e) {
+    if (cfg.fallback && /401/.test((e as Error).message)) {
+      synth = await callOpenAICompatible(cfg.fallback, req.apiKey, synthBody, req.signal);
+    } else {
+      throw e;
+    }
+  }
+  totalIn += synth.tokensIn;
+  totalOut += synth.tokensOut;
+  const synthText = synth.message.content ?? "";
+  if (synthText) handlers.onDelta?.(synthText);
+  handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
+  return { text: synthText, tokensIn: totalIn, tokensOut: totalOut };
 }
 
 // ─── Anthropic ─────────────────────────────────────────────────────────────
@@ -647,6 +686,16 @@ async function runAnthropicWithTools(req: StreamRequest, handlers: StreamHandler
       return { text, tokensIn: totalIn, tokensOut: totalOut };
     }
 
+    // Stage 4.15: Anthropic returned tool_use blocks BUT was cut off by
+    // max_tokens mid-thought. The captured tool_use blocks are unusable
+    // (their ids may not match a complete request), and the truncated text
+    // often contains internal-monologue garbage (foreign-language scratch
+    // pads, raw ":functions." tokens). Drop the partial turn and force a
+    // synthesis round with tools disabled, working from earlier tool results.
+    if (resp.stopReason === "max_tokens") {
+      break;
+    }
+
     // Push assistant turn with the original content blocks intact (Anthropic
     // requires the exact tool_use blocks back in the conversation).
     convo.push({ role: "assistant", content: resp.content });
@@ -662,12 +711,30 @@ async function runAnthropicWithTools(req: StreamRequest, handlers: StreamHandler
     convo.push({ role: "user", content: resultBlocks });
   }
 
-  handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
-  return {
-    text: "(Tool-call loop hit the iteration cap without producing a final answer.)",
-    tokensIn: totalIn,
-    tokensOut: totalOut,
+  // Stage 4.15: cap reached or max_tokens early-exit. Force one final
+  // synthesis round with NO tools so Claude must write the deliverable from
+  // gathered context. This is the fix for test3 file 97 (Arabic/Chinese
+  // internal monologue + raw ":functions.tavily_search:5)..." leakage).
+  convo.push({ role: "user", content: SYNTHESIS_NUDGE });
+  const synthBody: Record<string, unknown> = {
+    model: req.modelId,
+    max_tokens: req.maxTokens ?? 2048,
+    temperature: req.temperature ?? 0.7,
+    ...(system ? { system } : {}),
+    messages: convo,
+    // No `tools` field at all — Claude can't call tools if it doesn't know
+    // they exist for this turn.
   };
+  const synth = await callAnthropicWithTools(req.apiKey, synthBody, req.signal);
+  totalIn += synth.tokensIn;
+  totalOut += synth.tokensOut;
+  const synthText = synth.content
+    .filter((b): b is AnthropicTextBlock => b.type === "text")
+    .map(b => b.text)
+    .join("");
+  if (synthText) handlers.onDelta?.(synthText);
+  handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
+  return { text: synthText, tokensIn: totalIn, tokensOut: totalOut };
 }
 
 // ─── Google Gemini ─────────────────────────────────────────────────────────
@@ -777,12 +844,30 @@ async function runGoogleWithTools(req: StreamRequest, handlers: StreamHandlers):
     contents.push({ role: "user", parts: responseParts });
   }
 
-  handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
-  return {
-    text: "(Tool-call loop hit the iteration cap without producing a final answer.)",
-    tokensIn: totalIn,
-    tokensOut: totalOut,
+  // Stage 4.15: cap reached. Force one synthesis round with NO tools so
+  // Gemini writes the deliverable from gathered context.
+  contents.push({ role: "user", parts: [{ text: SYNTHESIS_NUDGE }] });
+  const synthBody: Record<string, unknown> = {
+    contents,
+    generationConfig: {
+      temperature: req.temperature ?? 0.7,
+      maxOutputTokens: req.maxTokens ?? 2048,
+    },
+    // No `tools` field — forces a text-only response.
   };
+  if (systemMsgs.length > 0) {
+    synthBody.systemInstruction = { parts: [{ text: systemMsgs.map(m => m.content).join("\n\n") }] };
+  }
+  const synth = await callGoogleWithTools(req.modelId, req.apiKey, synthBody, req.signal);
+  totalIn += synth.tokensIn;
+  totalOut += synth.tokensOut;
+  const synthText = synth.parts
+    .filter(p => typeof p.text === "string" && p.text.length > 0)
+    .map(p => p.text!)
+    .join("");
+  if (synthText) handlers.onDelta?.(synthText);
+  handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
+  return { text: synthText, tokensIn: totalIn, tokensOut: totalOut };
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────

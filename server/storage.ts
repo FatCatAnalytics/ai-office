@@ -4,6 +4,7 @@ import * as schema from "@shared/schema";
 import { eq, desc, and } from "drizzle-orm";
 import fs from "fs";
 import path from "path";
+import { MANIFEST_INSTRUCTIONS } from "./manifest";
 import type {
   Agent, InsertAgent,
   Project, InsertProject,
@@ -475,6 +476,19 @@ export const AGENT_TOOLS: Record<string, string[]> = {
   "data-val-specialist":   ["tavily_search", "tavily_extract"],
 };
 
+// Stage 4.15: research agents must emit a structured DeliverableManifest
+// (one fenced JSON block at the END of the response). The renderer fans the
+// manifest out per file format (md / csv / xlsx / pdf / json) so each format
+// is tailored to its container instead of every file getting the same blob.
+// We append MANIFEST_INSTRUCTIONS to each research agent's systemPrompt at
+// module load — DEFAULT_AGENTS is the source of truth used both for fresh
+// inserts and for the migration that rewrites existing rows.
+for (const agent of DEFAULT_AGENTS) {
+  if (AGENT_TOOLS[agent.id]) {
+    agent.systemPrompt = `${agent.systemPrompt}\n\n${MANIFEST_INSTRUCTIONS}`;
+  }
+}
+
 export function toolsForAgent(agentId: string): string[] {
   return AGENT_TOOLS[agentId] ?? [];
 }
@@ -577,6 +591,7 @@ class SQLiteStorage implements IStorage {
     // boots — we only insert agents that don't yet exist.
     const STAGE_410_KEY = "stage_4_10_roster_migrated_at";
     const STAGE_413_KEY = "stage_4_13_research_prompts_migrated_at";
+    const STAGE_415_KEY = "stage_4_15_manifest_prompts_migrated_at";
     const alreadyMigrated = this.getSetting(STAGE_410_KEY);
 
     if (!alreadyMigrated) {
@@ -607,6 +622,7 @@ class SQLiteStorage implements IStorage {
       }
       this.setSetting(STAGE_410_KEY, String(Date.now()));
       this.setSetting(STAGE_413_KEY, String(Date.now())); // 4.10 ran fresh → 4.13 prompts already in
+      this.setSetting(STAGE_415_KEY, String(Date.now())); // 4.10 ran fresh → 4.15 manifest prompts already in
       return;
     }
 
@@ -628,6 +644,26 @@ class SQLiteStorage implements IStorage {
         }
       }
       this.setSetting(STAGE_413_KEY, String(Date.now()));
+    }
+
+    // Stage 4.15 one-shot migration: rewrite the systemPrompt for the 7
+    // research agents so existing DBs pick up the DeliverableManifest contract.
+    // DEFAULT_AGENTS already has MANIFEST_INSTRUCTIONS appended via the loop
+    // above, so we just push the current systemPrompt into the DB.
+    const alreadyMigrated415 = this.getSetting(STAGE_415_KEY);
+    if (!alreadyMigrated415) {
+      const researchIds = Object.keys(AGENT_TOOLS);
+      for (const agent of DEFAULT_AGENTS) {
+        if (!researchIds.includes(agent.id)) continue;
+        const existing = db.select().from(schema.agents).where(eq(schema.agents.id, agent.id)).get();
+        if (existing) {
+          db.update(schema.agents)
+            .set({ systemPrompt: agent.systemPrompt })
+            .where(eq(schema.agents.id, agent.id))
+            .run();
+        }
+      }
+      this.setSetting(STAGE_415_KEY, String(Date.now()));
     }
 
     // Steady-state boot: only insert genuinely new defaults; never overwrite.
