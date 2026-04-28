@@ -4,10 +4,20 @@ import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { scheduleDailyModelRefresh } from "./modelsRefresh";
+import { assertAuthConfigured, requireAuth } from "./auth";
 import { createServer } from "node:http";
+
+// Stage 4.18: refuse to boot if the password gate is misconfigured.
+// Layered behind Cloudflare (which already filters bots and AI scrapers),
+// this gives us application-level access control with zero external deps.
+assertAuthConfigured();
 
 const app = express();
 const httpServer = createServer(app);
+
+// Trust the proxy in front of us (Cloudflare → our reverse proxy → Node)
+// so req.ip / Secure-cookie logic and CF-Connecting-IP work correctly.
+app.set("trust proxy", true);
 
 declare module "http" {
   interface IncomingMessage {
@@ -24,6 +34,25 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// Stage 4.18: tell well-behaved crawlers (and AI bots that respect headers)
+// to skip the entire site. Cloudflare blocks the rude ones at the edge;
+// this is the polite-bots backstop.
+app.use((_req, res, next) => {
+  res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+  next();
+});
+
+// Static robots.txt at the root — belt-and-braces with the X-Robots-Tag header.
+app.get("/robots.txt", (_req, res) => {
+  res.type("text/plain").send("User-agent: *\nDisallow: /\n");
+});
+
+// Lightweight liveness probe so monitors / Cloudflare uptime checks don't
+// trip on the auth redirect.
+app.get("/healthz", (_req, res) => {
+  res.json({ ok: true });
+});
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -63,6 +92,12 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Stage 4.18: gate every request before it reaches the SPA / API layer.
+  // The middleware whitelists /api/auth/*, /healthz, /robots.txt, /login.html
+  // (and its assets); everything else returns 401 (API) or redirects to
+  // /login.html (HTML).
+  app.use(requireAuth);
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

@@ -7,6 +7,7 @@ import { storage } from "./storage";
 import type { Agent, Task, Project } from "@shared/schema";
 import { runLiveOrchestration, resumeLiveOrchestration, cancelProject, isProjectRunning } from "./liveOrchestrator";
 import { refreshAllProviders } from "./modelsRefresh";
+import { handleLogin, handleLogout, handleMe, isWsUpgradeAuthenticated } from "./auth";
 
 // ─── WebSocket broadcast ───────────────────────────────────────────────────────
 const wsClients = new Set<WebSocket>();
@@ -548,8 +549,27 @@ function randomBlockReason(): string {
 
 // ─── Route registration ────────────────────────────────────────────────────────
 export function registerRoutes(httpServer: Server, app: Express) {
-  // WebSocket
-  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+  // ── Auth endpoints (whitelisted in requireAuth middleware) ─────────────────
+  app.post("/api/auth/login", handleLogin);
+  app.post("/api/auth/logout", handleLogout);
+  app.get("/api/auth/me", handleMe);
+
+  // ── WebSocket (Stage 4.18: handshake gated by session cookie) ─────────────
+  // Use noServer mode so we can authenticate the upgrade request before
+  // promoting it. Without this, an unauthenticated client could connect to
+  // /ws and receive the agents + projects init payload.
+  const wss = new WebSocketServer({ noServer: true });
+  httpServer.on("upgrade", (req, socket, head) => {
+    if (req.url !== "/ws" && !req.url?.startsWith("/ws?")) return;
+    if (!isWsUpgradeAuthenticated(req)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
+  });
 
   wss.on("connection", (ws) => {
     wsClients.add(ws);

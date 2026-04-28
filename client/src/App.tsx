@@ -16,6 +16,7 @@ import {
   LayoutDashboard, Users, LayoutGrid, Settings, Send, DollarSign, FolderOpen,
   Wifi, WifiOff, Crown, Monitor, Server, Bug, Palette, Rocket,
   Database, BarChart3, Shield, Briefcase, Circle, ChevronRight, Folders,
+  LogOut,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import type { Agent, Project } from "./types";
@@ -128,10 +129,25 @@ function AppShell() {
 
         {/* Connection + new project */}
         <div className="px-3 pb-4 space-y-2">
-          <div className="flex items-center gap-1.5 text-xs px-2">
-            {connected
-              ? <><Wifi size={11} className="text-emerald-400"/><span className="text-emerald-400">Live</span></>
-              : <><WifiOff size={11} className="text-slate-500"/><span className="text-slate-500">Offline</span></>}
+          <div className="flex items-center justify-between gap-1.5 text-xs px-2">
+            <div className="flex items-center gap-1.5">
+              {connected
+                ? <><Wifi size={11} className="text-emerald-400"/><span className="text-emerald-400">Live</span></>
+                : <><WifiOff size={11} className="text-slate-500"/><span className="text-slate-500">Offline</span></>}
+            </div>
+            <button
+              onClick={async () => {
+                try {
+                  await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+                } catch { /* ignore network errors */ }
+                window.location.replace("/login.html");
+              }}
+              className="flex items-center gap-1 text-slate-500 hover:text-slate-300 transition-colors"
+              title="Sign out"
+              data-testid="button-sign-out">
+              <LogOut size={11}/>
+              <span>Sign out</span>
+            </button>
           </div>
           <button onClick={() => setShowModal(true)}
             className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all hover:opacity-90"

@@ -2,7 +2,20 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
+// Stage 4.18: bounce to /login.html on 401 from any API call. The server
+// returns 401 JSON for unauthenticated /api/* requests, so we centralise the
+// redirect here instead of every component handling it.
+function redirectToLogin() {
+  if (typeof window !== "undefined" && window.location.pathname !== "/login.html") {
+    window.location.replace("/login.html");
+  }
+}
+
 async function throwIfResNotOk(res: Response) {
+  if (res.status === 401) {
+    redirectToLogin();
+    throw new Error("401: unauthorized");
+  }
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
     throw new Error(`${res.status}: ${text}`);
@@ -32,8 +45,10 @@ export const getQueryFn: <T>(options: {
   async ({ queryKey }) => {
     const res = await fetch(`${API_BASE}${queryKey.join("/")}`);
 
-    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-      return null;
+    if (res.status === 401) {
+      if (unauthorizedBehavior === "returnNull") return null;
+      redirectToLogin();
+      throw new Error("401: unauthorized");
     }
 
     await throwIfResNotOk(res);
