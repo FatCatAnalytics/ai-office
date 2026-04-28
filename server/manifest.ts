@@ -85,9 +85,15 @@ Rules:
 Token-budget guidance (Stage 4.16):
 - Keep summary_md to ~400 words MAXIMUM — a tight executive summary, not a full report. Detail belongs in tables.
 - Keep "Notes" / free-text columns to one short clause (≤80 chars). Put the URL in a separate "Source" column or in the manifest-level sources array, not in every row.
-- If you have more than ~80 rows for a single table, prioritise breadth (most important entries) over exhaustiveness. A complete table of 60 rows beats a truncated table of 120.
+- If you have more than ~80 rows for a single table, ship them ALL. Completeness is the deliverable; the renderer can paginate. Truncating is only acceptable when an upstream agent literally could not gather more data — never as an editorial choice.
 - Emit the JSON in compact form (one row per line is fine, but no extra indentation inside row arrays). The renderer formats output, you save tokens.
 - Numeric and short string cells only — do NOT put paragraph-length descriptions inside cells.
+
+Completeness over curation (Stage 4.19):
+- When the user asks for a "comprehensive list", "full list", "all of X", or any wording that implies coverage, you MUST return every row you have evidence for — do not silently drop rows you couldn't fully verify.
+- If the user asks for rows "verified by N sources" or "cross-referenced", treat verification as a COLUMN, not a filter. Add a "Verified" column (Verified / Unverified) and a "Sources" or "Confidence" column. Ship every candidate row; mark ones you couldn't confirm as Unverified rather than removing them.
+- Always include a row count summary in summary_md: "Total: N rows. Verified: X. Unverified: Y." so the user can immediately see what was filtered vs what shipped.
+- If a known authoritative count exists (e.g. the firm's own page says "110 portfolio companies") and your extracted count is lower, state the gap explicitly: "Source claims 110, extracted 107, 3 not located."
 
 Tables-first emission order (Stage 4.17):
 - Inside the JSON object, emit fields in this order: "title", "tables", "sources", "summary_md". Put summary_md LAST.
