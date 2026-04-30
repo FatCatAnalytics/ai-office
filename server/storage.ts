@@ -599,6 +599,10 @@ class SQLiteStorage implements IStorage {
     const STAGE_416_KEY = "stage_4_16_manifest_token_budget_migrated_at";
     const STAGE_417_KEY = "stage_4_17_scraper_prompts_migrated_at";
     const STAGE_419_KEY = "stage_4_19_completeness_prompts_migrated_at";
+    // Stage 4.20: marker only — adding the DeepSeek provider doesn't require
+    // a prompt rewrite. Setting this on fresh installs prevents the no-op
+    // migration block below from running unnecessarily.
+    const STAGE_420_KEY = "stage_4_20_deepseek_provider_added_at";
     const alreadyMigrated = this.getSetting(STAGE_410_KEY);
 
     if (!alreadyMigrated) {
@@ -633,6 +637,7 @@ class SQLiteStorage implements IStorage {
       this.setSetting(STAGE_416_KEY, String(Date.now())); // 4.10 ran fresh → 4.16 token-budget guidance already in
       this.setSetting(STAGE_417_KEY, String(Date.now())); // 4.10 ran fresh → 4.17 scraper + tables-first prompts already in
       this.setSetting(STAGE_419_KEY, String(Date.now())); // 4.10 ran fresh → 4.19 completeness/verification semantics already in
+      this.setSetting(STAGE_420_KEY, String(Date.now())); // 4.10 ran fresh → 4.20 DeepSeek provider already wired in
       return;
     }
 
@@ -725,6 +730,19 @@ class SQLiteStorage implements IStorage {
         }
       }
       this.setSetting(STAGE_419_KEY, String(Date.now()));
+    }
+
+    // Stage 4.20 one-shot marker: DeepSeek provider integration. No agent
+    // prompts changed — the provider is added at the llm.ts / modelsRefresh /
+    // modelRouter layers and the API key surfaces in Settings. This block
+    // exists purely so future migrations can chain off STAGE_420_KEY and so
+    // operators can verify the upgrade landed by inspecting the settings
+    // table. The router only picks DeepSeek V4-Flash for low-tier when a
+    // deepseek_api_key is configured — existing pinned-model agents are
+    // unaffected.
+    const alreadyMigrated420 = this.getSetting(STAGE_420_KEY);
+    if (!alreadyMigrated420) {
+      this.setSetting(STAGE_420_KEY, String(Date.now()));
     }
 
     // Steady-state boot: only insert genuinely new defaults; never overwrite.

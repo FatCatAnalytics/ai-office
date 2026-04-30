@@ -7,7 +7,7 @@ import { storage } from "./storage";
 import { settingKeyForProvider } from "./llm";
 import type { InsertModel, Model } from "@shared/schema";
 
-export type Provider = "anthropic" | "openai" | "google" | "kimi";
+export type Provider = "anthropic" | "openai" | "google" | "kimi" | "deepseek";
 
 export interface RefreshSummary {
   ranAt: number;
@@ -20,11 +20,14 @@ export interface RefreshSummary {
 export function classifyTier(modelId: string): "low" | "medium" | "high" {
   const id = modelId.toLowerCase();
   // Frontier reasoning / planning tier — most expensive, most capable.
-  if (/(opus|sonnet|gpt-5(\.5|-pro)?|gpt-4\.5|o[3-9]|o1[0-9]|gemini-[3-9](\.|-)|gemini-2\.5-pro|kimi-k[2-9]|kimi-2\.[5-9]|moonshot-v[2-9])/.test(id)) {
+  // Stage 4.20: deepseek-v4-pro / -reasoner / -coder land in the high tier.
+  if (/(opus|sonnet|gpt-5(\.5|-pro)?|gpt-4\.5|o[3-9]|o1[0-9]|gemini-[3-9](\.|-)|gemini-2\.5-pro|kimi-k[2-9]|kimi-2\.[5-9]|moonshot-v[2-9]|deepseek-v[4-9]-pro|deepseek-v[4-9]-reasoner|deepseek-v[4-9]-coder|deepseek-reasoner)/.test(id)) {
     return "high";
   }
   // Cheap / fast tier — small, fast, cost-optimised models.
-  if (/(haiku|flash|mini|nano|small|moonshot-v1-(8k|32k)|gemini-1\.5-flash)/.test(id)) {
+  // Stage 4.20: deepseek-v4-flash and the legacy deepseek-chat alias both
+  // route here so the router picks them as the cheapest option.
+  if (/(haiku|flash|mini|nano|small|moonshot-v1-(8k|32k)|gemini-1\.5-flash|deepseek-v[4-9]-flash|deepseek-chat)/.test(id)) {
     return "low";
   }
   return "medium";
@@ -90,6 +93,15 @@ async function listGoogle(apiKey: string): Promise<string[]> {
   return collected.filter((id) => /^gemini-/i.test(id) && !DROP.test(id));
 }
 
+async function listDeepSeek(apiKey: string): Promise<string[]> {
+  // Stage 4.20: DeepSeek's /v1/models endpoint is OpenAI-compatible. Single
+  // global host (api.deepseek.com), no regional fallback.
+  const data = await fetchJson("https://api.deepseek.com/v1/models", {
+    headers: { authorization: `Bearer ${apiKey}` },
+  });
+  return Array.isArray(data?.data) ? data.data.map((m: any) => m.id).filter(Boolean) : [];
+}
+
 async function listKimi(apiKey: string): Promise<string[]> {
   // The .ai endpoint serves the international catalogue (kimi-k2-*, kimi-2.5/2.6,
   // moonshot-v2-*). The .cn endpoint historically only returns moonshot-v1-{8k,32k,128k}.
@@ -113,16 +125,18 @@ const PROVIDER_LISTERS: Record<Provider, (apiKey: string) => Promise<string[]>> 
   openai: listOpenAI,
   google: listGoogle,
   kimi: listKimi,
+  deepseek: listDeepSeek,
 };
 
 // ─── Refresh job ───────────────────────────────────────────────────────────
 export async function refreshAllProviders(): Promise<RefreshSummary> {
-  const providers: Provider[] = ["anthropic", "openai", "google", "kimi"];
+  const providers: Provider[] = ["anthropic", "openai", "google", "kimi", "deepseek"];
   const totals: RefreshSummary["totals"] = {
     anthropic: { discovered: 0, updated: 0 },
     openai: { discovered: 0, updated: 0 },
     google: { discovered: 0, updated: 0 },
     kimi: { discovered: 0, updated: 0 },
+    deepseek: { discovered: 0, updated: 0 },
   };
 
   const before = new Map(storage.getModels().map((m) => [m.id, m]));

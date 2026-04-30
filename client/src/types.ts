@@ -151,6 +151,18 @@ export const MODEL_CATALOG: Record<string, { label: string; models: string[] }> 
       "moonshot-v1-32k",
     ],
   },
+  // Stage 4.20: DeepSeek V4 family. V4-Flash is the cheapest credible
+  // production model in the catalogue; V4-Pro is frontier-class. The legacy
+  // deepseek-chat / deepseek-reasoner aliases route to V4-Flash internally.
+  deepseek: {
+    label: "DeepSeek",
+    models: [
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "deepseek-chat",
+      "deepseek-reasoner",
+    ],
+  },
 };
 
 export const SPRITE_TYPES = [
@@ -163,4 +175,5 @@ export const PROVIDER_COLORS: Record<string, string> = {
   openai: "#10a37f",
   google: "#4285f4",
   kimi: "#7c3aed",
+  deepseek: "#2563eb",
 };

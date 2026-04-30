@@ -67,6 +67,24 @@ const PROVIDERS: ProviderConfig[] = [
       "moonshot-v1-32k",
     ],
   },
+  // Stage 4.20: DeepSeek (V4 family, OpenAI-compatible). V4-Flash is the
+  // cheapest credible production model in our catalogue and sits at the top
+  // of the low-tier router fallback chain. Pro is added to the high-tier
+  // chain as a frontier-class fallback.
+  {
+    key: "deepseek",
+    label: "DeepSeek",
+    color: "#2563eb",
+    description: "DeepSeek V4 — cheapest low-tier ($0.14/$0.28 per 1M), 1M context",
+    envKey: "DEEPSEEK_API_KEY",
+    docsUrl: "https://platform.deepseek.com/api_keys",
+    models: [
+      "deepseek-v4-flash",   // low-tier default — cheapest
+      "deepseek-v4-pro",     // frontier reasoning
+      "deepseek-chat",       // legacy alias → V4-Flash
+      "deepseek-reasoner",   // legacy alias → V4-Flash
+    ],
+  },
 ];
 
 // ─── Stage 4.13: Tavily key card ──────────────────────────────────────────
@@ -242,6 +260,7 @@ function Stage3Indicator({ settings }: { settings: Record<string, string> }) {
     { key: "openai_api_key", label: "OpenAI API Key" },
     { key: "google_api_key", label: "Google API Key" },
     { key: "kimi_api_key", label: "Kimi API Key" },
+    { key: "deepseek_api_key", label: "DeepSeek API Key" },
   ];
 
   const configured = checks.filter(c => settings[c.key] && settings[c.key].length > 10);

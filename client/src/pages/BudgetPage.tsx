@@ -31,6 +31,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   openai: "OpenAI",
   google: "Google",
   kimi: "Kimi",
+  deepseek: "DeepSeek",
 };
 
 function ProviderBadge({ provider }: { provider: string }) {

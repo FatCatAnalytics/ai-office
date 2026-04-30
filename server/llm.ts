@@ -1,7 +1,7 @@
 // ─── Unified streaming LLM adapter ────────────────────────────────────────────
-// Wraps Anthropic, OpenAI, Google Gemini, and Kimi (Moonshot) under a single
-// streamCompletion() interface. Each provider uses its native HTTP streaming
-// protocol (SSE), parsed inline so we don't need provider SDKs.
+// Wraps Anthropic, OpenAI, Google Gemini, Kimi (Moonshot), and DeepSeek under a
+// single streamCompletion() interface. Each provider uses its native HTTP
+// streaming protocol (SSE), parsed inline so we don't need provider SDKs.
 //
 // All providers stream incremental text deltas via the `onDelta` callback and
 // return final token counts. Token usage is reported via onUsage, which the
@@ -15,7 +15,7 @@
 
 import { executeTool, type ToolDefinition } from "./tools";
 
-export type Provider = "anthropic" | "openai" | "google" | "kimi";
+export type Provider = "anthropic" | "openai" | "google" | "kimi" | "deepseek";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
@@ -95,6 +95,16 @@ const COST_PER_1K: Record<string, { in: number; out: number }> = {
   // Kimi
   "moonshot-v1-128k":  { in: 0.0012,  out: 0.0012 },
   "moonshot-v1-32k":   { in: 0.0008,  out: 0.0008 },
+  // DeepSeek (V4 family released 2026-04-24, OpenAI-compatible API)
+  // V4-Flash is the cheapest credible production model in our catalogue —
+  // hence its position at the top of the low-tier router fallback chain.
+  // Pro pricing is approximate (frontier tier) — refresh if DeepSeek
+  // publishes official rates.
+  "deepseek-v4-flash": { in: 0.00014, out: 0.00028 },
+  "deepseek-v4-pro":   { in: 0.0014,  out: 0.0056 },
+  // Legacy aliases — DeepSeek routes both to V4-Flash internally.
+  "deepseek-chat":     { in: 0.00014, out: 0.00028 },
+  "deepseek-reasoner": { in: 0.00014, out: 0.00028 },
 };
 
 export function calculateCost(modelId: string, tokensIn: number, tokensOut: number): number {
@@ -415,6 +425,83 @@ async function streamKimi(req: StreamRequest, handlers: StreamHandlers): Promise
   return { text, tokensIn, tokensOut };
 }
 
+// ─── DeepSeek — OpenAI-compatible API ─────────────────────────────────
+// Stage 4.20: DeepSeek's V4 family (released 2026-04-24) ships with a fully
+// OpenAI-compatible Chat Completions endpoint at api.deepseek.com. There's no
+// regional fallback (single global endpoint), no special temperature rule
+// (standard 0–1 range), and tool calling follows the OpenAI shape exactly.
+// We keep the streaming path symmetrical with streamKimi for parity.
+async function streamDeepSeek(req: StreamRequest, handlers: StreamHandlers): Promise<StreamResult> {
+  const body = {
+    model: req.modelId,
+    messages: req.messages,
+    temperature: req.temperature ?? 0.7,
+    max_tokens: req.maxTokens ?? 2048,
+    stream: true,
+  };
+
+  const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${req.apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: req.signal,
+  });
+
+  if (!res.ok || !res.body) {
+    const errText = await res.text().catch(() => "");
+    const snippet = errText.slice(0, 200);
+    if (res.status === 401) {
+      throw new Error(
+        `DeepSeek API 401 (auth): key rejected. Verify the key at ` +
+          `platform.deepseek.com/api_keys. Detail: ${snippet}`,
+      );
+    }
+    if (res.status === 429) {
+      throw new Error(
+        `DeepSeek API 429 (billing/quota): account is rate-limited or out of credit. ` +
+          `Check balance at platform.deepseek.com. Detail: ${snippet}`,
+      );
+    }
+    throw new Error(`DeepSeek API ${res.status} (transient): ${snippet}`);
+  }
+
+  let text = "";
+  let tokensIn = 0;
+  let tokensOut = 0;
+
+  for await (const data of parseSSE(res.body)) {
+    if (!data || data === "[DONE]") continue;
+    let evt: any;
+    try { evt = JSON.parse(data); } catch { continue; }
+
+    const delta = evt.choices?.[0]?.delta?.content;
+    if (typeof delta === "string" && delta.length > 0) {
+      text += delta;
+      handlers.onDelta?.(delta);
+    }
+    if (evt.usage) {
+      tokensIn = evt.usage.prompt_tokens ?? tokensIn;
+      tokensOut = evt.usage.completion_tokens ?? tokensOut;
+    }
+  }
+
+  // Same fallback heuristic as Kimi: estimate tokens (≈4 chars/token) when
+  // the provider doesn't include usage on the final stream chunk.
+  if (tokensIn === 0) {
+    const promptChars = req.messages.reduce((sum, m) => sum + m.content.length, 0);
+    tokensIn = Math.ceil(promptChars / 4);
+  }
+  if (tokensOut === 0) {
+    tokensOut = Math.ceil(text.length / 4);
+  }
+
+  handlers.onUsage?.({ tokensIn, tokensOut });
+  return { text, tokensIn, tokensOut };
+}
+
 // ─── Stage 4.13 — tool-call loops per provider ─────────────────────────────
 // All four loops follow the same shape:
 //   1. Send the conversation + tool definitions to the provider (non-streaming)
@@ -522,9 +609,9 @@ async function callOpenAICompatible(
 async function runOpenAIWithTools(
   req: StreamRequest,
   handlers: StreamHandlers,
-  flavour: "openai" | "kimi",
+  flavour: "openai" | "kimi" | "deepseek",
 ): Promise<StreamResult> {
-  // Both OpenAI and Kimi accept the same tools shape.
+  // OpenAI, Kimi, and DeepSeek all accept the same tools shape.
   const toolsParam = (req.tools ?? []).map(t => ({
     type: "function" as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -543,6 +630,15 @@ async function runOpenAIWithTools(
         endpoint: "https://api.moonshot.ai/v1/chat/completions",
         fallback: "https://api.moonshot.cn/v1/chat/completions",
         temperature: kimiTemperatureFor(req.modelId, req.temperature),
+      };
+    }
+    if (flavour === "deepseek") {
+      // Stage 4.20: single global endpoint, standard temperature handling,
+      // no regional fallback. Keeps the loop logic identical to OpenAI.
+      return {
+        endpoint: "https://api.deepseek.com/v1/chat/completions",
+        fallback: undefined as string | undefined,
+        temperature: req.temperature ?? 0.7,
       };
     }
     return {
@@ -934,6 +1030,7 @@ export async function streamCompletion(
       case "anthropic": return runAnthropicWithTools(req, handlers);
       case "openai":    return runOpenAIWithTools(req, handlers, "openai");
       case "kimi":      return runOpenAIWithTools(req, handlers, "kimi");
+      case "deepseek":  return runOpenAIWithTools(req, handlers, "deepseek");
       case "google":    return runGoogleWithTools(req, handlers);
       default:
         throw new Error(`Unknown provider "${(req as StreamRequest).provider}"`);
@@ -945,6 +1042,7 @@ export async function streamCompletion(
     case "openai":    return streamOpenAI(req, handlers);
     case "google":    return streamGoogle(req, handlers);
     case "kimi":      return streamKimi(req, handlers);
+    case "deepseek":  return streamDeepSeek(req, handlers);
     default:
       throw new Error(`Unknown provider "${(req as StreamRequest).provider}"`);
   }

@@ -2,11 +2,13 @@
 // Stage 4.6. Routes a task to the cheapest model that meets its complexity tier.
 //
 // Complexity tiers (set by the planner per task):
-//   low    → cheap & fast: Kimi Moonshot v1-32k. Formatting, extraction,
-//            summarisation, simple transforms. ~10x cheaper than Sonnet.
+//   low    → cheap & fast: DeepSeek V4-Flash (Stage 4.20 — cheapest credible
+//            production model, $0.14/$0.28 per 1M tokens). Formatting,
+//            extraction, summarisation, simple transforms.
 //   medium → Anthropic Haiku 4-5. Most "normal" knowledge work.
-//   high   → Frontier reasoning model: Opus → GPT-5.5 → Sonnet → Gemini 3 Pro.
-//            Used for code, analysis, AND for Manager planning + QA sign-off.
+//   high   → Frontier reasoning model: Opus → GPT-5.5 → Sonnet → Gemini 3 Pro
+//            → DeepSeek V4-Pro. Used for code, analysis, AND for Manager
+//            planning + QA sign-off.
 //
 // Resolution order for every routing call (Stage 4.9):
 //   1. Operator-pinned DEFAULT for the tier (preferredFor === tier && enabled).
@@ -32,15 +34,22 @@ export interface RoutedModel {
 // Ordered preference per tier. First entry whose provider key is configured wins.
 // Operator can override per tier via Settings → Models registry → Pin for tier.
 const TIER_PREFERENCES: Record<Complexity, RoutedModel[]> = {
+  // Stage 4.20: DeepSeek V4-Flash sits at the top of the low-tier chain. At
+  // $0.14 / $0.28 per 1M tokens it's the cheapest credible production model
+  // we support — roughly 6× cheaper than Kimi Moonshot v1-32k while still
+  // supporting tool calling and a 1M context window. Existing pinned-model
+  // agents are unaffected; this only changes the dynamic routing default.
   low: [
-    { provider: "kimi",      modelId: "moonshot-v1-32k",   reason: "low-tier → Kimi (cheapest)" },
-    { provider: "anthropic", modelId: "claude-haiku-4-5",  reason: "low-tier → Haiku (Kimi key missing)" },
+    { provider: "deepseek",  modelId: "deepseek-v4-flash", reason: "low-tier → DeepSeek V4-Flash (cheapest)" },
+    { provider: "kimi",      modelId: "moonshot-v1-32k",   reason: "low-tier → Kimi fallback (DeepSeek key missing)" },
+    { provider: "anthropic", modelId: "claude-haiku-4-5",  reason: "low-tier → Haiku fallback" },
     { provider: "openai",    modelId: "gpt-4.1-mini",      reason: "low-tier → gpt-4.1-mini fallback" },
     { provider: "google",    modelId: "gemini-2.5-flash",  reason: "low-tier → Gemini Flash fallback" },
   ],
   medium: [
     { provider: "anthropic", modelId: "claude-haiku-4-5",  reason: "medium-tier → Haiku" },
     { provider: "openai",    modelId: "gpt-4.1-mini",      reason: "medium-tier → gpt-4.1-mini" },
+    { provider: "deepseek",  modelId: "deepseek-v4-flash", reason: "medium-tier → DeepSeek V4-Flash fallback" },
     { provider: "kimi",      modelId: "moonshot-v1-128k",  reason: "medium-tier → Kimi 128k fallback" },
     { provider: "google",    modelId: "gemini-2.5-flash",  reason: "medium-tier → Gemini Flash fallback" },
   ],
@@ -53,6 +62,7 @@ const TIER_PREFERENCES: Record<Complexity, RoutedModel[]> = {
     { provider: "anthropic", modelId: "claude-sonnet-4-6", reason: "high-tier → Sonnet fallback" },
     { provider: "google",    modelId: "gemini-3-pro",      reason: "high-tier → Gemini 3 Pro fallback" },
     { provider: "google",    modelId: "gemini-2.5-pro",    reason: "high-tier → Gemini 2.5 Pro fallback" },
+    { provider: "deepseek",  modelId: "deepseek-v4-pro",   reason: "high-tier → DeepSeek V4-Pro fallback" },
     { provider: "openai",    modelId: "gpt-4.1",           reason: "high-tier → gpt-4.1 fallback" },
   ],
 };
