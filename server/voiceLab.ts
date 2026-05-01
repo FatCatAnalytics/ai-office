@@ -448,7 +448,51 @@ export const WEEKLY_ANALYTICAL_BANKER_PROMPT = `Produce this week's issue of "Th
 
 WEEK COVERED: the seven days ending the Sunday this template fires (i.e. Mon–Sun of the week just finished).
 
-WORKFLOW (manager: plan tasks in this order — EXACTLY this assignment of agents):
+╔══ REFERENCE PLAN — USE THIS EXACTLY ═════════════════════════════════
+
+The manager MUST emit a plan with EXACTLY the tasks below, in this order,
+with EXACTLY these assignedTo values. Do not split, merge, rename agents,
+or reassign. The agent IDs below are correct — they exist in the roster.
+
+  key="research"     assignedTo="deep-search"     complexity="high"
+      title: Identify candidate stories from the past week (Mon–Sun)
+      dependsOn: []
+
+  key="angle"        assignedTo="editorial-lead"  complexity="medium"
+      title: Select the single strongest story angle for this week's issue
+      dependsOn: ["research"]
+
+  key="draft"        assignedTo="editorial-lead"  complexity="high"
+      title: Draft the newsletter issue in Aksel's voice (700–1000 words)
+      dependsOn: ["angle"]
+
+  key="qa"           assignedTo="editorial-lead"  complexity="medium"
+      title: QA self-review against editorial checklist
+      dependsOn: ["draft"]
+
+  key="final"        assignedTo="editorial-lead"  complexity="high"
+      title: Apply QA fixes and emit final issue + runner-up file blocks
+      dependsOn: ["qa"]
+
+HARD RULES on assignedTo (these override any general planning heuristic):
+  • DO NOT assign any task to "qa". The generic qa agent has no voice
+    samples and produces empty output for this brief. The QA pass for
+    The Analytical Banker must be done by editorial-lead, who has the
+    voice samples and the brand fingerprint baked into their system
+    prompt. This is a hard rule — the run failed last week because the
+    manager assigned QA to the qa agent.
+  • DO NOT assign the final-output task to "technical-writer". The
+    technical-writer agent writes in Medium / Towards Data Science
+    register, NOT in Aksel's voice. The final article must be produced
+    by editorial-lead.
+  • DO NOT add a separate "web-scraper" or "data-val-specialist" task.
+    The deep-search agent is configured to do its own scraping and
+    source verification for this brief. One research task is enough.
+  • DO NOT add tasks beyond the five listed above. No "compile output",
+    no "format for Beehiiv", no "final review". Five tasks total.
+╚══════════════════════════════════════════════════════════════════════════════
+
+DETAIL FOR EACH TASK (manager: pass these as the description field):
   1. Research pass — Use the deep-research stack to identify 5–8 candidate
      stories from the week, each with its primary source URL. Prefer the
      curated source list below; open web is allowed as a fallback. Each
