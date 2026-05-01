@@ -45,8 +45,19 @@ export interface LiveOrchestratorDeps {
   generateSimulatedFiles: (projectId: number, task: Task, agent: Agent) => void;
 }
 
-// Cap shared context size to keep prompts cheap. ~16k chars ≈ ~4k tokens.
-const SHARED_CONTEXT_CHAR_BUDGET = 16_000;
+// Cap shared context size to keep prompts cheap.
+// Stage 5.x: bumped from 16K → 60K (~15K tokens) so multi-stage editorial
+// pipelines (research → draft → QA → apply-fixes) can carry the draft body
+// through to downstream tasks intact. Sonnet/Opus context windows are
+// 200K, so 60K of prior outputs + a 20K system prompt + 10K task brief
+// still leaves room for the response.
+const SHARED_CONTEXT_CHAR_BUDGET = 60_000;
+// When a downstream task needs the *previous* task's output verbatim (e.g.
+// QA reading the draft, or apply-fixes producing the final article), we
+// reserve up to this much for the most-recent prior task before allocating
+// the rest of the budget to older outputs. Keeps the immediate predecessor
+// from getting trimmed mid-paragraph.
+const MOST_RECENT_OUTPUT_RESERVE = 20_000;
 // Max workers in a single wave running concurrently.
 const WAVE_CONCURRENCY = 3;
 // Max replans the manager is allowed per project.
@@ -129,17 +140,70 @@ function buildSharedContext(priorOutputs: PriorOutput[]): string {
   const lines: string[] = ["## Prior Task Outputs (shared context)\n"];
   const reserved: string[] = [];
   let used = 0;
+  // Walk newest → oldest so the most recent task gets first dibs on the
+  // budget. The most recent gets a generous reserve (MOST_RECENT_OUTPUT_RESERVE)
+  // so downstream consumers (QA, apply-fixes) see the predecessor's output
+  // intact. Older tasks split whatever's left.
   for (let i = priorOutputs.length - 1; i >= 0; i--) {
     const { task, agent, output } = priorOutputs[i];
     const remaining = SHARED_CONTEXT_CHAR_BUDGET - used;
     if (remaining <= 200) break;
-    const perItem = Math.min(remaining, Math.max(800, Math.floor(remaining / Math.max(1, i + 1))));
+    const isMostRecent = i === priorOutputs.length - 1;
+    const perItem = isMostRecent
+      ? Math.min(remaining, MOST_RECENT_OUTPUT_RESERVE)
+      : Math.min(remaining, Math.max(2_000, Math.floor(remaining / Math.max(1, i + 1))));
     const trimmed = trimToBudget(output, perItem);
     const block = `\n### ${agent.name} — "${task.title}"\n${trimmed}\n`;
     reserved.unshift(block);
     used += block.length;
   }
   return lines.concat(reserved).join("");
+}
+
+// ─── Stage 5.x — explicit file-block parsing ────────────────────────────────
+// Agents (especially editorial-lead and the QA pass) need to control the
+// final filename. Without this, every output gets auto-saved as
+// `${slug}_${agent.id}.${ext}` which means "issue-17.md" can never exist.
+//
+// Convention: an agent emits one or more blocks of the form:
+//
+//   <file name="issue-17.md">
+//   # The quiet risk the FPC just named
+//   ... full markdown body ...
+//   </file>
+//
+//   <file name="runner-up-17.md">
+//   ... alternate angle ...
+//   </file>
+//
+// When at least one well-formed block is found, we save each with the
+// agent-specified name (sanitised by saveProjectFile) and SKIP the legacy
+// auto-save for that task. If zero blocks are found, behaviour is unchanged.
+//
+// Filename sanitisation in saveProjectFile strips anything outside
+// [a-zA-Z0-9._-], so "issue-17.md" stays intact but path traversal is
+// neutered. The block body is saved verbatim (no markdown header wrapper)
+// because the agent is being explicit about the file's contents.
+export interface ParsedFileBlock {
+  filename: string;
+  content: string;
+}
+
+export function parseFileBlocks(raw: string): ParsedFileBlock[] {
+  const blocks: ParsedFileBlock[] = [];
+  // Match <file name="...">...</file> with non-greedy body.
+  // Tolerate single quotes, optional whitespace, and CRLF line endings.
+  const re = /<file\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/file>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    const filename = m[1].trim();
+    // Strip leading/trailing blank lines but preserve interior whitespace.
+    const content = m[2].replace(/^\s*\n/, "").replace(/\s+$/, "") + "\n";
+    if (filename && content.trim().length > 0) {
+      blocks.push({ filename, content });
+    }
+  }
+  return blocks;
 }
 
 // Robust JSON extraction — LLMs sometimes wrap JSON in markdown fences.
@@ -264,6 +328,53 @@ async function saveLiveOutput(
       `✓ ${manifest.tables?.length ?? 0} table(s), ${manifest.sources?.length ?? 0} source(s)`,
       "info"
     );
+  }
+
+  // ─── Stage 5.x — explicit <file name="..."> blocks take precedence ──────────
+  // If the agent emitted one or more <file name="foo.md">...</file> blocks,
+  // save each with the agent-specified filename and SKIP the legacy
+  // auto-save (which would otherwise dump the entire raw output, file
+  // wrappers and all, into ${slug}_${agent.id}.md).
+  const fileBlocks = parseFileBlocks(rawOutput);
+  if (fileBlocks.length > 0) {
+    let saved = 0;
+    for (const block of fileBlocks) {
+      try {
+        // Infer mime/format from extension. Defaults to markdown.
+        const ext = (block.filename.split(".").pop() ?? "md").toLowerCase();
+        const fmtForExt =
+          Object.entries(EXT_BY_FORMAT).find(([, v]) => v.ext === ext)?.[0] ?? "markdown";
+        const mimeForExt = EXT_BY_FORMAT[fmtForExt]?.mime ?? "text/markdown";
+        const persisted = storage.saveProjectFile(
+          {
+            projectId, taskId: task.id, agentId: agent.id,
+            filename: block.filename,
+            fileType: fmtForExt,
+            mimeType: mimeForExt,
+            filePath: "",
+            description: `${agent.name}: ${task.title}`,
+          },
+          block.content
+        );
+        deps.broadcast({ type: "file_created", projectId, file: persisted });
+        deps.emitEvent(
+          projectId, agent.id, agent.name, "saved file",
+          `📄 ${persisted.filename} (${(persisted.sizeBytes / 1024).toFixed(1)} KB)`,
+          "success"
+        );
+        saved++;
+      } catch (e) {
+        console.error(`[live] file-block save error:`, e);
+        deps.emitEvent(
+          projectId, agent.id, agent.name, "save failed",
+          `${block.filename}: ${(e as Error).message ?? e}`, "warning"
+        );
+      }
+    }
+    // If at least one explicit file block saved, we're done — don't double
+    // up by also writing ${slug}_${agent.id}.md with the raw <file>…</file>
+    // wrappers in it. (If every block failed, fall through to legacy.)
+    if (saved > 0) return;
   }
 
   for (const fmt of formats) {

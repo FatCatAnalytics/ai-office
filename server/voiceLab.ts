@@ -448,7 +448,7 @@ export const WEEKLY_ANALYTICAL_BANKER_PROMPT = `Produce this week's issue of "Th
 
 WEEK COVERED: the seven days ending the Sunday this template fires (i.e. Mon–Sun of the week just finished).
 
-WORKFLOW (manager: plan tasks in this order):
+WORKFLOW (manager: plan tasks in this order — EXACTLY this assignment of agents):
   1. Research pass — Use the deep-research stack to identify 5–8 candidate
      stories from the week, each with its primary source URL. Prefer the
      curated source list below; open web is allowed as a fallback. Each
@@ -460,19 +460,47 @@ WORKFLOW (manager: plan tasks in this order):
      other 4–7. We are not writing a roundup. If two stories tie, prefer
      the one closer to data / analytics / AI plumbing (the brand wedge)
      over pure macro or pure regulatory news.
-  3. Editorial draft — Hand the chosen angle + its sources to the
-     editorial-lead agent. They draft the issue in Aksel's voice (700–1000
-     words, blockquote diagnostic, sentence-case headers, "The takeaway"
-     section, "— Aksel" sign-off, standard footer).
-  4. QA pass — The QA agent checks: (a) every factual claim has a working
-     inline link to a real source, (b) no buzzwords from the avoid list,
-     (c) headers are sentence case, (d) length is in the 700–1000 band,
-     (e) diagnostic blockquote is present, (f) standard footer is intact.
-     Flag failures rather than silently rewriting.
-  5. Output — Save the final markdown to ${"`{{outputDir}}/issue-{{week}}.md`"}
-     where {{week}} is the ISO week number of the week covered (not the
-     week the cron fired in). Stage 5.3 will hook the Beehiiv draft API
-     onto the same file.
+  3. Editorial draft — ASSIGN TO editorial-lead. They draft the issue in
+     Aksel's voice (700–1000 words, blockquote diagnostic, sentence-case
+     headers, "The takeaway" section, "— Aksel" sign-off, standard footer).
+     Output is a normal markdown response — NO <file> blocks at this stage.
+  4. QA pass — ASSIGN TO editorial-lead (NOT the generic qa agent). The
+     editorial-lead self-reviews against this checklist and writes a short
+     review note: (a) every factual claim has a working inline link to a
+     real source, (b) no buzzwords from the avoid list, (c) headers are
+     sentence case, (d) length is in the 700–1000 band, (e) diagnostic
+     blockquote is present, (f) standard footer is intact. The review note
+     should list each check as PASS / FAIL / N/A with a one-line note. If
+     any check fails, the review must say what to fix in the next task.
+     Output is a plain markdown review note — NO <file> blocks at this stage.
+  5. Apply QA fixes & produce final files — ASSIGN TO editorial-lead. They
+     read the QA review and produce the final, publish-ready files. The
+     output of this task MUST contain TWO and ONLY TWO file blocks, in this
+     exact format (literal angle brackets, no markdown fences around them):
+
+         <file name="issue-{{week}}.md">
+         # <issue title>
+
+         <full final article body, ready to paste into Beehiiv — no
+         meta-headers, no review notes, no "---" separators above the
+         title, no leading H1 like "Draft the newsletter issue…">
+         </file>
+
+         <file name="runner-up-{{week}}.md">
+         # <runner-up title>
+
+         One paragraph on why this angle lost to the chosen one.
+         Optionally a 2–3 sentence skeleton in case it needs to be
+         revived next week.
+         </file>
+
+     Where {{week}} is the ISO week number of the week COVERED (Mon–Sun
+     just finished), zero-padded to 2 digits, e.g. issue-17.md. Do NOT
+     wrap the file blocks in code fences. Do NOT add anything outside the
+     two <file>…</file> blocks except a single line at the very top of
+     the response saying "Producing final files for issue-{{week}}." The
+     orchestrator parses these blocks and saves them as-is; any prose
+     outside the blocks is discarded.
 
 CURATED SOURCES (preferred, not exclusive):
 
@@ -483,16 +511,23 @@ BRAND FINGERPRINT (read this before assigning the editorial task):
 ${BRAND_FINGERPRINT}
 
 NON-NEGOTIABLES FOR THIS RUN:
-  • Do not write more than one issue. If two stories tie, save the runner-
-    up as "{{outputDir}}/runner-up-{{week}}.md" with one paragraph on why
-    it lost — useful for next week's planning.
+  • Do not write more than one issue. The runner-up exists only as a
+    one-paragraph note in runner-up-{{week}}.md, not as a second draft.
   • Do not produce an executive summary, a roundup, or a "this week in
     banking" digest. The output is one publishable newsletter.
   • Do not invent statistics. If a number isn't in a fetched source, drop
     the line that needed it.
   • Do not include vendor names except where the user has named them in
     a published issue (EDGAR, GLEIF, Companies House are fine — they're
-    free public sources he's already endorsed).`;
+    free public sources he's already endorsed).
+  • The final apply-fixes task is the ONLY task that emits <file> blocks.
+    Earlier tasks (research, angle, draft, QA review) just emit their
+    text — the orchestrator stores those as intermediate deliverables
+    automatically.
+  • issue-{{week}}.md must start directly with the article's H1 title
+    and contain only the article body — no agent meta-headers, no QA
+    notes, no "Project:" / "Agent:" / "Completed:" lines. It will be
+    pasted into Beehiiv verbatim.`;
 
 // ── Heartbeat smoke-test prompt (kept for the optional second seed) ─────────
 //
