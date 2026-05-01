@@ -60,6 +60,29 @@ export interface ProjectFile {
   createdAt: number;
 }
 
+// Stage 5.1 — recurring project templates
+export interface ProjectTemplate {
+  id: number;
+  name: string;
+  description: string;
+  kind: string;          // "weekly" | "adhoc" | string
+  prompt: string;
+  scheduleCron: string;  // empty for adhoc
+  enabled: number;       // 0 | 1
+  outputDir: string;
+  metadata: string;      // JSON string
+  lastRunAt: number | null;
+  nextRunAt: number | null;
+  lastProjectId: number | null;
+  createdAt: number;
+  updatedAt: number;
+  // Hydrated server-side for the UI:
+  cronDescription: string | null;
+  cronError: string | null;
+  nextRunAtIso: string | null;
+  lastRunAtIso: string | null;
+}
+
 export interface Task {
   id: number;
   title: string;

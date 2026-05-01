@@ -39,6 +39,10 @@ export const projects = sqliteTable("projects", {
   tokensUsed: integer("tokens_used").notNull().default(0),
   costToday: real("cost_today").notNull().default(0),
   avgResponseTime: real("avg_response_time").notNull().default(0),
+  // Stage 5.1: when this project was spawned by a recurring template, this
+  // links back to the project_templates row that produced it. NULL for
+  // user-created (one-shot) projects — the existing 100% case before 5.1.
+  templateId: integer("template_id"),
   createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
 });
 
@@ -184,3 +188,50 @@ export const qaReviews = sqliteTable("qa_reviews", {
 export const insertQaReviewSchema = createInsertSchema(qaReviews).omit({ id: true, createdAt: true });
 export type InsertQaReview = z.infer<typeof insertQaReviewSchema>;
 export type QaReview = typeof qaReviews.$inferSelect;
+
+// ─── Project templates (Stage 5.1) ──────────────────────────────────
+// A template is a re-runnable project recipe. Two kinds in 5.1:
+//   weekly  — fires on a cron expression (Europe/London tz). Stage 5.2 wires
+//             the real Analytical Banker editorial agents on top of these.
+//   adhoc   — user clicks "Run now" with optional inputs (e.g. a public
+//             GitHub repo URL). Lands in Stage 5.3.
+// The scheduler advances `nextRunAt` after each tick; `lastRunAt` records
+// the most recent fire so the UI can show "Last run: 2 days ago".
+// `metadata` is a freeform JSON blob — individual template kinds use it for
+// their own settings (e.g. weekly newsletter source list, adhoc repo URL).
+export const projectTemplates = sqliteTable("project_templates", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  kind: text("kind").notNull().default("weekly"),         // weekly | adhoc
+  prompt: text("prompt").notNull(),                        // the project description handed to the Manager
+  // Cron expression in standard 5-field form: "m h dom mon dow" (Europe/London).
+  // Examples:
+  //   "0 18 * * 0"   — Sundays at 18:00 UK
+  //   "*/5 * * * *"  — every 5 minutes (used by the heartbeat smoke-test seed)
+  // Empty string is allowed for kind=adhoc (templates that only run on demand).
+  scheduleCron: text("schedule_cron").notNull().default(""),
+  enabled: integer("enabled").notNull().default(1),       // 1 = scheduler will fire it
+  // Where the spawned project should write its final files. Path is relative
+  // to the configured output root (server/index.ts), or absolute if it
+  // starts with "/". Used by Stage 5.2 to route newsletters into
+  // /srv/aioffice/output/newsletters/.
+  outputDir: text("output_dir").notNull().default(""),
+  // JSON object — kind-specific config. weekly: { sources: string[] };
+  // adhoc: { repoUrl?: string }. Optional, defaults to "{}".
+  metadata: text("metadata").notNull().default("{}"),
+  // Bookkeeping. Both Unix ms; nullable until first fire / first scheduling.
+  lastRunAt: integer("last_run_at"),
+  nextRunAt: integer("next_run_at"),
+  // ID of the most recent project this template spawned. The Templates UI
+  // uses it to deep-link "View last run".
+  lastProjectId: integer("last_project_id"),
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+  updatedAt: integer("updated_at").notNull().$defaultFn(() => Date.now()),
+});
+
+export const insertProjectTemplateSchema = createInsertSchema(projectTemplates).omit({
+  id: true, createdAt: true, updatedAt: true,
+});
+export type InsertProjectTemplate = z.infer<typeof insertProjectTemplateSchema>;
+export type ProjectTemplate = typeof projectTemplates.$inferSelect;

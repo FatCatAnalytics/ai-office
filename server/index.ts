@@ -4,6 +4,7 @@ import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { scheduleDailyModelRefresh } from "./modelsRefresh";
+import { startProjectScheduler } from "./projectScheduler";
 import { assertAuthConfigured, requireAuth } from "./auth";
 import { createServer } from "node:http";
 
@@ -138,6 +139,12 @@ app.use((req, res, next) => {
       log(`serving on port ${port}`);
       // Kick off daily model registry refresh (runs ~30s after boot, then every 24h).
       scheduleDailyModelRefresh((msg) => log(msg, "models"));
+      // Stage 5.1: project-template scheduler. Ticks once a minute, fires
+      // any due templates through the same Manager orchestration path used
+      // by manual /api/projects POSTs. Boot order: registerRoutes() has
+      // already wired setSchedulerKickoff() before we get here, so the
+      // first tick has a valid kickoff fn to call.
+      startProjectScheduler((msg) => log(msg, "sched"));
     },
   );
 })();

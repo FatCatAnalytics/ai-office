@@ -15,6 +15,7 @@ import type {
   ProjectFile, InsertProjectFile,
   Model, InsertModel,
   QaReview, InsertQaReview,
+  ProjectTemplate, InsertProjectTemplate,
 } from "@shared/schema";
 
 const sqlite = new Database("data.db");
@@ -197,7 +198,36 @@ sqlite.exec(`
     cost_usd REAL NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
   );
+  -- Stage 5.1: re-runnable project recipes. Two kinds in this stage:
+  --   weekly  — fires on a cron expression (Europe/London tz)
+  --   adhoc   — user-triggered only (kind=adhoc, schedule_cron='')
+  -- Cost note: a row in this table does nothing on its own — it's the
+  -- scheduler tick (server/projectScheduler.ts) that spawns projects from
+  -- enabled rows when their next_run_at is in the past.
+  CREATE TABLE IF NOT EXISTS project_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'weekly',
+    prompt TEXT NOT NULL,
+    schedule_cron TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    output_dir TEXT NOT NULL DEFAULT '',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    last_run_at INTEGER,
+    next_run_at INTEGER,
+    last_project_id INTEGER,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
 `);
+
+// Stage 5.1 safe migration: link projects back to the template that spawned
+// them. NULL for every pre-5.1 project (the existing 100% case before this
+// stage); the scheduler stamps it on every newly-spawned row.
+try {
+  sqlite.exec(`ALTER TABLE projects ADD COLUMN template_id INTEGER`);
+} catch { /* column already exists */ }
 
 // Stage 4.5 safe migrations: existing rows with retired Anthropic model ids.
 // Older seeds used "claude-opus-4-5" / "claude-sonnet-4-5" / "claude-haiku-3-5",
@@ -559,6 +589,15 @@ export interface IStorage {
   // QA reviews
   getLatestQaReview(projectId: number): QaReview | undefined;
   createQaReview(data: InsertQaReview): QaReview;
+
+  // Project templates (Stage 5.1)
+  getProjectTemplates(): ProjectTemplate[];
+  getProjectTemplate(id: number): ProjectTemplate | undefined;
+  createProjectTemplate(data: InsertProjectTemplate): ProjectTemplate;
+  updateProjectTemplate(id: number, data: Partial<ProjectTemplate>): ProjectTemplate | undefined;
+  deleteProjectTemplate(id: number): void;
+  /** Returns enabled templates whose nextRunAt is on or before `now`. */
+  getDueProjectTemplates(now: number): ProjectTemplate[];
 }
 
 export interface BudgetModelRow {
@@ -1105,9 +1144,75 @@ class SQLiteStorage implements IStorage {
   createQaReview(data: InsertQaReview): QaReview {
     return db.insert(schema.qaReviews).values({ ...data, createdAt: Date.now() }).returning().get()!;
   }
+
+  // ── Project templates (Stage 5.1) ──
+  getProjectTemplates(): ProjectTemplate[] {
+    return db.select().from(schema.projectTemplates)
+      .orderBy(desc(schema.projectTemplates.createdAt))
+      .all();
+  }
+  getProjectTemplate(id: number): ProjectTemplate | undefined {
+    return db.select().from(schema.projectTemplates)
+      .where(eq(schema.projectTemplates.id, id))
+      .get();
+  }
+  createProjectTemplate(data: InsertProjectTemplate): ProjectTemplate {
+    const now = Date.now();
+    return db.insert(schema.projectTemplates)
+      .values({ ...data, createdAt: now, updatedAt: now })
+      .returning().get()!;
+  }
+  updateProjectTemplate(id: number, data: Partial<ProjectTemplate>): ProjectTemplate | undefined {
+    return db.update(schema.projectTemplates)
+      .set({ ...data, updatedAt: Date.now() })
+      .where(eq(schema.projectTemplates.id, id))
+      .returning().get();
+  }
+  deleteProjectTemplate(id: number): void {
+    db.delete(schema.projectTemplates)
+      .where(eq(schema.projectTemplates.id, id))
+      .run();
+  }
+  getDueProjectTemplates(now: number): ProjectTemplate[] {
+    // Drizzle's lt/and combo would work here, but a hand-written prepared
+    // query is faster for a hot path that runs every minute. We keep the
+    // result set small by indexing logically on (enabled, next_run_at) —
+    // SQLite is happy without an explicit index at our scale (<100 rows).
+    return db.select().from(schema.projectTemplates).all().filter((t) =>
+      t.enabled === 1
+      && t.nextRunAt != null
+      && t.nextRunAt <= now,
+    );
+  }
 }
 
 export const storage = new SQLiteStorage();
 
 // Seed default agents on boot
 storage.initDefaultAgents();
+
+// Stage 5.1: seed the heartbeat smoke-test template on first boot only. We
+// gate on "zero templates exist" rather than a STAGE_510 marker so the user
+// can DELETE the seed and never see it again — the alternative would be the
+// scheduler re-seeding it on every restart, which is a bad UX. Disabled by
+// default so a fresh deploy doesn't burn API credits every 5 minutes; the
+// user flips `enabled` in the UI when they want to test the loop.
+if (storage.getProjectTemplates().length === 0) {
+  storage.createProjectTemplate({
+    name: "Scheduler heartbeat (smoke test)",
+    description:
+      "5.1 smoke test — fires every 5 minutes when enabled. Spawns a tiny project " +
+      "that proves the cron loop is alive end-to-end. Safe to delete after first run.",
+    kind: "weekly",
+    prompt:
+      "Heartbeat ping. Write a single sentence that says 'Scheduler alive at {{now}}'. " +
+      "Save the sentence as a markdown file. Do not invoke any tools. Do not search the web.",
+    scheduleCron: "*/5 * * * *",
+    enabled: 0,
+    outputDir: "output/heartbeat",
+    metadata: "{}",
+    lastRunAt: null,
+    nextRunAt: null,
+    lastProjectId: null,
+  });
+}

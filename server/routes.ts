@@ -8,6 +8,8 @@ import type { Agent, Task, Project } from "@shared/schema";
 import { runLiveOrchestration, resumeLiveOrchestration, cancelProject, isProjectRunning } from "./liveOrchestrator";
 import { refreshAllProviders } from "./modelsRefresh";
 import { handleLogin, handleLogout, handleMe, isWsUpgradeAuthenticated } from "./auth";
+import { fireTemplate, recomputeNextRun, setSchedulerKickoff } from "./projectScheduler";
+import { describeCron, validateCron, nextRun } from "./cron";
 
 // ─── WebSocket broadcast ───────────────────────────────────────────────────────
 const wsClients = new Set<WebSocket>();
@@ -184,8 +186,13 @@ function setAgentStatus(
   broadcast({ type: "agent_update", agentId, status, currentTask });
 }
 
-// Main simulation: Manager orchestrates tasks through the team
-function runManagerOrchestration(projectId: number) {
+// Main simulation: Manager orchestrates tasks through the team.
+// Stage 5.1: exported so the project-template scheduler can fire a project
+// run through the exact same code path as a manual /api/projects POST. Keeps
+// behaviour (events, broadcasts, simulation fallbacks, file generation) in
+// lock-step between manual and scheduled runs — no parallel orchestration
+// path to drift out of sync.
+export function runManagerOrchestration(projectId: number) {
   clearSim();
   currentProjectId = projectId;
 
@@ -995,5 +1002,124 @@ export function registerRoutes(httpServer: Server, app: Express) {
     const review = storage.getLatestQaReview(projectId);
     if (!review) return res.status(404).json({ error: "no qa review yet" });
     res.json(review);
+  });
+
+  // ── Project templates (Stage 5.1) ─────────────────────────────────
+  // CRUD + a `run-now` button. The scheduler tick fires templates on its
+  // own; these endpoints exist purely so the Templates UI page can manage
+  // them. Each enabled template with a valid cron also gets a human-readable
+  // describeCron string and a hydrated nextRunAtIso so the client doesn't
+  // need to ship a cron parser.
+
+  // Wire the scheduler kickoff to the same orchestration entry point used
+  // by manual /api/projects POSTs (runManagerOrchestration). Doing it here
+  // — inside registerRoutes — means the scheduler is bootstrapped together
+  // with the rest of the server, and avoids an import cycle between
+  // routes.ts and projectScheduler.ts.
+  setSchedulerKickoff(runManagerOrchestration);
+
+  // Helper: hydrate a template row with derived UI fields. Pure read — no
+  // DB writes — so safe to call inside read endpoints without changing
+  // semantics on the wire.
+  const hydrate = (t: any) => ({
+    ...t,
+    cronDescription: describeCron(t.scheduleCron),
+    cronError: t.scheduleCron ? validateCron(t.scheduleCron) : null,
+    nextRunAtIso: t.nextRunAt ? new Date(t.nextRunAt).toISOString() : null,
+    lastRunAtIso: t.lastRunAt ? new Date(t.lastRunAt).toISOString() : null,
+  });
+
+  app.get("/api/templates", (_req, res) => {
+    res.json(storage.getProjectTemplates().map(hydrate));
+  });
+
+  app.get("/api/templates/:id", (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) return res.status(400).json({ error: "invalid template id" });
+    const tpl = storage.getProjectTemplate(id);
+    if (!tpl) return res.status(404).json({ error: "template not found" });
+    res.json(hydrate(tpl));
+  });
+
+  app.post("/api/templates", (req, res) => {
+    const body = req.body ?? {};
+    if (!body.name || typeof body.name !== "string") {
+      return res.status(400).json({ error: "name is required" });
+    }
+    if (!body.prompt || typeof body.prompt !== "string") {
+      return res.status(400).json({ error: "prompt is required" });
+    }
+    const cron = body.scheduleCron ?? "";
+    if (cron) {
+      const cronErr = validateCron(cron);
+      if (cronErr) return res.status(400).json({ error: cronErr });
+    }
+    const next = cron ? nextRun(cron, new Date())?.getTime() ?? null : null;
+    const created = storage.createProjectTemplate({
+      name: body.name,
+      description: body.description ?? "",
+      kind: body.kind ?? "weekly",
+      prompt: body.prompt,
+      scheduleCron: cron,
+      enabled: body.enabled === false ? 0 : 1,
+      outputDir: body.outputDir ?? "",
+      metadata: typeof body.metadata === "string" ? body.metadata : JSON.stringify(body.metadata ?? {}),
+      lastRunAt: null,
+      nextRunAt: next,
+      lastProjectId: null,
+    });
+    res.status(201).json(hydrate(created));
+  });
+
+  app.patch("/api/templates/:id", (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) return res.status(400).json({ error: "invalid template id" });
+    const existing = storage.getProjectTemplate(id);
+    if (!existing) return res.status(404).json({ error: "template not found" });
+
+    const body = req.body ?? {};
+    const patch: Record<string, unknown> = {};
+    // Only copy over fields the client actually sent so PATCH stays partial.
+    for (const key of ["name", "description", "kind", "prompt", "outputDir"]) {
+      if (typeof body[key] === "string") patch[key] = body[key];
+    }
+    if (typeof body.enabled === "boolean") patch.enabled = body.enabled ? 1 : 0;
+    if (typeof body.metadata === "object" && body.metadata !== null) {
+      patch.metadata = JSON.stringify(body.metadata);
+    } else if (typeof body.metadata === "string") {
+      patch.metadata = body.metadata;
+    }
+
+    // Cron edits trigger a recompute of nextRunAt from "now" so the UI
+    // reflects the change without waiting for the next scheduler tick.
+    if (typeof body.scheduleCron === "string") {
+      const cronErr = body.scheduleCron ? validateCron(body.scheduleCron) : null;
+      if (cronErr) return res.status(400).json({ error: cronErr });
+      patch.scheduleCron = body.scheduleCron;
+      const merged = { ...existing, ...patch } as typeof existing;
+      patch.nextRunAt = recomputeNextRun(merged, new Date());
+    } else if (typeof body.enabled === "boolean" && body.enabled && existing.scheduleCron && existing.nextRunAt == null) {
+      // Re-enabling a template whose nextRunAt was cleared (e.g. invalid cron
+      // earlier) should rehydrate it. Same recompute path.
+      patch.nextRunAt = recomputeNextRun(existing, new Date());
+    }
+
+    const updated = storage.updateProjectTemplate(id, patch as any);
+    res.json(hydrate(updated));
+  });
+
+  app.delete("/api/templates/:id", (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) return res.status(400).json({ error: "invalid template id" });
+    storage.deleteProjectTemplate(id);
+    res.status(204).end();
+  });
+
+  app.post("/api/templates/:id/run-now", (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) return res.status(400).json({ error: "invalid template id" });
+    const projectId = fireTemplate(id, { reason: "manual" });
+    if (projectId == null) return res.status(404).json({ error: "template not found or kickoff not ready" });
+    res.status(201).json({ projectId });
   });
 }
