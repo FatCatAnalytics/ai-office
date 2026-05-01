@@ -5,6 +5,12 @@ import { eq, desc, and } from "drizzle-orm";
 import fs from "fs";
 import path from "path";
 import { MANIFEST_INSTRUCTIONS } from "./manifest";
+import {
+  EDITORIAL_LEAD_PROMPT,
+  TECHNICAL_WRITER_PROMPT,
+  WEEKLY_ANALYTICAL_BANKER_PROMPT,
+  HEARTBEAT_PROMPT,
+} from "./voiceLab";
 import type {
   Agent, InsertAgent,
   Project, InsertProject,
@@ -490,6 +496,51 @@ const DEFAULT_AGENTS: InsertAgent[] = [
     currentTask: null,
     color: "#6366f1",
     icon: "ShieldCheck",
+  },
+  // ── Stage 5.2 — writing agents ───────────────────────────────────────────
+  // Two voice-specialist writers for the FatCat newsletter / article track.
+  // editorial-lead drafts the Beehiiv newsletter in Aksel's plain, anti-hype
+  // register; technical-writer drafts the matching long-form Medium piece in
+  // a Towards-Data-Science register. Both are ghost-writers — they pattern-
+  // match on the user's published voice samples (in voiceLab.ts) rather than
+  // generating from a generic content-writer prompt.
+  {
+    id: "editorial-lead",
+    name: "Editorial Lead",
+    role: "Newsletter ghost-writer (Analytical Banker)",
+    spriteType: "pm",
+    provider: "anthropic",
+    modelId: "claude-sonnet-4-6",
+    systemPrompt: EDITORIAL_LEAD_PROMPT,
+    capabilities: JSON.stringify([
+      "newsletter-drafting", "editorial", "voice-mimicry", "long-form-writing",
+      "finance-audience", "plain-english", "angle-selection", "narrative",
+      "beehiiv-output",
+    ]),
+    reportsTo: "manager",
+    status: "idle",
+    currentTask: null,
+    color: "#0ea5e9",
+    icon: "BarChart3",
+  },
+  {
+    id: "technical-writer",
+    name: "Technical Writer",
+    role: "Long-form technical articles (Medium / TDS)",
+    spriteType: "datascientist",
+    provider: "anthropic",
+    modelId: "claude-sonnet-4-6",
+    systemPrompt: TECHNICAL_WRITER_PROMPT,
+    capabilities: JSON.stringify([
+      "technical-writing", "long-form-writing", "code-explanation",
+      "latex", "benchmark-reporting", "research-summarisation",
+      "reproducibility", "medium-output", "towards-data-science",
+    ]),
+    reportsTo: "manager",
+    status: "idle",
+    currentTask: null,
+    color: "#a855f7",
+    icon: "Database",
   },
 ];
 
@@ -1191,22 +1242,64 @@ export const storage = new SQLiteStorage();
 // Seed default agents on boot
 storage.initDefaultAgents();
 
-// Stage 5.1: seed the heartbeat smoke-test template on first boot only. We
-// gate on "zero templates exist" rather than a STAGE_510 marker so the user
-// can DELETE the seed and never see it again — the alternative would be the
-// scheduler re-seeding it on every restart, which is a bad UX. Disabled by
-// default so a fresh deploy doesn't burn API credits every 5 minutes; the
-// user flips `enabled` in the UI when they want to test the loop.
-if (storage.getProjectTemplates().length === 0) {
+// Stage 5.2: seed the real "Weekly Analytical Banker" template. Idempotent —
+// gates on the template name so the user can DELETE it and never see it
+// again (same UX as the Stage 5.1 heartbeat seed). Disabled by default so a
+// fresh deploy doesn't fire research jobs unsupervised; the user flips
+// `enabled` from the Templates page once they're ready for the first
+// Sunday 18:00 UK research run.
+//
+// We deliberately seed at "already-existing-templates is fine" rather than
+// "only when zero templates exist" so this lands cleanly on databases that
+// already have the Stage 5.1 heartbeat seed. Users on those databases can
+// safely delete the heartbeat once they've verified the new Weekly template
+// shows up in the UI.
+const WEEKLY_TEMPLATE_NAME = "The Analytical Banker — Weekly";
+const alreadyHasWeekly = storage
+  .getProjectTemplates()
+  .some((t) => t.name === WEEKLY_TEMPLATE_NAME);
+if (!alreadyHasWeekly) {
+  storage.createProjectTemplate({
+    name: WEEKLY_TEMPLATE_NAME,
+    description:
+      "Sunday 18:00 UK — research the week and draft a 700–1000 word newsletter " +
+      "in Aksel's voice for Tuesday 10:30 UK delivery. Disabled by default; " +
+      "flip enabled when you're ready for the first run.",
+    kind: "weekly",
+    prompt: WEEKLY_ANALYTICAL_BANKER_PROMPT,
+    scheduleCron: "0 18 * * 0", // Sundays 18:00 UK (BST/GMT auto via Europe/London)
+    enabled: 0,
+    outputDir: "output/newsletters",
+    metadata: JSON.stringify({
+      stage: "5.2",
+      voiceSamples: [
+        "issue-001-tickle-my-filings",
+        "issue-002-corporate-hierarchies",
+      ],
+      brand: "The Analytical Banker",
+      audience: "UK mid-market finance leaders",
+    }),
+    lastRunAt: null,
+    nextRunAt: null,
+    lastProjectId: null,
+  });
+}
+
+// Heartbeat smoke-test seed kept for fresh databases only — useful for
+// confirming the cron loop is alive before flipping the real template on.
+// Skipped on databases that already have other templates so the production
+// install isn't cluttered. Users can recreate it manually from the UI if
+// they ever need the loop test again.
+if (storage.getProjectTemplates().length === 1 && !alreadyHasWeekly) {
+  // Special case for first-ever boots: we just inserted the Weekly template
+  // above. Add the heartbeat alongside it so a brand-new install gets both.
   storage.createProjectTemplate({
     name: "Scheduler heartbeat (smoke test)",
     description:
-      "5.1 smoke test — fires every 5 minutes when enabled. Spawns a tiny project " +
-      "that proves the cron loop is alive end-to-end. Safe to delete after first run.",
+      "Fires every 5 minutes when enabled. Spawns a tiny project that proves " +
+      "the cron loop is alive end-to-end. Safe to delete after first run.",
     kind: "weekly",
-    prompt:
-      "Heartbeat ping. Write a single sentence that says 'Scheduler alive at {{now}}'. " +
-      "Save the sentence as a markdown file. Do not invoke any tools. Do not search the web.",
+    prompt: HEARTBEAT_PROMPT,
     scheduleCron: "*/5 * * * *",
     enabled: 0,
     outputDir: "output/heartbeat",
