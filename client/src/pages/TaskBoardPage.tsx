@@ -147,15 +147,15 @@ function KanbanColumn({ status, tasks, agents, onReassign }: {
   const Icon = icons[status] ?? Clock;
 
   return (
-    <div className="flex flex-col gap-3 min-w-[240px] flex-1">
-      <div className="flex items-center justify-between px-1">
+    <div className="flex flex-col gap-3 min-w-[240px] flex-1 min-h-0">
+      <div className="flex items-center justify-between px-1 flex-shrink-0">
         <div className="flex items-center gap-2">
           <Icon size={14} className={sc.text} style={status === "in_progress" ? { animation:"none" } : {}}/>
           <span className={`text-xs font-semibold ${sc.text}`}>{STATUS_LABELS[status]}</span>
         </div>
         <span className={`text-xs ${sc.text} bg-slate-800/60 rounded-full px-2`}>{tasks.length}</span>
       </div>
-      <div className="flex flex-col gap-2.5">
+      <div className="flex flex-col gap-2.5 overflow-y-auto pr-1 -mr-1 min-h-0">
         {tasks.length === 0 && (
           <div className="rounded-xl border border-dashed border-slate-800 py-6 flex items-center justify-center text-xs text-slate-700">
             No tasks
@@ -249,7 +249,7 @@ export default function TaskBoardPage({ tasks: liveTasks, project: liveProject, 
       </div>
 
       {/* Board */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden">
+      <div className="flex-1 overflow-x-auto min-h-0">
         {!activeProject ? (
           <div className="flex items-center justify-center h-full text-slate-600 text-sm">
             Submit a project to see tasks here
