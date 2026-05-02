@@ -220,6 +220,22 @@ export const projectTemplates = sqliteTable("project_templates", {
   // JSON object — kind-specific config. weekly: { sources: string[] };
   // adhoc: { repoUrl?: string }. Optional, defaults to "{}".
   metadata: text("metadata").notNull().default("{}"),
+  // Stage 5.x.2 — deterministic task graph. When set, the orchestrator
+  // SKIPS manager planning entirely and inserts these tasks verbatim on
+  // every fire of the template. Format: JSON array of
+  // { key, title, description, assignedTo, priority?, dependsOn?, complexity? }
+  // Each `key` is referenced by `dependsOn` of later tasks (planner-local
+  // ids, mapped to real DB ids by the orchestrator). Empty string means
+  // "no reference plan, use the manager."
+  //
+  // Why this exists: as of Stage 5.x.2 the manager LLM kept ignoring the
+  // 'use this exact task list' instructions baked into the brief and
+  // re-decomposing the work along its own preferred lines (assigning QA
+  // to the generic qa agent, splitting research into 4 sub-tasks, etc.).
+  // For repeatable runs (weekly newsletter), determinism beats LLM
+  // creativity — the LLM is still used inside each task for the actual
+  // work, just not for graph planning.
+  referencePlan: text("reference_plan").notNull().default(""),
   // Bookkeeping. Both Unix ms; nullable until first fire / first scheduling.
   lastRunAt: integer("last_run_at"),
   nextRunAt: integer("next_run_at"),

@@ -189,6 +189,112 @@ export interface ParsedFileBlock {
   content: string;
 }
 
+// ─── Stage 5.x.2 — reference plan loader ─────────────────────────────────────
+// Resolve a project to its template's referencePlan (if any) and parse it
+// into the PlannedTask[] shape the orchestrator already speaks. Any
+// failure mode — no template, empty plan, malformed JSON, unknown agent,
+// invalid dependsOn key — returns null so the caller falls back to manager
+// planning. We log the specific reason via deps.emitEvent so a broken
+// reference plan doesn't silently degrade to LLM planning without warning.
+function loadReferencePlanForProject(
+  project: Project,
+  agents: Agent[],
+  deps: LiveOrchestratorDeps,
+): PlannedTask[] | null {
+  // Pre-5.1 projects (manual /api/projects POSTs) have no templateId —
+  // they always use the manager. Same for any project whose template was
+  // deleted between fire and run.
+  if (project.templateId == null) return null;
+  const template = storage.getProjectTemplate(project.templateId);
+  if (!template) return null;
+  const raw = (template.referencePlan ?? "").trim();
+  if (!raw) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    deps.emitEvent(
+      project.id, "manager", "Manager", "reference plan parse failed",
+      `Falling back to manager LLM — ${(e as Error).message}`, "warning",
+    );
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    deps.emitEvent(
+      project.id, "manager", "Manager", "reference plan empty",
+      "Falling back to manager LLM — referencePlan was not a non-empty array",
+      "warning",
+    );
+    return null;
+  }
+
+  const agentIds = new Set(agents.map(a => a.id));
+  const seenKeys = new Set<string>();
+  const plan: PlannedTask[] = [];
+
+  for (let i = 0; i < parsed.length; i++) {
+    const entry = parsed[i] as Record<string, unknown>;
+    const key = typeof entry.key === "string" ? entry.key.trim() : "";
+    const title = typeof entry.title === "string" ? entry.title.trim() : "";
+    const description = typeof entry.description === "string" ? entry.description : "";
+    const assignedTo = typeof entry.assignedTo === "string" ? entry.assignedTo.trim() : "";
+    const priority = (
+      ["critical", "high", "normal", "low"].includes(entry.priority as string)
+        ? entry.priority
+        : "normal"
+    ) as PlannedTask["priority"];
+    const complexity = (
+      ["low", "medium", "high"].includes(entry.complexity as string)
+        ? entry.complexity
+        : "medium"
+    ) as Complexity;
+    const dependsOn = Array.isArray(entry.dependsOn)
+      ? (entry.dependsOn as unknown[]).filter((d): d is string => typeof d === "string")
+      : [];
+
+    if (!key || !title || !assignedTo) {
+      deps.emitEvent(
+        project.id, "manager", "Manager", "reference plan invalid entry",
+        `Entry ${i} missing key/title/assignedTo — falling back to manager LLM`,
+        "warning",
+      );
+      return null;
+    }
+    if (seenKeys.has(key)) {
+      deps.emitEvent(
+        project.id, "manager", "Manager", "reference plan duplicate key",
+        `Entry ${i} reuses key "${key}" — falling back to manager LLM`,
+        "warning",
+      );
+      return null;
+    }
+    if (!agentIds.has(assignedTo)) {
+      deps.emitEvent(
+        project.id, "manager", "Manager", "reference plan unknown agent",
+        `Entry ${i} ("${key}") assigned to "${assignedTo}" which is not in the agent roster — falling back to manager LLM`,
+        "warning",
+      );
+      return null;
+    }
+    for (const dep of dependsOn) {
+      if (!seenKeys.has(dep)) {
+        deps.emitEvent(
+          project.id, "manager", "Manager", "reference plan bad dependsOn",
+          `Entry ${i} ("${key}") depends on "${dep}" which is not a prior key — falling back to manager LLM`,
+          "warning",
+        );
+        return null;
+      }
+    }
+
+    seenKeys.add(key);
+    plan.push({ key, title, description, assignedTo, priority, dependsOn, complexity });
+  }
+
+  return plan;
+}
+
 export function parseFileBlocks(raw: string): ParsedFileBlock[] {
   const blocks: ParsedFileBlock[] = [];
   // Match <file name="...">...</file> with non-greedy body.
@@ -963,15 +1069,33 @@ async function runLiveOrchestrationInner(
   deps.broadcast({ type: "project_update", projectId, status: "planning" });
 
   // ── Phase 1: Manager plans ────────────────────────────────────────────
+  // Stage 5.x.2 — if this project's template has a non-empty referencePlan,
+  // skip the manager LLM and use the predefined task graph. The LLM is
+  // still used INSIDE each task for the actual work; only graph planning
+  // is bypassed. Rationale: the manager LLM kept ignoring 'use this exact
+  // task list' instructions and re-decomposing the work, which broke
+  // weekly newsletter runs (assigned QA to the wrong agent, added
+  // forbidden sub-tasks). See loadReferencePlanForProject() below.
   let plan: PlannedTask[];
-  try {
-    plan = await planProjectLive(project, agents, deps);
-  } catch (e) {
-    deps.emitEvent(projectId, "manager", manager.name, "planning failed", `${(e as Error).message ?? e}`, "error");
+  const referencePlan = loadReferencePlanForProject(project, agents, deps);
+  if (referencePlan) {
+    plan = referencePlan;
+    deps.emitEvent(
+      projectId, "manager", manager.name, "using reference plan",
+      `Skipping manager LLM — inserting ${plan.length} predefined tasks from template`,
+      "info"
+    );
     deps.setAgentStatus("manager", "idle", null);
-    storage.updateProject(projectId, { status: "blocked" });
-    deps.broadcast({ type: "project_update", projectId, status: "blocked" });
-    return;
+  } else {
+    try {
+      plan = await planProjectLive(project, agents, deps);
+    } catch (e) {
+      deps.emitEvent(projectId, "manager", manager.name, "planning failed", `${(e as Error).message ?? e}`, "error");
+      deps.setAgentStatus("manager", "idle", null);
+      storage.updateProject(projectId, { status: "blocked" });
+      deps.broadcast({ type: "project_update", projectId, status: "blocked" });
+      return;
+    }
   }
 
   // ── Phase 2: Persist tasks with dependency metadata ───────────────────

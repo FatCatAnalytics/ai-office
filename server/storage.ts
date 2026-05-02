@@ -9,6 +9,7 @@ import {
   EDITORIAL_LEAD_PROMPT,
   TECHNICAL_WRITER_PROMPT,
   WEEKLY_ANALYTICAL_BANKER_PROMPT,
+  WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN,
   HEARTBEAT_PROMPT,
 } from "./voiceLab";
 import type {
@@ -220,6 +221,7 @@ sqlite.exec(`
     enabled INTEGER NOT NULL DEFAULT 1,
     output_dir TEXT NOT NULL DEFAULT '',
     metadata TEXT NOT NULL DEFAULT '{}',
+    reference_plan TEXT NOT NULL DEFAULT '',
     last_run_at INTEGER,
     next_run_at INTEGER,
     last_project_id INTEGER,
@@ -233,6 +235,14 @@ sqlite.exec(`
 // stage); the scheduler stamps it on every newly-spawned row.
 try {
   sqlite.exec(`ALTER TABLE projects ADD COLUMN template_id INTEGER`);
+} catch { /* column already exists */ }
+
+// Stage 5.x.2 safe migration: deterministic task graph for templated
+// projects. Empty string "" means the template still uses the LLM
+// manager for planning (legacy behaviour); a JSON array opts the
+// template into the bypass.
+try {
+  sqlite.exec(`ALTER TABLE project_templates ADD COLUMN reference_plan TEXT NOT NULL DEFAULT ''`);
 } catch { /* column already exists */ }
 
 // Stage 4.5 safe migrations: existing rows with retired Anthropic model ids.
@@ -1279,10 +1289,36 @@ if (!alreadyHasWeekly) {
       brand: "The Analytical Banker",
       audience: "UK mid-market finance leaders",
     }),
+    referencePlan: WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN,
     lastRunAt: null,
     nextRunAt: null,
     lastProjectId: null,
   });
+}
+
+// Stage 5.x.2: backfill the reference plan onto an EXISTING Weekly template
+// row (e.g. a prod DB that already had the Stage 5.2 seed before this
+// migration shipped). Only writes when referencePlan is currently empty
+// AND the prompt is the canonical Stage 5.2 one — avoids clobbering a
+// user's customised plan, and avoids re-running every boot once written.
+try {
+  const existingWeekly = storage
+    .getProjectTemplates()
+    .find((t) => t.name === WEEKLY_TEMPLATE_NAME);
+  if (
+    existingWeekly &&
+    (!existingWeekly.referencePlan || existingWeekly.referencePlan.trim() === "")
+  ) {
+    storage.updateProjectTemplate(existingWeekly.id, {
+      referencePlan: WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN,
+      updatedAt: Date.now(),
+    });
+    console.log(
+      `[seed] Stage 5.x.2: backfilled referencePlan onto existing Weekly template (id=${existingWeekly.id})`,
+    );
+  }
+} catch (e) {
+  console.warn("[seed] Stage 5.x.2 referencePlan backfill failed:", e);
 }
 
 // Heartbeat smoke-test seed kept for fresh databases only — useful for

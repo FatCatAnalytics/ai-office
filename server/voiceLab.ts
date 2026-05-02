@@ -573,6 +573,129 @@ NON-NEGOTIABLES FOR THIS RUN:
     notes, no "Project:" / "Agent:" / "Completed:" lines. It will be
     pasted into Beehiiv verbatim.`;
 
+// ── Stage 5.x.2 — deterministic task graph for the Weekly newsletter ───────
+//
+// Why this lives next to the prompt: the manager LLM kept ignoring the
+// 'use this exact task list' instructions baked into the prompt and
+// re-decomposing the work along its own preferred lines (assigning QA
+// to the generic qa agent, splitting research into 3-4 sub-tasks).
+// For repeatable runs we want the SAME task graph every Sunday, with
+// the LLM only used for the actual creative work inside each task.
+//
+// The orchestrator inserts these tasks verbatim when the project's
+// template has reference_plan != "". Each entry's `description` is
+// passed to the agent as its task brief and is what shapes the work.
+// The `key` is a planner-local id used by `dependsOn` to wire the wave
+// graph; the orchestrator maps keys → real DB ids.
+//
+// Schema for each entry (see liveOrchestrator.ts ParsedReferencePlan):
+//   { key, title, description, assignedTo,
+//     priority?  default "normal",
+//     dependsOn? default [],
+//     complexity? default "medium" }
+
+export const WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN = JSON.stringify([
+  {
+    key: "research",
+    title: "Identify candidate stories from the past week (Mon–Sun)",
+    assignedTo: "deep-search",
+    priority: "critical",
+    complexity: "high",
+    dependsOn: [],
+    description:
+      "Identify 5–8 candidate stories from the seven days ending on the most " +
+      "recently completed Sunday (Mon–Sun, the week just finished). For each " +
+      "candidate, return: a one-line summary, a primary source URL (Tier 1 " +
+      "regulator/central-bank or Tier 2 specialist press — see the curated " +
+      "source list in the project brief), why a UK mid-market finance leader " +
+      "should care, and an honest 'so what' implication. Prefer the curated " +
+      "source list; open web is allowed only as a fallback. Do NOT scrape, do " +
+      "NOT validate — those are not separate tasks for this brief. Output a " +
+      "plain markdown list of candidates; the next agent will read it.",
+  },
+  {
+    key: "angle",
+    title: "Select the single strongest story angle for this week's issue",
+    assignedTo: "editorial-lead",
+    priority: "high",
+    complexity: "medium",
+    dependsOn: ["research"],
+    description:
+      "Read the candidate list from the previous task. Pick the ONE story " +
+      "with the strongest practitioner angle for heads of credit / CFOs / " +
+      "mid-market lenders. Discard the others. We are not writing a roundup. " +
+      "If two stories tie, prefer the one closer to data / analytics / AI " +
+      "plumbing (the brand wedge) over pure macro or pure regulatory news. " +
+      "Output: the chosen story title + a 2–3 sentence justification + the " +
+      "primary source URL + a one-line note on which other story you'd save " +
+      "as the runner-up.",
+  },
+  {
+    key: "draft",
+    title: "Draft the newsletter issue in Aksel's voice (700–1000 words)",
+    assignedTo: "editorial-lead",
+    priority: "critical",
+    complexity: "high",
+    dependsOn: ["angle"],
+    description:
+      "Draft this week's issue in Aksel's voice using the chosen angle and " +
+      "its sources. Target 700–1000 words. Required structural elements: " +
+      "sentence-case headers, a single italic blockquote diagnostic question " +
+      "placed roughly two-thirds of the way through, a 'The takeaway' " +
+      "section near the end with ONE concrete weekly action, '— Aksel' " +
+      "sign-off, and the standard footer paragraph. Inline-link every " +
+      "factual claim to its source. No <file> blocks at this stage — just " +
+      "the markdown article. The QA task will review this output and the " +
+      "final task will produce the publish-ready files.",
+  },
+  {
+    key: "qa",
+    title: "QA self-review against the editorial checklist",
+    assignedTo: "editorial-lead",
+    priority: "high",
+    complexity: "medium",
+    dependsOn: ["draft"],
+    description:
+      "Self-review the draft from the previous task against this checklist. " +
+      "For each item, write PASS / FAIL / N/A and a one-line note: " +
+      "(a) every factual claim has a working inline link to a real source, " +
+      "(b) no buzzwords from the avoid list, " +
+      "(c) headers are sentence case, " +
+      "(d) length is in the 700–1000 word band, " +
+      "(e) diagnostic blockquote is present and reads naturally, " +
+      "(f) standard footer is intact and unchanged, " +
+      "(g) sign-off is '— Aksel'. " +
+      "If anything fails, list specifically what the next task must change. " +
+      "Output is a plain markdown review note — NO <file> blocks.",
+  },
+  {
+    key: "final",
+    title: "Apply QA fixes and emit final issue + runner-up file blocks",
+    assignedTo: "editorial-lead",
+    priority: "critical",
+    complexity: "high",
+    dependsOn: ["qa"],
+    description:
+      "Read the draft and the QA review from the two previous tasks. " +
+      "Apply every FAIL item from the review. Then produce TWO and ONLY " +
+      "TWO file blocks, in this exact format (literal angle brackets, no " +
+      "markdown fences around them):\n\n" +
+      "<file name=\"issue-{{week}}.md\">\n# <issue title>\n\n<full final " +
+      "article body, ready to paste into Beehiiv — no meta-headers, no " +
+      "review notes, no '---' separators above the title>\n</file>\n\n" +
+      "<file name=\"runner-up-{{week}}.md\">\n# <runner-up title>\n\nOne " +
+      "paragraph on why this angle lost to the chosen one. Optionally a " +
+      "2–3 sentence skeleton in case it needs to be revived next week.\n" +
+      "</file>\n\n" +
+      "Where {{week}} is the ISO week number of the week COVERED (Mon–Sun " +
+      "just finished), zero-padded to 2 digits, e.g. 'issue-17.md'. Do NOT " +
+      "wrap the file blocks in code fences. The ONLY text allowed outside " +
+      "the two <file>…</file> blocks is one preamble line at the top: " +
+      "'Producing final files for issue-{{week}}.' Anything else outside " +
+      "the blocks is discarded by the orchestrator.",
+  },
+]);
+
 // ── Heartbeat smoke-test prompt (kept for the optional second seed) ─────────
 //
 // Stage 5.1 shipped this as the only seeded template. In Stage 5.2 the
