@@ -1321,6 +1321,49 @@ try {
   console.warn("[seed] Stage 5.x.2 referencePlan backfill failed:", e);
 }
 
+// Stage 5.x.3: upgrade the reference plan from the old 5-task graph to the
+// new 6-task graph (adds the deep-search fact-check step between QA and
+// the final apply-fixes step, plus the deliberate-risk mandate, plus the
+// 8-step QA checklist). Detection: the OLD plan does not contain the key
+// "factcheck". If the user has manually edited their plan in a way that
+// already includes a factcheck-style task, we leave their version alone
+// (the heuristic: if the existing plan parses as JSON and any task has
+// key === 'factcheck', skip).
+try {
+  const existingWeekly = storage
+    .getProjectTemplates()
+    .find((t) => t.name === WEEKLY_TEMPLATE_NAME);
+  if (existingWeekly && existingWeekly.referencePlan) {
+    let needsUpgrade = false;
+    try {
+      const parsed = JSON.parse(existingWeekly.referencePlan) as Array<{ key?: string }>;
+      if (Array.isArray(parsed)) {
+        const hasFactcheck = parsed.some((t) => t && t.key === "factcheck");
+        // Only upgrade rows that are still on the OLD 5-task shape AND have
+        // NOT been customised away from it. Conservative match: 5 tasks
+        // total and no factcheck step.
+        if (!hasFactcheck && parsed.length === 5) {
+          needsUpgrade = true;
+        }
+      }
+    } catch {
+      // unparseable plan — leave it alone, don't risk clobbering a custom value
+    }
+    if (needsUpgrade) {
+      storage.updateProjectTemplate(existingWeekly.id, {
+        referencePlan: WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN,
+        prompt: WEEKLY_ANALYTICAL_BANKER_PROMPT,
+        updatedAt: Date.now(),
+      });
+      console.log(
+        `[seed] Stage 5.x.3: upgraded Weekly template (id=${existingWeekly.id}) from 5-task to 6-task plan with factcheck step + deliberate-risk mandate + 8-step QA checklist`,
+      );
+    }
+  }
+} catch (e) {
+  console.warn("[seed] Stage 5.x.3 referencePlan upgrade failed:", e);
+}
+
 // Heartbeat smoke-test seed kept for fresh databases only — useful for
 // confirming the cron loop is alive before flipping the real template on.
 // Skipped on databases that already have other templates so the production
