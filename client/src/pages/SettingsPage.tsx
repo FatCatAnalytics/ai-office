@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Settings, Key, CheckCircle2, AlertTriangle, Save, Eye, EyeOff, Loader2, Zap, Globe, Sparkles, RefreshCw, Boxes, Star } from "lucide-react";
+import { Settings, Key, CheckCircle2, AlertTriangle, Save, Eye, EyeOff, Loader2, Zap, Globe, Sparkles, RefreshCw, Boxes, Star, Send } from "lucide-react";
 import type { Model } from "../types";
 
 interface ProviderConfig {
@@ -249,6 +249,120 @@ function ProviderCard({ provider, savedKey, onSave }: {
         data-testid={`button-save-key-${provider.key}`}>
         <Save size={12}/> {dirty ? "Save API Key" : "Saved"}
       </button>
+    </div>
+  );
+}
+
+// ─── Stage 5.3: Beehiiv key + publication ID card ────────────────────────────
+function BeehiivCard({ savedKey, savedPubId, onSaveKey, onSavePubId }: {
+  savedKey: string; savedPubId: string;
+  onSaveKey: (value: string) => void;
+  onSavePubId: (value: string) => void;
+}) {
+  const [keyValue, setKeyValue] = useState(savedKey || "");
+  const [pubIdValue, setPubIdValue] = useState(savedPubId || "");
+  const [showKey, setShowKey] = useState(false);
+  const [keyDirty, setKeyDirty] = useState(false);
+  const [pubIdDirty, setPubIdDirty] = useState(false);
+
+  useEffect(() => { setKeyValue(savedKey || ""); setKeyDirty(false); }, [savedKey]);
+  useEffect(() => { setPubIdValue(savedPubId || ""); setPubIdDirty(false); }, [savedPubId]);
+
+  const hasKey = savedKey && savedKey.length > 10;
+  const hasPubId = savedPubId && savedPubId.length > 5;
+  const fullyConfigured = hasKey && hasPubId;
+
+  const handleKeyChange = (v: string) => { setKeyValue(v); setKeyDirty(v !== savedKey); };
+  const handlePubIdChange = (v: string) => { setPubIdValue(v); setPubIdDirty(v !== savedPubId); };
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5 flex flex-col gap-4" data-testid="provider-card-beehiiv">
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold"
+            style={{ background:"#fde04722", border:"1.5px solid #fde04766", color:"#fde047" }}>B</div>
+          <div>
+            <div className="text-sm font-semibold text-slate-100">Beehiiv</div>
+            <div className="text-xs text-slate-500 mt-0.5">Newsletter delivery — final issues are posted here as drafts (Stage 5.3)</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {fullyConfigured ? (
+            <><CheckCircle2 size={14} className="text-emerald-400"/>
+              <span className="text-xs text-emerald-400 font-medium">Connected</span></>
+          ) : (
+            <><AlertTriangle size={14} className="text-amber-400"/>
+              <span className="text-xs text-amber-400 font-medium">{hasKey || hasPubId ? "Partial" : "Not configured"}</span></>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700/50">
+        <span className="text-xs text-slate-500">Env vars:</span>
+        <code className="text-xs text-cyan-400 font-mono">BEEHIIV_API_KEY</code>
+        <span className="text-xs text-slate-600">+</span>
+        <code className="text-xs text-cyan-400 font-mono">BEEHIIV_PUBLICATION_ID</code>
+        <a href="https://app.beehiiv.com/settings/integrations/api" target="_blank" rel="noopener noreferrer"
+          className="ml-auto text-xs text-slate-600 hover:text-slate-400 flex items-center gap-1 transition-colors">
+          <Globe size={11}/> Get key
+        </a>
+      </div>
+
+      {/* API key */}
+      <div className="flex flex-col gap-2">
+        <label className="text-xs text-slate-400">API Key</label>
+        <div className="relative">
+          <input
+            type={showKey ? "text" : "password"}
+            value={keyValue}
+            onChange={e => handleKeyChange(e.target.value)}
+            placeholder="Beehiiv API key"
+            className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 pr-10 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 font-mono"
+            data-testid="input-api-key-beehiiv"
+          />
+          <button onClick={() => setShowKey(s => !s)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors">
+            {showKey ? <EyeOff size={14}/> : <Eye size={14}/>}
+          </button>
+        </div>
+        <button
+          onClick={() => { onSaveKey(keyValue); setKeyDirty(false); }}
+          disabled={!keyDirty && !!hasKey}
+          className="flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          style={{ background: keyDirty ? "linear-gradient(135deg, #fde047cc, #fde04788)" : undefined,
+            border: keyDirty ? "none" : "1px solid #334155",
+            color: keyDirty ? "#000" : "#64748b" }}
+          data-testid="button-save-key-beehiiv">
+          <Save size={12}/> {keyDirty ? "Save API Key" : "Saved"}
+        </button>
+      </div>
+
+      {/* Publication ID (not a secret) */}
+      <div className="flex flex-col gap-2">
+        <label className="text-xs text-slate-400">Publication ID</label>
+        <input
+          type="text"
+          value={pubIdValue}
+          onChange={e => handlePubIdChange(e.target.value)}
+          placeholder="pub_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+          className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 font-mono"
+          data-testid="input-pubid-beehiiv"
+        />
+        <button
+          onClick={() => { onSavePubId(pubIdValue); setPubIdDirty(false); }}
+          disabled={!pubIdDirty && !!hasPubId}
+          className="flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          style={{ background: pubIdDirty ? "linear-gradient(135deg, #fde047cc, #fde04788)" : undefined,
+            border: pubIdDirty ? "none" : "1px solid #334155",
+            color: pubIdDirty ? "#000" : "#64748b" }}
+          data-testid="button-save-pubid-beehiiv">
+          <Save size={12}/> {pubIdDirty ? "Save Publication ID" : "Saved"}
+        </button>
+      </div>
+
+      <div className="text-[10px] text-slate-500 leading-relaxed">
+        When the editorial-lead's final task emits an <code className="text-cyan-400">issue-*.md</code> file, the orchestrator posts the markdown to Beehiiv as a <strong>draft</strong> in the publication you specify. You review and press Send manually inside Beehiiv — we never auto-publish. The runner-up file is not posted.
+      </div>
     </div>
   );
 }
@@ -670,6 +784,19 @@ export default function SettingsPage() {
           <TavilyKeyCard
             savedKey={settings["tavily_api_key"] ?? ""}
             onSave={(v) => saveMut.mutate({ tavily_api_key: v })}
+          />
+        </div>
+
+        {/* Stage 5.3: Beehiiv newsletter delivery */}
+        <div>
+          <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+            <Send size={11}/> Newsletter Delivery
+          </h3>
+          <BeehiivCard
+            savedKey={settings["beehiiv_api_key"] ?? ""}
+            savedPubId={settings["beehiiv_publication_id"] ?? ""}
+            onSaveKey={(v) => saveMut.mutate({ beehiiv_api_key: v })}
+            onSavePubId={(v) => saveMut.mutate({ beehiiv_publication_id: v })}
           />
         </div>
 

@@ -25,6 +25,7 @@ import { extractManifest, manifestToMarkdown, manifestToCsv, manifestToJson, typ
 import { routeForComplexity, routeForCriticalCall, normaliseComplexity, type Complexity } from "./modelRouter";
 import { reviewProjectQA } from "./qaReviewer";
 import { resolveTools, tavilyConfigured } from "./tools";
+import { beehiivConfigured, postBeehiivDraft } from "./beehiiv";
 import type { Agent, Task, Project } from "@shared/schema";
 
 export interface LiveOrchestratorDeps {
@@ -477,6 +478,44 @@ async function saveLiveOutput(
         );
       }
     }
+    // ─── Stage 5.3 — Beehiiv draft hookup ─────────────────────────────────
+    // After saving file blocks, if any saved file is an issue-*.md (the
+    // editorial pipeline's final newsletter output) AND a Beehiiv key +
+    // publication ID are configured, POST the markdown to Beehiiv as a
+    // DRAFT post. We never auto-publish; the user reviews the draft inside
+    // Beehiiv and presses Send manually. The runner-up file is intentionally
+    // not posted — it's a planning artefact, not a newsletter issue.
+    if (saved > 0 && beehiivConfigured()) {
+      const issueBlock = fileBlocks.find(b => /^issue-\d+\.md$/i.test(b.filename));
+      if (issueBlock) {
+        try {
+          const result = await postBeehiivDraft(issueBlock.content);
+          if (result.ok) {
+            const link = result.webUrl ? ` — ${result.webUrl}` : "";
+            const idTag = result.postId ? ` (post ${result.postId})` : "";
+            deps.emitEvent(
+              projectId, agent.id, agent.name, "sent to Beehiiv as draft",
+              `📬 ${issueBlock.filename}${idTag}${link}`,
+              "success"
+            );
+          } else {
+            deps.emitEvent(
+              projectId, agent.id, agent.name, "Beehiiv draft failed",
+              result.error,
+              "warning"
+            );
+          }
+        } catch (e) {
+          console.error(`[live] Beehiiv post error:`, e);
+          deps.emitEvent(
+            projectId, agent.id, agent.name, "Beehiiv draft failed",
+            (e as Error).message ?? String(e),
+            "warning"
+          );
+        }
+      }
+    }
+
     // If at least one explicit file block saved, we're done — don't double
     // up by also writing ${slug}_${agent.id}.md with the raw <file>…</file>
     // wrappers in it. (If every block failed, fall through to legacy.)
