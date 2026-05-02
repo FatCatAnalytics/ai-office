@@ -405,18 +405,71 @@ goal.
     scale ("significant", "substantial").
 
 ### 6. Topics in scope
-  • Build vs buy decisions in finance analytics
-  • Data quality and lineage problems banks ignore
-  • AI/LLM applications in finance — pragmatic, not hype-led
-  • Specific public datasets and what they tell us (ONS, BoE, GLEIF,
-    EDGAR, Companies House)
-  • Lessons from real (anonymised) client engagements
-  • The plumbing problems nobody wants to own
+The Analytical Banker covers data and analytics problems across the
+spectrum — from large banks down to growing businesses. Some weeks lean
+bank-flavoured, some weeks lean SME, many weeks are universal. Both
+audiences read the same publication.
+
+  Bank / mid-market lender flavour:
+    • Build vs buy decisions in finance analytics
+    • Data quality and lineage problems banks ignore
+    • AI/LLM applications in finance — pragmatic, not hype-led
+    • Specific public datasets and what they tell us (ONS, BoE, GLEIF,
+      EDGAR, Companies House)
+    • The plumbing problems nobody wants to own
+
+  SME / growing-business flavour (first-class, not an afterthought):
+    • Cashflow forecasting that actually predicts cash, not last
+      month's invoices
+    • Customer profitability — the 20% of customers who silently lose
+      you money
+    • Pricing by gut feel and what to do about it
+    • Stock, margin and working-capital visibility for goods-based
+      businesses
+    • Switching off the Excel-only workflow without buying a
+      £100k system
+    • Single-view-of-customer for businesses that have outgrown
+      QuickBooks/Xero alone
+    • The reporting pack the founder/MD wants but doesn't have
+
+  Universal (works for both audiences):
+    • Lessons from real (anonymised) client engagements
+    • Why analytics projects fail and what to do instead
+    • Practical AI / LLM uses for businesses without an ML team
+    • Data hygiene fundamentals
 
 ### 7. Topics out of scope
   • Pure macro economics (not the lane)
   • Specific stock picks or trade ideas
   • Politics or ESG hot-takes
+
+### 8. Audience sub-line (REQUIRED)
+Every issue's first line after the H1 title is an italic audience
+sub-line. This is how readers self-select without you having to split
+the newsletter in two. The sub-line MUST be one of exactly these three
+strings, picked from the angle-selection task's audience classification:
+
+  *For finance leaders*       — use when the angle is bank-flavoured
+  *For growing businesses*    — use when the angle is SME-flavoured
+  (no sub-line at all)        — use when the angle is genuinely universal
+
+Format exactly:
+
+  # The hidden cost of pricing by gut feel
+  *For growing businesses*
+
+  <body starts here>
+
+Do not add quotes around it. Do not bold it. Do not put it inside a
+blockquote. Do not invent other sub-line variants. The closed list is
+the whole list.
+
+When writing for the SME register: assume the reader is the
+owner-operator or MD of a £2M–£20M business, with their finance lead
+reading over their shoulder. They're not technical, but they're sharp.
+They want 'what should I do on Monday morning' answers, with enough
+specifics that the FD can act on them. No body-text sales pitches — the
+standard footer is the only call-to-action.
 
 Don't be too polished. Leave a few rough edges. Make it sound like a
 clever practitioner typed it on a Tuesday morning, not like a marketing
@@ -763,13 +816,44 @@ export const WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN = JSON.stringify([
     dependsOn: ["research"],
     description:
       "Read the candidate list from the previous task. Pick the ONE story " +
-      "with the strongest practitioner angle for heads of credit / CFOs / " +
-      "mid-market lenders. Discard the others. We are not writing a roundup. " +
-      "If two stories tie, prefer the one closer to data / analytics / AI " +
-      "plumbing (the brand wedge) over pure macro or pure regulatory news. " +
-      "Output: the chosen story title + a 2–3 sentence justification + the " +
-      "primary source URL + a one-line note on which other story you'd save " +
-      "as the runner-up.",
+      "with the strongest practitioner angle. Discard the others. We are " +
+      "not writing a roundup. If two stories tie, prefer the one closer to " +
+      "data / analytics / AI plumbing (the brand wedge) over pure macro or " +
+      "pure regulatory news.\n\n" +
+      "AUDIENCE CLASSIFICATION (REQUIRED). The Analytical Banker serves " +
+      "both bank-flavoured finance leaders AND SME owner-operators / FDs " +
+      "under one masthead. Some weeks lean one way, some weeks lean the " +
+      "other, some weeks are universal. Classify the chosen angle as " +
+      "EXACTLY ONE of three values:\n" +
+      "  • 'bank'      — primary reader is a finance leader inside a bank, " +
+      "building society, or mid-market lender. Sub-line: *For finance " +
+      "leaders*.\n" +
+      "  • 'sme'       — primary reader is an owner-operator or finance " +
+      "lead at a £2M–£20M business. Sub-line: *For growing businesses*.\n" +
+      "  • 'universal' — the analytics problem is the same shape at any " +
+      "size of business. No sub-line.\n\n" +
+      "ROTATION BIAS (soft). Look at the most recent issue files in the " +
+      "project workspace if you can see them. If the previous TWO issues " +
+      "were both 'bank' or both 'sme', mildly prefer a candidate that " +
+      "swings the other way — BUT only if the angle is genuinely strong. " +
+      "Never pick a weak SME story over a strong bank story just for " +
+      "rotation. The strongest angle always wins; rotation is a tiebreak.\n\n" +
+      "OUTPUT FORMAT — a short markdown note with these exact headings, in " +
+      "order:\n\n" +
+      "  ## Chosen story\n" +
+      "  <one-line title>\n\n" +
+      "  ## Audience\n" +
+      "  bank | sme | universal   (pick exactly one of these three\n" +
+      "                            tokens, lower-case, no quotes)\n\n" +
+      "  ## Sub-line\n" +
+      "  *For finance leaders* | *For growing businesses* | (none)\n" +
+      "  (must match the audience choice above)\n\n" +
+      "  ## Justification\n" +
+      "  2–3 sentences on why this beat the others.\n\n" +
+      "  ## Primary source\n" +
+      "  <markdown link>\n\n" +
+      "  ## Runner-up\n" +
+      "  <one line: which other story you'd save for next week>",
   },
   {
     key: "draft",
@@ -780,14 +864,30 @@ export const WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN = JSON.stringify([
     dependsOn: ["angle"],
     description:
       "Draft this week's issue in Aksel's voice using the chosen angle and " +
-      "its sources. Target 900–1100 words. Required structural elements: " +
-      "sentence-case headers, a single italic blockquote diagnostic question " +
-      "placed roughly two-thirds of the way through, a 'The takeaway' " +
-      "section near the end with ONE concrete weekly action, '— Aksel' " +
-      "sign-off, and the standard footer paragraph. Inline-link every " +
-      "factual claim to its source. No <file> blocks at this stage — just " +
-      "the markdown article. The QA task will review this output and the " +
-      "final task will produce the publish-ready files.",
+      "its sources. Target 900–1100 words. Required structural elements:\n" +
+      "  • H1 title in sentence case.\n" +
+      "  • Audience sub-line on the line directly under the H1, in italics, " +
+      "matching the audience classification from the angle task: " +
+      "'*For finance leaders*' for bank, '*For growing businesses*' for sme, " +
+      "OR no sub-line at all for universal. NEVER any other sub-line text.\n" +
+      "  • Sentence-case section headers throughout.\n" +
+      "  • A single italic blockquote diagnostic question placed roughly " +
+      "two-thirds of the way through.\n" +
+      "  • A 'The takeaway' section near the end with ONE concrete weekly " +
+      "action.\n" +
+      "  • '— Aksel' sign-off on its own line.\n" +
+      "  • The standard footer paragraph.\n" +
+      "Inline-link every factual claim to its source. NO body-text sales " +
+      "pitches in either register — the standard footer is the only CTA.\n\n" +
+      "REGISTER CALIBRATION. If the angle was classified 'sme', write for " +
+      "a £2M–£20M business owner with their FD reading over their shoulder — " +
+      "use plain language, no internal-bank jargon (no 'BoE', no 'MREL', no " +
+      "'GLEIF'), prefer concrete examples over public datasets. If 'bank', " +
+      "keep the existing register — datasets, regulatory context, plumbing. " +
+      "If 'universal', write so both readers nod along.\n\n" +
+      "No <file> blocks at this stage — just the markdown article. The QA " +
+      "task will review this output and the final task will produce the " +
+      "publish-ready files.",
   },
   {
     key: "qa",
@@ -841,10 +941,26 @@ export const WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN = JSON.stringify([
       "draft includes a working inline markdown link to a real URL. " +
       "Anything without a verifiable inline source = FAIL (the next " +
       "task is a dedicated fact-check, but flag obvious problems here).\n\n" +
-      "STEP 8 — LENGTH PASS. Word count must be between 900 and 1,100. " +
-      "If 1,100+, identify the 10–15% to cut. Confirm the standard footer " +
-      "is intact and unchanged. Confirm sign-off is '— Aksel' on its own " +
-      "line. Confirm headers are sentence case, not Title Case.\n\n" +
+      "STEP 8 — LENGTH + AUDIENCE TAG PASS. Word count must be between " +
+      "900 and 1,100. If 1,100+, identify the 10–15% to cut. Confirm the " +
+      "standard footer is intact and unchanged. Confirm sign-off is " +
+      "'— Aksel' on its own line. Confirm headers are sentence case, not " +
+      "Title Case.\n\n" +
+      "AUDIENCE TAG (Stage 5.x.4). Read the angle task's output and find " +
+      "the 'Audience' classification (bank | sme | universal). Then check " +
+      "the draft's first line after the H1. It MUST be one of:\n" +
+      "  • '*For finance leaders*' if Audience=bank\n" +
+      "  • '*For growing businesses*' if Audience=sme\n" +
+      "  • (no sub-line, body text starts directly) if Audience=universal\n" +
+      "Any other sub-line text — a different italic phrase, quotes, bold, " +
+      "a blockquote wrapper, or a mismatch between classification and " +
+      "sub-line — is a FAIL. Quote the offending line and tell apply-fixes " +
+      "the exact replacement.\n\n" +
+      "REGISTER CHECK (Stage 5.x.4). If Audience=sme, scan the draft for " +
+      "bank-only jargon: 'BoE', 'MREL', 'GLEIF', 'LEI', 'Pillar 2', " +
+      "'capital ratio', 'CRR', 'liquidity coverage'. Any hit in an SME " +
+      "issue is a FAIL — the SME reader will bounce. Propose a plain " +
+      "replacement.\n\n" +
       "Output is a plain markdown review note with all 8 step headings. " +
       "NO <file> blocks at this stage.",
   },
