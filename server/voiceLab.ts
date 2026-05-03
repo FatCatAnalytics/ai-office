@@ -894,7 +894,14 @@ export const WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN = JSON.stringify([
     title: "QA self-review against the 8-step editorial checklist",
     assignedTo: "editorial-lead",
     priority: "high",
-    complexity: "medium",
+    // Stage 5.x.6: bumped from medium → high. The 8-step QA brief is
+    // instruction-heavy meta-work (read your own draft, apply 8 explicit
+    // checks against the contraband list, audience tag, length, etc.).
+    // Haiku-tier (medium) silently produced 0 chars on the 2026-05-03
+    // weekly run, even with the 5.x.5 retry guard re-running it once.
+    // High-tier (Sonnet/Opus) reliably emits the PASS/FAIL/N/A verdicts
+    // the apply-fixes task needs to act on.
+    complexity: "high",
     dependsOn: ["draft"],
     description:
       "Self-review the draft from the previous task against the 8-step " +

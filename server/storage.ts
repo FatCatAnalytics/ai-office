@@ -1364,6 +1364,45 @@ try {
   console.warn("[seed] Stage 5.x.3 referencePlan upgrade failed:", e);
 }
 
+// Stage 5.x.6: in-place patch the existing Weekly reference plan so the QA
+// task is high-complexity. Older rows (seeded under 5.x.3 and never
+// touched since) carry complexity:"medium" on the qa step, which routes to
+// Haiku and silently produced 0 chars on the 2026-05-03 weekly run.
+// Detection: parse the existing plan, find the entry with key === "qa", and
+// only rewrite if it's still on medium. This avoids clobbering a hand-tuned
+// plan and is idempotent across boots. The orchestrator also forces high
+// routing for plannerKey === "qa" as a belt-and-braces guard, so this
+// migration is purely a cosmetic / future-fresh-seed alignment.
+try {
+  const existingWeekly = storage
+    .getProjectTemplates()
+    .find((t) => t.name === WEEKLY_TEMPLATE_NAME);
+  if (existingWeekly && existingWeekly.referencePlan) {
+    let parsed: Array<Record<string, unknown>> | null = null;
+    try {
+      const p = JSON.parse(existingWeekly.referencePlan);
+      if (Array.isArray(p)) parsed = p as Array<Record<string, unknown>>;
+    } catch {
+      parsed = null;
+    }
+    if (parsed) {
+      const qa = parsed.find((t) => t && t.key === "qa");
+      if (qa && qa.complexity === "medium") {
+        qa.complexity = "high";
+        storage.updateProjectTemplate(existingWeekly.id, {
+          referencePlan: JSON.stringify(parsed),
+          updatedAt: Date.now(),
+        });
+        console.log(
+          `[seed] Stage 5.x.6: bumped QA task complexity medium→high in Weekly template (id=${existingWeekly.id})`,
+        );
+      }
+    }
+  }
+} catch (e) {
+  console.warn("[seed] Stage 5.x.6 QA-complexity bump failed:", e);
+}
+
 // Heartbeat smoke-test seed kept for fresh databases only — useful for
 // confirming the cron loop is alive before flipping the real template on.
 // Skipped on databases that already have other templates so the production

@@ -530,23 +530,50 @@ async function saveLiveOutput(
         );
       }
     }
-    // ─── Stage 5.3 — Beehiiv draft hookup ─────────────────────────────────
+    // ─── Stage 5.3 / 5.x.6 — Beehiiv draft hookup ─────────────────────────
     // After saving file blocks, if any saved file is an issue-*.md (the
-    // editorial pipeline's final newsletter output) AND a Beehiiv key +
-    // publication ID are configured, POST the markdown to Beehiiv as a
-    // DRAFT post. We never auto-publish; the user reviews the draft inside
-    // Beehiiv and presses Send manually. The runner-up file is intentionally
-    // not posted — it's a planning artefact, not a newsletter issue.
-    if (saved > 0 && beehiivConfigured()) {
+    // editorial pipeline's final newsletter output), POST the markdown to
+    // Beehiiv as a DRAFT post. The user reviews the draft inside Beehiiv
+    // and presses Send manually — we never auto-publish. The runner-up
+    // file is intentionally not posted (it's a planning artefact).
+    //
+    // Stage 5.x.6: every gate is now an explicit event so we can tell from
+    // the activity feed exactly why the hook fired or didn't. Before this
+    // change, three different silent-skip paths (no issue file in blocks,
+    // env vars missing, library not configured) all looked identical to
+    // an operator: nothing happened in Beehiiv, no log, no clue why.
+    // Hook is now gated ONLY on "is there an issue-*.md in the saved
+    // blocks" — env-var presence is checked for logging clarity, not as
+    // a silent precondition. If env vars are missing we emit a clear
+    // warning; if they're present, we attempt the post and log the
+    // outcome regardless. Independent of QA status.
+    if (saved > 0) {
       const issueBlock = fileBlocks.find(b => /^issue-\d+\.md$/i.test(b.filename));
-      if (issueBlock) {
+      if (!issueBlock) {
+        deps.emitEvent(
+          projectId, agent.id, agent.name, "Beehiiv hook skipped",
+          `No issue-*.md among ${fileBlocks.length} saved file block(s) — nothing to post`,
+          "info"
+        );
+      } else if (!beehiivConfigured()) {
+        deps.emitEvent(
+          projectId, agent.id, agent.name, "Beehiiv hook skipped",
+          `${issueBlock.filename} ready to post but Beehiiv API key + publication ID not configured (Office Floor → Settings → Beehiiv)`,
+          "warning"
+        );
+      } else {
+        deps.emitEvent(
+          projectId, agent.id, agent.name, "Beehiiv hook entry",
+          `Posting ${issueBlock.filename} (${(issueBlock.content.length / 1024).toFixed(1)} KB markdown) to Beehiiv as draft…`,
+          "info"
+        );
         try {
           const result = await postBeehiivDraft(issueBlock.content);
           if (result.ok) {
             const link = result.webUrl ? ` — ${result.webUrl}` : "";
             const idTag = result.postId ? ` (post ${result.postId})` : "";
             deps.emitEvent(
-              projectId, agent.id, agent.name, "sent to Beehiiv as draft",
+              projectId, agent.id, agent.name, "Beehiiv draft created",
               `📬 ${issueBlock.filename}${idTag}${link}`,
               "success"
             );
@@ -958,10 +985,18 @@ async function runWorkerTask(
   // Route to the cheapest model that meets the tier; fall back to the agent's
   // own configured model if no preferred provider has a key.
   const complexity = (task.complexity as Complexity) ?? "medium";
-  const routed = routeForComplexity(complexity, agent);
+  // Stage 5.x.6: the QA self-review is an instruction-heavy meta-task — the
+  // editorial-lead reads its own draft against an 8-step checklist with
+  // dense per-step rules. Haiku-tier (medium routing) silently produced 0
+  // chars on the 2026-05-03 weekly run for this task. Force high-tier so
+  // the QA pass actually emits PASS/FAIL/N/A verdicts the apply-fixes task
+  // can act on. Same idea as the final-task token cap bump — per-key
+  // override sitting on top of the planner's complexity tag.
+  const effectiveComplexity: Complexity = plannerKey === "qa" ? "high" : complexity;
+  const routed = routeForComplexity(effectiveComplexity, agent);
   const apiKey = storage.getSetting(settingKeyForProvider(routed.provider));
   if (!apiKey) {
-    throw new Error(`No API key configured for ${routed.provider} (needed for ${complexity}-tier task)`);
+    throw new Error(`No API key configured for ${routed.provider} (needed for ${effectiveComplexity}-tier task)`);
   }
 
   // Persist the actual model used so the dashboard reflects routing decisions.
@@ -996,7 +1031,7 @@ async function runWorkerTask(
   deps.setAgentStatus(agent.id, "working", task.title);
   deps.emitEvent(
     project.id, agent.id, agent.name, "started task",
-    `[LIVE] ${routed.provider}/${routed.modelId} — ${task.title} (${complexity}${tools.length > 0 ? " · web tools on" : ""})`,
+    `[LIVE] ${routed.provider}/${routed.modelId} — ${task.title} (${effectiveComplexity}${effectiveComplexity !== complexity ? ` · forced from ${complexity}` : ""}${tools.length > 0 ? " · web tools on" : ""})`,
     "info"
   );
 
@@ -1107,12 +1142,23 @@ async function runWaveConcurrent(
         // soft floor). When the editorial-lead returns ~0 chars or a verdict
         // string with too few markers, we re-run ONCE before letting the
         // pipeline continue with junk. Cap retries at 1 to avoid loops.
+        //
+        // Stage 5.x.6 — debug events. We always log the QA guard's view of
+        // the output so the operator can see whether the guard fired, what
+        // it saw, and (on a still-inadequate retry) what the model actually
+        // returned — capped at 2000 chars so the event stream stays usable.
         if (plannerKey === "qa") {
-          const verdictHits =
-            (output.match(/PASS/g)?.length ?? 0) +
-            (output.match(/FAIL/g)?.length ?? 0) +
-            (output.match(/N\/A/g)?.length ?? 0);
+          const countMarkers = (s: string) =>
+            (s.match(/PASS/g)?.length ?? 0) +
+            (s.match(/FAIL/g)?.length ?? 0) +
+            (s.match(/N\/A/g)?.length ?? 0);
+          const verdictHits = countMarkers(output);
           const inadequate = output.length < 200 || verdictHits < 6;
+          deps.emitEvent(
+            project.id, agent.id, agent.name, "qa guard",
+            `QA guard saw ${output.length} chars, ${verdictHits} verdict markers — ${inadequate ? "INADEQUATE" : "ok"}`,
+            inadequate ? "warning" : "info"
+          );
           const retries = qaRetryCount?.get(task.id) ?? 0;
           if (inadequate && retries < 1) {
             qaRetryCount?.set(task.id, retries + 1);
@@ -1122,14 +1168,20 @@ async function runWaveConcurrent(
               "warning"
             );
             output = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
-            const verdictHits2 =
-              (output.match(/PASS/g)?.length ?? 0) +
-              (output.match(/FAIL/g)?.length ?? 0) +
-              (output.match(/N\/A/g)?.length ?? 0);
-            if (output.length < 200 || verdictHits2 < 6) {
+            const verdictHits2 = countMarkers(output);
+            const stillInadequate = output.length < 200 || verdictHits2 < 6;
+            deps.emitEvent(
+              project.id, agent.id, agent.name, "qa retry result",
+              `Retry produced ${output.length} chars, ${verdictHits2} verdict markers — ${stillInadequate ? "STILL INADEQUATE" : "ok"}`,
+              stillInadequate ? "warning" : "info"
+            );
+            if (stillInadequate) {
+              const dump = output.length === 0
+                ? "(empty response)"
+                : output.slice(0, 2000) + (output.length > 2000 ? `\n…[truncated ${output.length - 2000} chars]` : "");
               deps.emitEvent(
                 project.id, agent.id, agent.name, "qa retry inadequate",
-                `⚠️ QA still inadequate after retry (${output.length} chars, ${verdictHits2} markers) — continuing anyway`,
+                `⚠️ QA still inadequate after retry (${output.length} chars, ${verdictHits2} markers) — raw response below — continuing anyway\n\n---\n${dump}\n---`,
                 "warning"
               );
             }
