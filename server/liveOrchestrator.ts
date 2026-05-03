@@ -188,6 +188,10 @@ function buildSharedContext(priorOutputs: PriorOutput[]): string {
 export interface ParsedFileBlock {
   filename: string;
   content: string;
+  // Stage 5.x.5: true when the original stream ended without a closing
+  // </file> tag (or with a partial one like "</file"). The block content is
+  // saved anyway; this flag drives a "truncated, saved partial" warning.
+  truncated: boolean;
 }
 
 // ─── Stage 5.x.2 — reference plan loader ─────────────────────────────────────
@@ -297,17 +301,55 @@ function loadReferencePlanForProject(
 }
 
 export function parseFileBlocks(raw: string): ParsedFileBlock[] {
+  // Stage 5.x.5: tolerant scanner. The previous regex required a closing
+  // </file> tag, so when the model's output token cap hit mid-runner-up
+  // (issue-18 run, project 31, task 229) BOTH blocks were lost as a unit
+  // even though the first block was complete-and-closed. Now we walk
+  // openers and extract content from each opener up to the next opener
+  // (or end-of-string), stripping any trailing </file> or partial </file
+  // we find at the end. A block missing its closer is still saved; we
+  // mark it `truncated: true` so the caller can emit a warning.
   const blocks: ParsedFileBlock[] = [];
-  // Match <file name="...">...</file> with non-greedy body.
-  // Tolerate single quotes, optional whitespace, and CRLF line endings.
-  const re = /<file\s+name=["']([^"']+)["']\s*>([\s\S]*?)<\/file>/gi;
+  const openerRe = /<file\s+name=["']([^"']+)["']\s*>/gi;
+  const openers: { filename: string; bodyStart: number }[] = [];
   let m: RegExpExecArray | null;
-  while ((m = re.exec(raw)) !== null) {
-    const filename = m[1].trim();
+  while ((m = openerRe.exec(raw)) !== null) {
+    openers.push({ filename: m[1].trim(), bodyStart: openerRe.lastIndex });
+  }
+
+  for (let i = 0; i < openers.length; i++) {
+    const { filename, bodyStart } = openers[i];
+    if (!filename) continue;
+    const bodyEnd = i + 1 < openers.length
+      // Slice ends at the start of the NEXT opener — back up to the
+      // beginning of "<file " by re-scanning the slice for any trailing
+      // close tag.
+      ? raw.lastIndexOf("<file", openers[i + 1].bodyStart - 1)
+      : raw.length;
+    let body = raw.slice(bodyStart, bodyEnd);
+
+    // Strip a trailing </file> or partial </file (no closing >, e.g. when
+    // the stream truncated mid-tag). Anything resembling "</fil" at the
+    // very end is treated as partial-close.
+    let truncated = false;
+    const closeFull = body.match(/<\/file\s*>\s*$/i);
+    if (closeFull) {
+      body = body.slice(0, body.length - closeFull[0].length);
+    } else {
+      const closePartial = body.match(/<\/fi(?:l(?:e)?)?\s*$/i);
+      if (closePartial) {
+        body = body.slice(0, body.length - closePartial[0].length);
+        truncated = true;
+      } else if (i === openers.length - 1) {
+        // Last block, no closer at all → assume the stream cut off.
+        truncated = true;
+      }
+    }
+
     // Strip leading/trailing blank lines but preserve interior whitespace.
-    const content = m[2].replace(/^\s*\n/, "").replace(/\s+$/, "") + "\n";
-    if (filename && content.trim().length > 0) {
-      blocks.push({ filename, content });
+    const content = body.replace(/^\s*\n/, "").replace(/\s+$/, "") + "\n";
+    if (content.trim().length > 0) {
+      blocks.push({ filename, content, truncated });
     }
   }
   return blocks;
@@ -469,6 +511,16 @@ async function saveLiveOutput(
           `📄 ${persisted.filename} (${(persisted.sizeBytes / 1024).toFixed(1)} KB)`,
           "success"
         );
+        // Stage 5.x.5: surface truncation so the operator knows to
+        // regenerate or hand-finish the block. The partial content is
+        // already on disk — this is a heads-up, not a failure.
+        if (block.truncated) {
+          deps.emitEvent(
+            projectId, agent.id, agent.name, "file block truncated",
+            `⚠️ ${persisted.filename} truncated mid-stream — saved partial content (${(persisted.sizeBytes / 1024).toFixed(1)} KB)`,
+            "warning"
+          );
+        }
         saved++;
       } catch (e) {
         console.error(`[live] file-block save error:`, e);
@@ -896,7 +948,8 @@ async function runWorkerTask(
   agent: Agent,
   priorOutputs: PriorOutput[],
   deps: LiveOrchestratorDeps,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  plannerKey?: string
 ): Promise<string> {
   const sharedContext = buildSharedContext(priorOutputs);
 
@@ -962,7 +1015,14 @@ async function runWorkerTask(
         // truncation in project #19. Non-research agents pay for the bigger
         // budget but rarely use it — the worker still terminates on stop_reason
         // "end_turn" which usually fires well below the cap.
-        maxTokens: tools.length > 0 ? 8192 : 4096,
+        // Stage 5.x.5: the editorial pipeline's "final" task emits two file
+        // blocks back-to-back (issue + runner-up, ~7K + ~1K chars each =
+        // ~3-4K tokens). The 8K cap clipped issue-18's runner-up mid-tag.
+        // Bump only this one task to 16K — research / qa / factcheck still
+        // cap at 8K / 4K to keep cost bounded.
+        maxTokens: plannerKey === "final"
+          ? 16384
+          : tools.length > 0 ? 8192 : 4096,
         temperature: 0.7,
         tools: tools.length > 0 ? tools : undefined,
         // Stage 4.14: cancel-aware fetch — if the operator hits Stop, every
@@ -1012,7 +1072,9 @@ async function runWaveConcurrent(
   priorOutputs: PriorOutput[],
   deps: LiveOrchestratorDeps,
   waveIndex: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  plannerKeyByTaskId?: Map<number, string>,
+  qaRetryCount?: Map<number, number>
 ): Promise<{ successes: PriorOutput[]; failures: { task: Task; reason: string }[] }> {
   const successes: PriorOutput[] = [];
   const failures: { task: Task; reason: string }[] = [];
@@ -1035,8 +1097,45 @@ async function runWaveConcurrent(
       }
       storage.updateTask(task.id, { status: "in_progress" });
       deps.broadcast({ type: "task_update", task: { ...task, status: "in_progress", waveIndex } });
+      const plannerKey = plannerKeyByTaskId?.get(task.id);
       try {
-        const output = await runWorkerTask(project, task, agent, priorOutputs, deps, signal);
+        let output = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
+
+        // Stage 5.x.5 — QA enforcement.
+        // The 8-step QA self-review must be substantive and contain explicit
+        // PASS / FAIL / N/A verdicts (one per step, 8 steps → ≥6 hits is a
+        // soft floor). When the editorial-lead returns ~0 chars or a verdict
+        // string with too few markers, we re-run ONCE before letting the
+        // pipeline continue with junk. Cap retries at 1 to avoid loops.
+        if (plannerKey === "qa") {
+          const verdictHits =
+            (output.match(/PASS/g)?.length ?? 0) +
+            (output.match(/FAIL/g)?.length ?? 0) +
+            (output.match(/N\/A/g)?.length ?? 0);
+          const inadequate = output.length < 200 || verdictHits < 6;
+          const retries = qaRetryCount?.get(task.id) ?? 0;
+          if (inadequate && retries < 1) {
+            qaRetryCount?.set(task.id, retries + 1);
+            deps.emitEvent(
+              project.id, agent.id, agent.name, "qa retry",
+              `⚠️ QA output inadequate (${output.length} chars, ${verdictHits} verdict markers) — retrying once`,
+              "warning"
+            );
+            output = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
+            const verdictHits2 =
+              (output.match(/PASS/g)?.length ?? 0) +
+              (output.match(/FAIL/g)?.length ?? 0) +
+              (output.match(/N\/A/g)?.length ?? 0);
+            if (output.length < 200 || verdictHits2 < 6) {
+              deps.emitEvent(
+                project.id, agent.id, agent.name, "qa retry inadequate",
+                `⚠️ QA still inadequate after retry (${output.length} chars, ${verdictHits2} markers) — continuing anyway`,
+                "warning"
+              );
+            }
+          }
+        }
+
         // Stage 4.17: persist raw markdown output on the task itself so QA can review
         // worker reasoning (formatter agents read priorOutputs separately via files).
         storage.updateTask(task.id, { status: "done", output });
@@ -1141,6 +1240,11 @@ async function runLiveOrchestrationInner(
   const waves = planWaves(plan);
   const keyToTaskId = new Map<string, number>();
   const keyToTask = new Map<string, Task>();
+  // Stage 5.x.5: planner-local key (e.g. "qa", "final") survives only as
+  // long as we keep this map. Threaded through wave runner so the worker
+  // can apply per-key behaviours (final-task token bump, qa retry guard).
+  const plannerKeyByTaskId = new Map<number, string>();
+  const qaRetryCount = new Map<number, number>();
   const allCreated: Task[] = [];
 
   for (let wIdx = 0; wIdx < waves.length; wIdx++) {
@@ -1163,6 +1267,7 @@ async function runLiveOrchestrationInner(
       });
       keyToTaskId.set(planned.key, created.id);
       keyToTask.set(planned.key, created);
+      plannerKeyByTaskId.set(created.id, planned.key);
       allCreated.push(created);
 
       const assignee = agents.find(a => a.id === planned.assignedTo);
@@ -1213,7 +1318,7 @@ async function runLiveOrchestrationInner(
       "info"
     );
 
-    const { successes, failures } = await runWaveConcurrent(project, wave, agents, priorOutputs, deps, waveIdx, signal);
+    const { successes, failures } = await runWaveConcurrent(project, wave, agents, priorOutputs, deps, waveIdx, signal, plannerKeyByTaskId, qaRetryCount);
     priorOutputs.push(...successes);
     allFailures.push(...failures);
     completedCount += successes.length;
@@ -1274,6 +1379,7 @@ async function runLiveOrchestrationInner(
             });
             newKeyToId.set(planned.key, created.id);
             newKeyToTask.set(planned.key, created);
+            plannerKeyByTaskId.set(created.id, planned.key);
             allCreated.push(created);
             deps.broadcast({ type: "task_created", task: created });
             const assignee = agents.find(a => a.id === planned.assignedTo);
@@ -1491,6 +1597,21 @@ async function resumeLiveOrchestrationInner(
     if (agent) priorOutputs.push({ task, agent, output });
   }
 
+  // Stage 5.x.5: rebuild planner-key map for resume by title-matching the
+  // tasks against the project template's reference plan. The DB doesn't
+  // persist planner-local keys, so this is the only way to know which
+  // resumed task is "qa" or "final" for the per-key behaviours.
+  const resumePlannerKeyByTaskId = new Map<number, string>();
+  const resumeQaRetryCount = new Map<number, number>();
+  const resumeRefPlan = loadReferencePlanForProject(project, agents, deps);
+  if (resumeRefPlan) {
+    const titleToKey = new Map(resumeRefPlan.map(p => [p.title, p.key]));
+    for (const t of storage.getTasks(projectId)) {
+      const k = titleToKey.get(t.title);
+      if (k) resumePlannerKeyByTaskId.set(t.id, k);
+    }
+  }
+
   // Run the waves.
   let completedCount = completedTaskIds.size;
   const allFailures: { task: Task; reason: string }[] = [];
@@ -1508,7 +1629,7 @@ async function resumeLiveOrchestrationInner(
       "info"
     );
 
-    const { successes, failures } = await runWaveConcurrent(project, wave, agents, priorOutputs, deps, wIdx, signal);
+    const { successes, failures } = await runWaveConcurrent(project, wave, agents, priorOutputs, deps, wIdx, signal, resumePlannerKeyByTaskId, resumeQaRetryCount);
     priorOutputs.push(...successes);
     allFailures.push(...failures);
     completedCount += successes.length;
