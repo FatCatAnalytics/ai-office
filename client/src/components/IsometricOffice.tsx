@@ -1220,22 +1220,37 @@ export default function IsometricOffice({ agents, project }: Props) {
     ];
   },[vpDims]);
 
+  // Fit the entire floor (including walls) into the viewport on init AND
+  // whenever the viewport resizes — so the office adapts to any screen size
+  // and the user never has to scroll. Constrains by BOTH axes (smaller wins).
   useEffect(()=>{
+    const fitToViewport = (w:number, h:number) => {
+      // Floor footprint in world px (left/right floor corners + back-of-wall)
+      const [floorRx]=iso(COLS,0); const [floorLx]=iso(0,ROWS);
+      const [,floorBy]=iso(COLS,ROWS);
+      const floorW = floorRx - floorLx;
+      // Vertical extent: top of back wall to floor front corner
+      const floorH = (floorBy - (ORIGIN_Y - WALL_H));
+      // Leave a little padding so banners + name labels aren't clipped
+      const fzW = w * 0.92 / floorW;
+      const fzH = h * 0.88 / floorH;
+      const fz  = clamp(Math.min(fzW, fzH), ZOOM_MIN, ZOOM_MAX);
+      const [fcx,fcy]=iso(COLS/2,ROWS/2);
+      setPan([w/2-fcx*fz, h/2-fcy*fz]);
+      setZoom(fz);
+    };
+
     const obs = new ResizeObserver(entries=>{
       const e=entries[0]; if(!e) return;
       const w=e.contentRect.width, h=e.contentRect.height;
       setVpDims({w,h});
       if(!initDone.current){
         initDone.current=true;
-        // Floor width in world px: right corner x - left corner x
-        const [floorRx]=iso(COLS,0); const [floorLx]=iso(0,ROWS);
-        const floorW = floorRx - floorLx;
-        const fz = clamp(w*0.88/floorW, ZOOM_MIN, ZOOM_MAX);
-        // Centre on floor mid-point
-        const [fcx,fcy]=iso(COLS/2,ROWS/2);
-        setPan([w/2-fcx*fz, h/2-fcy*fz]);
-        setZoom(fz);
+        fitToViewport(w,h);
       }
+      // Note: we intentionally do NOT auto-refit after the user has interacted
+      // — it would yank the camera every window resize. The Reset button uses
+      // the same fit logic if they want to re-centre.
     });
     if(containerRef.current) obs.observe(containerRef.current);
     return ()=>obs.disconnect();
@@ -1300,15 +1315,25 @@ export default function IsometricOffice({ agents, project }: Props) {
 
   const handleReset = useCallback(()=>{
     const [floorRx]=iso(COLS,0); const [floorLx]=iso(0,ROWS);
+    const [,floorBy]=iso(COLS,ROWS);
     const floorW=floorRx-floorLx;
-    const fz=clamp(vpDims.w*0.88/floorW,ZOOM_MIN,ZOOM_MAX);
+    const floorH=(floorBy-(ORIGIN_Y-WALL_H));
+    const fzW=vpDims.w*0.92/floorW;
+    const fzH=vpDims.h*0.88/floorH;
+    const fz=clamp(Math.min(fzW,fzH),ZOOM_MIN,ZOOM_MAX);
     const [fcx,fcy]=iso(COLS/2,ROWS/2);
     setPan([vpDims.w/2-fcx*fz,vpDims.h/2-fcy*fz]);
     setZoom(fz);
   },[vpDims]);
 
-  // Active project banner
-  const hasProject = !!project;
+  // "hasProject" gates all live agent indicators (bubbles, blocked badges,
+  // active glow ring, done celebration emoji). It must be FALSE not just when
+  // project is null, but also when the project has finished — otherwise stale
+  // bubbles linger after a run completes.
+  const hasProject = !!project
+    && project.status !== "completed"
+    && project.status !== "failed"
+    && project.status !== "cancelled";
 
   return (
     <div ref={containerRef} className="w-full h-full relative overflow-hidden"

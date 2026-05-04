@@ -501,16 +501,25 @@ const AGENT_DOT_COLORS: Record<string, string> = {
 
 // ─── Top stats bar ─────────────────────────────────────────────────────────────
 function TopStatsBar({ agents, project, tasks }: { agents: Agent[]; project: Project | null; tasks: Task[] }) {
-  const totalAgents   = agents.length || 18;
-  const activeAgents  = agents.filter(a => a.status !== "idle").length || 14;
-  const idleAgents    = agents.filter(a => a.status === "idle").length || 3;
-  const blockedAgents = agents.filter(a => a.status === "blocked").length || 1;
-  const progress      = project?.progress ?? 68;
-  const tasksCompleted = project?.tasksCompleted ?? 24;
-  const tasksTotal    = project?.tasksTotal ?? 36;
-  const avgResponse   = project?.avgResponseTime ?? 2.4;
-  const tokensUsed    = project?.tokensUsed ?? 1200000;
-  const costToday     = project?.costToday ?? 4.37;
+  // When no project is running (or the running project has finished), all
+  // agents should appear idle and runtime counters should reset. We only show
+  // real values for an active in-flight project.
+  const hasProject = !!project
+    && project.status !== "completed"
+    && project.status !== "failed"
+    && project.status !== "cancelled";
+  const totalAgents   = agents.length;
+  const activeAgents  = hasProject ? agents.filter(a => a.status !== "idle" && a.status !== "done").length : 0;
+  const idleAgents    = hasProject ? agents.filter(a => a.status === "idle").length : totalAgents;
+  const blockedAgents = hasProject ? agents.filter(a => a.status === "blocked").length : 0;
+  const progress      = hasProject ? (project?.progress ?? 0) : 0;
+  const tasksCompleted = hasProject ? (project?.tasksCompleted ?? 0) : 0;
+  const tasksTotal    = hasProject ? (project?.tasksTotal ?? 0) : 0;
+  const avgResponse   = hasProject ? (project?.avgResponseTime ?? 0) : 0;
+  const tokensUsed    = hasProject ? (project?.tokensUsed ?? 0) : 0;
+  const costToday     = hasProject ? (project?.costToday ?? 0) : 0;
+  // Suppress unused warning for tasks param (kept for future per-task stats)
+  void tasks;
 
   return (
     <div className="flex items-center gap-0 border-b border-slate-800 bg-slate-900/70 backdrop-blur flex-shrink-0 overflow-x-auto"
@@ -720,9 +729,15 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
     await apiRequest("POST", "/api/projects", body);
   };
 
-  const activeCount  = agents.filter(a => a.status !== "idle").length;
-  const idleCount    = agents.filter(a => a.status === "idle").length;
-  const blockedCount = agents.filter(a => a.status === "blocked").length;
+  // Reset live counts when no project is in flight so the header doesn't show
+  // stale "2 active / 1 blocked" once a project has finished.
+  const hasProjectHdr = !!project
+    && project.status !== "completed"
+    && project.status !== "failed"
+    && project.status !== "cancelled";
+  const activeCount  = hasProjectHdr ? agents.filter(a => a.status !== "idle" && a.status !== "done").length : 0;
+  const idleCount    = hasProjectHdr ? agents.filter(a => a.status === "idle").length : agents.length;
+  const blockedCount = hasProjectHdr ? agents.filter(a => a.status === "blocked").length : 0;
 
   return (
     <div className="flex flex-col h-full bg-slate-950 text-slate-100 overflow-hidden">
@@ -804,10 +819,25 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       <TopStatsBar agents={agents} project={project} tasks={tasks} />
 
       {/* ── Main 3-column layout ── */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* min-h-0 / min-w-0 on flex children so they actually shrink to fit the
+          viewport instead of forcing the page to scroll. */}
+      <div className="flex flex-1 overflow-hidden min-h-0">
+
+        {/* LEFT panel — Task Flow + Quick Actions (moved from right side in 5.x.11) */}
+        <div className="flex flex-col border-r border-slate-800 bg-slate-900/60 flex-shrink-0 overflow-hidden"
+          style={{ width: 220 }}>
+          {/* Task flow */}
+          <div className="flex flex-col overflow-hidden min-h-0" style={{ flex: "1 1 0" }}>
+            <TaskFlowPanel agents={agents} tasks={tasks} />
+          </div>
+          {/* Quick actions */}
+          <div className="border-t border-slate-800 flex-shrink-0">
+            <QuickActions onNewProject={() => setShowModal(true)} />
+          </div>
+        </div>
 
         {/* CENTRE: canvas */}
-        <main className="flex-1 flex flex-col overflow-hidden">
+        <main className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
           {agents.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
               <Loader2 size={24} className="animate-spin" />
@@ -824,20 +854,11 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
           )}
         </main>
 
-        {/* RIGHT panel */}
+        {/* RIGHT panel — Activity Feed only (Stage 5.x.11) */}
         <div className="flex flex-col border-l border-slate-800 bg-slate-900/60 flex-shrink-0 overflow-hidden"
-          style={{ width: 220 }}>
-          {/* Activity feed - takes most height */}
-          <div className="flex flex-col overflow-hidden" style={{ flex: "1 1 0" }}>
+          style={{ width: 240 }}>
+          <div className="flex flex-col overflow-hidden flex-1 min-h-0">
             <ActivityFeed events={events} connected={connected} liveStreams={liveStreams} />
-          </div>
-          {/* Task flow */}
-          <div className="flex flex-col overflow-hidden border-t border-slate-800" style={{ flex: "1.2 1 0" }}>
-            <TaskFlowPanel agents={agents} tasks={tasks} />
-          </div>
-          {/* Quick actions */}
-          <div className="border-t border-slate-800 flex-shrink-0">
-            <QuickActions onNewProject={() => setShowModal(true)} />
           </div>
         </div>
       </div>

@@ -15,19 +15,10 @@ import TemplatesPage from "./pages/TemplatesPage";
 import { useWebSocket } from "./hooks/useWebSocket";
 import {
   LayoutDashboard, Users, LayoutGrid, Settings, Send, DollarSign, FolderOpen,
-  Wifi, WifiOff, Crown, Monitor, Server, Bug, Palette, Rocket,
-  Database, BarChart3, Shield, Briefcase, Circle, ChevronRight, Folders,
-  LogOut, CalendarClock,
+  Wifi, WifiOff, Folders, LogOut, CalendarClock,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import type { Agent, Project } from "./types";
-
-const ICON_MAP: Record<string, React.ElementType> = {
-  Crown, Monitor, Server, Bug, Palette, Rocket, Database, BarChart3, Shield, Briefcase,
-};
-const STATUS_DOT: Record<string, string> = {
-  idle: "#334155", working: "#22c55e", thinking: "#f59e0b", blocked: "#ef4444", done: "#06b6d4",
-};
+import type { Project } from "./types";
 
 // ─── Shared shell around all routes ──────────────────────────────────────────
 function AppShell() {
@@ -53,8 +44,8 @@ function AppShell() {
     { href: "/settings", icon: Settings, label: "Settings" },
   ];
 
-  const activeCount  = agents.filter(a => a.status !== "idle").length;
-  const blockedCount = agents.filter(a => a.status === "blocked").length;
+  // Sidebar no longer renders per-agent live counts — those moved to the top
+  // stats bar. Header counters are derived inside OfficeDashboard.
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden" style={{ fontFamily:"Inter, sans-serif" }}>
@@ -113,21 +104,8 @@ function AppShell() {
           })}
         </nav>
 
-        {/* Agent list */}
-        <div className="px-3 pb-3 border-t border-slate-800 pt-3">
-          <div className="text-xs text-slate-600 uppercase tracking-wider mb-2 px-1">
-            Agents · {activeCount} active
-          </div>
-          <div className="space-y-1 max-h-48 overflow-y-auto custom-scroll">
-            {agents.map(agent => (
-              <div key={agent.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-800 transition-colors">
-                <div className="w-2 h-2 rounded-full flex-shrink-0"
-                  style={{ background: STATUS_DOT[agent.status] ?? "#334155" }}/>
-                <span className="text-xs text-slate-400 flex-1 truncate">{agent.name}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+        {/* Agent status list removed in Stage 5.x.11 — agent presence is now
+            shown on the office floor itself; the sidebar list was redundant. */}
 
         {/* Connection + new project */}
         <div className="px-3 pb-4 space-y-2">
