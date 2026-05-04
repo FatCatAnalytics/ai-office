@@ -82,82 +82,153 @@ interface Zone {
   desks: [number, number][];
 }
 
+// Stage 5.x.9: Lined-up team zones to stop sprites overlapping each other.
+// Sprite art is 160 world-px wide; tiles are 120 world-px (TW). Two sprites
+// in the same row need ≥3 cols apart (= 180 screen-px horizontal) to clear
+// each other with breathing room. Front/back rows are offset by 1 col so the
+// front-row sprite slots between back-row sprites instead of straight in front
+// of one (still mildly overlaps the back sprite's lower body — natural seating
+// look).
+//
+// Bands:
+//   Top   (rows 1–4)   : Manager
+//   Upper (rows 6–10)  : Research bullpen (wide), UI/UX, QA
+//   Lower (rows 12–16) : Frontend, Backend, DevOps, Data
+//   Floor (rows 18–20) : Hot desks + Future Expansion
 const ZONES: Zone[] = [
   {
     id: "manager", label: "Manager Agent",
     col: 10, row: 1, w: 5, d: 4,
     color: "#a855f7",
-    desks: [[2, 2]],            // centre of 5w x 4d
+    desks: [[2, 2]],
   },
   {
-    id: "frontend", label: "Frontend Dev Team",
-    col: 1, row: 6, w: 6, d: 5,
-    color: "#3b82f6",
-    desks: [[1,2],[3,2],[1,4],[3,4]],   // centred rows in 6w x 5d
-  },
-  {
-    id: "backend", label: "Backend Dev Team",
-    col: 9, row: 6, w: 6, d: 5,
-    color: "#10b981",
-    desks: [[1,2],[3,2],[1,4],[3,4]],
-  },
-  {
-    id: "qa", label: "QA Team",
-    col: 17, row: 6, w: 5, d: 5,
-    color: "#f59e0b",
-    desks: [[1,2],[3,2],[2,4]],
+    // Research / data-collection bullpen — biggest zone, holds 8 desks in two
+    // staggered rows so every sprite gets clear screen-space.
+    id: "research", label: "Research Team",
+    col: 1, row: 6, w: 14, d: 5,
+    color: "#6366f1",
+    desks: [
+      [1,2],[4,2],[7,2],[10,2],     // back row, 3 cols apart
+      [2,4],[5,4],[8,4],[11,4],     // front row, offset by 1 col
+    ],
   },
   {
     id: "uiux", label: "UI/UX Design Team",
-    col: 1, row: 13, w: 6, d: 5,
+    col: 15, row: 6, w: 4, d: 4,
     color: "#ec4899",
-    desks: [[1,2],[3,2],[2,4]],
+    desks: [[1,2]],
+  },
+  {
+    id: "qa", label: "QA Team",
+    col: 19, row: 6, w: 4, d: 4,
+    color: "#f59e0b",
+    desks: [[1,2]],
+  },
+  {
+    id: "frontend", label: "Frontend Dev Team",
+    col: 1, row: 12, w: 6, d: 5,
+    color: "#3b82f6",
+    desks: [[1,2],[4,2]],            // Frontend Dev + Editorial Lead/PM
+  },
+  {
+    id: "backend", label: "Backend Dev Team",
+    col: 7, row: 12, w: 6, d: 5,
+    color: "#10b981",
+    desks: [[1,2],[4,2]],            // Backend Dev + DB Architect
   },
   {
     id: "devops", label: "DevOps Team",
-    col: 9, row: 13, w: 6, d: 5,
+    col: 13, row: 12, w: 6, d: 5,
     color: "#06b6d4",
-    desks: [[1,2],[3,2],[1,4],[3,4]],
+    desks: [[1,2],[4,2]],            // DevOps Engineer + Security Engineer
   },
   {
     id: "data", label: "Data Team",
-    col: 17, row: 13, w: 5, d: 5,
+    col: 19, row: 12, w: 4, d: 5,
     color: "#8b5cf6",
-    desks: [[1,2],[3,2],[2,4]],
+    desks: [[1,2]],                  // Data Scientist (tech writer goes to research)
   },
   {
     id: "hotdesk", label: "Hot Desk Zone",
-    col: 2, row: 19, w: 9, d: 4,
+    col: 2, row: 18, w: 12, d: 2,
     color: "#64748b",
-    desks: [[1,2],[3,2],[5,2],[7,2],[2,4],[4,4],[6,4]],
+    desks: [[1,1],[4,1],[7,1],[10,1]],
   },
 ];
 
 // Future Expansion zone (separate — just an outline, no desks)
-const EXPANSION = { col: 13, row: 19, w: 10, d: 6 };
+const EXPANSION = { col: 15, row: 18, w: 8, d: 2 };
 
 // Meeting area (lounge)
 const LOUNGE = { col: 21, row: 2, w: 3, d: 5 };
 
-// ─── Desk slot allocation (Stage 4.9: per-agent, not per spriteType) ─────────
-// Each spriteType has a *preferred* seat. When multiple agents share a sprite
-// (e.g. two backend devs), only the first claims that seat — the rest fall
-// back to: same zone next free desk → hotdesk pool → any free desk anywhere.
-const SPRITE_PREFERRED_DESK: Record<string, [string, number]> = {
-  manager:      ["manager",  0],
-  frontend:     ["frontend", 0],
-  backend:      ["backend",  0],
-  qa:           ["qa",       0],
-  uiux:         ["uiux",     0],
-  devops:       ["devops",   0],
-  dbarchitect:  ["backend",  1],
-  datascientist:["data",     0],
-  harvester:    ["data",     1], // Stage 4.8: Data Harvester sits next to Data Scientist
-  secengineer:  ["devops",   1],
-  pm:           ["frontend", 1],
+// ─── Desk slot allocation ───────────────────────────────────────────────────────
+// Stage 5.x.9: a few agents share a sprite type but belong in different zones
+// (e.g. several research agents reuse the "frontend" sprite). Allocation now
+// checks NAME first, then sprite type, then fallbacks. This keeps roles tidy
+// and prevents the research agents from piling into the dev zone.
+//
+// Lookup order per agent:
+//   1) NAME_PREFERRED_DESK[agent.name]
+//   2) NAME_AFFINITY_ZONE[agent.name]   → next free desk in that zone
+//   3) SPRITE_PREFERRED_DESK[spriteType]
+//   4) SPRITE_AFFINITY_ZONE[spriteType] → next free desk in that zone
+//   5) hot desk pool
+//   6) any free desk anywhere
+
+// Per-agent preferred seats. Indexes match the desks: arrays in ZONES above.
+const NAME_PREFERRED_DESK: Record<string, [string, number]> = {
+  // Research bullpen — 8 desks (back row 0-3, front row 4-7)
+  "Source Discovery Agent":          ["research", 0],
+  "Annual Reports / Filings Agent":  ["research", 1],
+  "Web Scraping Agent":              ["research", 2],
+  "Industry Reports Agent":          ["research", 3],
+  "Document Parsing Agent":          ["research", 4],
+  "Data Validation Agent":           ["research", 5],
+  "Deep Research Agent":             ["research", 6],
+  "Technical Writer":                ["research", 7],
+  // Lower-band team rooms (2 desks each, lined up)
+  "Frontend Dev":     ["frontend", 0],
+  "Editorial Lead":   ["frontend", 1],
+  "Backend Dev":      ["backend",  0],
+  "DB Architect":     ["backend",  1],
+  "DevOps Engineer":  ["devops",   0],
+  "Security Engineer":["devops",   1],
+  "Data Scientist":   ["data",     0],
+  // Single-desk rooms
+  "UI/UX Designer":   ["uiux",     0],
+  "QA Engineer":      ["qa",       0],
+  "Manager Agent":    ["manager",  0],
 };
 
-// Sprite → home zone (used when preferred desk is taken)
+// Per-agent home zone (used when the preferred desk is somehow taken).
+const NAME_AFFINITY_ZONE: Record<string, string> = {
+  "Source Discovery Agent":         "research",
+  "Annual Reports / Filings Agent": "research",
+  "Web Scraping Agent":             "research",
+  "Industry Reports Agent":         "research",
+  "Document Parsing Agent":         "research",
+  "Data Validation Agent":          "research",
+  "Deep Research Agent":            "research",
+  "Technical Writer":               "research",
+};
+
+// Sprite-type fallback (covers any agent we didn't list by name).
+const SPRITE_PREFERRED_DESK: Record<string, [string, number]> = {
+  manager:       ["manager",  0],
+  frontend:      ["frontend", 0],
+  backend:       ["backend",  0],
+  qa:            ["qa",       0],
+  uiux:          ["uiux",     0],
+  devops:        ["devops",   0],
+  dbarchitect:   ["backend",  1],
+  datascientist: ["data",     0],
+  harvester:     ["research", 0], // research bullpen — data harvester is a research role
+  secengineer:   ["devops",   1],
+  pm:            ["frontend", 1],
+};
+
 const SPRITE_AFFINITY_ZONE: Record<string, string> = {
   manager:       "manager",
   frontend:      "frontend",
@@ -169,7 +240,7 @@ const SPRITE_AFFINITY_ZONE: Record<string, string> = {
   devops:        "devops",
   secengineer:   "devops",
   datascientist: "data",
-  harvester:     "data",
+  harvester:     "research",
 };
 
 export type DeskAssignmentMap = Map<string, [number, number]>;
@@ -203,31 +274,43 @@ function buildDeskAssignments(agents: Agent[]): DeskAssignmentMap {
     return a.id.localeCompare(b.id);
   });
 
+  // Helper: try to seat an agent in the next free desk of a given zone.
+  const claimAnyInZone = (agentId: string, zoneId: string): boolean => {
+    const zone = ZONES.find(z => z.id === zoneId);
+    if (!zone) return false;
+    for (let i = 0; i < zone.desks.length; i++) {
+      const pos = claim(zoneId, i);
+      if (pos) { out.set(agentId, pos); return true; }
+    }
+    return false;
+  };
+
   for (const agent of ordered) {
     const sprite = agent.spriteType;
 
-    // 1) Preferred desk for this sprite
+    // 1) Preferred desk by agent NAME (most specific)
+    const namePref = NAME_PREFERRED_DESK[agent.name];
+    if (namePref) {
+      const pos = claim(namePref[0], namePref[1]);
+      if (pos) { out.set(agent.id, pos); continue; }
+    }
+
+    // 2) Affinity zone by agent NAME
+    const nameZone = NAME_AFFINITY_ZONE[agent.name];
+    if (nameZone && claimAnyInZone(agent.id, nameZone)) continue;
+
+    // 3) Preferred desk by sprite type
     const pref = SPRITE_PREFERRED_DESK[sprite];
     if (pref) {
       const pos = claim(pref[0], pref[1]);
       if (pos) { out.set(agent.id, pos); continue; }
     }
 
-    // 2) Next free desk in the affinity zone
+    // 4) Next free desk in the sprite's affinity zone
     const affinityZoneId = SPRITE_AFFINITY_ZONE[sprite];
-    if (affinityZoneId) {
-      const zone = ZONES.find(z => z.id === affinityZoneId);
-      if (zone) {
-        let placed = false;
-        for (let i = 0; i < zone.desks.length; i++) {
-          const pos = claim(affinityZoneId, i);
-          if (pos) { out.set(agent.id, pos); placed = true; break; }
-        }
-        if (placed) continue;
-      }
-    }
+    if (affinityZoneId && claimAnyInZone(agent.id, affinityZoneId)) continue;
 
-    // 3) Hotdesk pool
+    // 5) Hotdesk pool
     const hotZone = ZONES.find(z => z.id === "hotdesk");
     if (hotZone) {
       let placed = false;
@@ -238,7 +321,7 @@ function buildDeskAssignments(agents: Agent[]): DeskAssignmentMap {
       if (placed) continue;
     }
 
-    // 4) Any free desk anywhere
+    // 6) Any free desk anywhere
     let placed = false;
     for (const z of ZONES) {
       for (let i = 0; i < z.desks.length; i++) {
