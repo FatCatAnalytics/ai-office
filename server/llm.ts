@@ -49,6 +49,13 @@ export interface StreamResult {
   text: string;
   tokensIn: number;
   tokensOut: number;
+  // Stage 5.x.13: surface the provider's stop reason so callers (notably the
+  // QA reviewer) can detect a truncated response and retry with a higher
+  // token cap. Normalised values: "end_turn" | "max_tokens" |
+  // "stop_sequence" | "content_filter" | "" (unknown / not reported).
+  // Streaming endpoints from Anthropic, OpenAI, and Google populate this;
+  // tool-loop helpers preserve their last round's value.
+  stopReason?: string;
 }
 
 // Maximum tool-call rounds per request. Each iteration is one model call +
@@ -178,6 +185,7 @@ async function streamAnthropic(req: StreamRequest, handlers: StreamHandlers): Pr
   let text = "";
   let tokensIn = 0;
   let tokensOut = 0;
+  let anthStopReason = "";
 
   for await (const data of parseSSE(res.body)) {
     if (!data || data === "[DONE]") continue;
@@ -190,13 +198,17 @@ async function streamAnthropic(req: StreamRequest, handlers: StreamHandlers): Pr
       handlers.onDelta?.(delta);
     } else if (evt.type === "message_start" && evt.message?.usage) {
       tokensIn = evt.message.usage.input_tokens ?? 0;
-    } else if (evt.type === "message_delta" && evt.usage) {
-      tokensOut = evt.usage.output_tokens ?? tokensOut;
+    } else if (evt.type === "message_delta") {
+      // Anthropic emits the final stop_reason on message_delta.delta when the
+      // turn ends. Capture it so the QA reviewer can detect truncation and
+      // retry with a larger output budget.
+      if (evt.usage) tokensOut = evt.usage.output_tokens ?? tokensOut;
+      if (evt.delta?.stop_reason) anthStopReason = evt.delta.stop_reason;
     }
   }
 
   handlers.onUsage?.({ tokensIn, tokensOut });
-  return { text, tokensIn, tokensOut };
+  return { text, tokensIn, tokensOut, stopReason: anthStopReason };
 }
 
 // ─── OpenAI ─────────────────────────────────────────────────────────────────
@@ -228,16 +240,23 @@ async function streamOpenAI(req: StreamRequest, handlers: StreamHandlers): Promi
   let text = "";
   let tokensIn = 0;
   let tokensOut = 0;
+  let oaiStopReason = "";
 
   for await (const data of parseSSE(res.body)) {
     if (!data || data === "[DONE]") continue;
     let evt: any;
     try { evt = JSON.parse(data); } catch { continue; }
 
-    const delta = evt.choices?.[0]?.delta?.content;
+    const choice = evt.choices?.[0];
+    const delta = choice?.delta?.content;
     if (typeof delta === "string" && delta.length > 0) {
       text += delta;
       handlers.onDelta?.(delta);
+    }
+    // OpenAI normalises this to "stop" | "length" | "content_filter" | "tool_calls".
+    // Map "length" -> "max_tokens" so all callers can use a single check.
+    if (choice?.finish_reason) {
+      oaiStopReason = choice.finish_reason === "length" ? "max_tokens" : choice.finish_reason;
     }
     if (evt.usage) {
       tokensIn = evt.usage.prompt_tokens ?? tokensIn;
@@ -246,7 +265,7 @@ async function streamOpenAI(req: StreamRequest, handlers: StreamHandlers): Promi
   }
 
   handlers.onUsage?.({ tokensIn, tokensOut });
-  return { text, tokensIn, tokensOut };
+  return { text, tokensIn, tokensOut, stopReason: oaiStopReason };
 }
 
 // ─── Google Gemini ──────────────────────────────────────────────────────────
@@ -289,18 +308,26 @@ async function streamGoogle(req: StreamRequest, handlers: StreamHandlers): Promi
   let text = "";
   let tokensIn = 0;
   let tokensOut = 0;
+  let gemStopReason = "";
 
   for await (const data of parseSSE(res.body)) {
     if (!data) continue;
     let evt: any;
     try { evt = JSON.parse(data); } catch { continue; }
 
-    const parts = evt.candidates?.[0]?.content?.parts ?? [];
+    const candidate = evt.candidates?.[0];
+    const parts = candidate?.content?.parts ?? [];
     for (const p of parts) {
       if (typeof p.text === "string" && p.text.length > 0) {
         text += p.text;
         handlers.onDelta?.(p.text);
       }
+    }
+    // Gemini uses "STOP" | "MAX_TOKENS" | "SAFETY" | "RECITATION". Normalise
+    // MAX_TOKENS -> max_tokens / STOP -> end_turn for cross-provider parity.
+    if (candidate?.finishReason) {
+      const fr = String(candidate.finishReason).toLowerCase();
+      gemStopReason = fr === "max_tokens" ? "max_tokens" : fr === "stop" ? "end_turn" : fr;
     }
     if (evt.usageMetadata) {
       tokensIn = evt.usageMetadata.promptTokenCount ?? tokensIn;
@@ -309,7 +336,7 @@ async function streamGoogle(req: StreamRequest, handlers: StreamHandlers): Promi
   }
 
   handlers.onUsage?.({ tokensIn, tokensOut });
-  return { text, tokensIn, tokensOut };
+  return { text, tokensIn, tokensOut, stopReason: gemStopReason };
 }
 
 // ─── Kimi (Moonshot) — OpenAI-compatible API ────────────────────────────────
@@ -394,16 +421,21 @@ async function streamKimi(req: StreamRequest, handlers: StreamHandlers): Promise
   let text = "";
   let tokensIn = 0;
   let tokensOut = 0;
+  let kimiStopReason = "";
 
   for await (const data of parseSSE(res.body)) {
     if (!data || data === "[DONE]") continue;
     let evt: any;
     try { evt = JSON.parse(data); } catch { continue; }
 
-    const delta = evt.choices?.[0]?.delta?.content;
+    const choice = evt.choices?.[0];
+    const delta = choice?.delta?.content;
     if (typeof delta === "string" && delta.length > 0) {
       text += delta;
       handlers.onDelta?.(delta);
+    }
+    if (choice?.finish_reason) {
+      kimiStopReason = choice.finish_reason === "length" ? "max_tokens" : choice.finish_reason;
     }
     if (evt.usage) {
       tokensIn = evt.usage.prompt_tokens ?? tokensIn;
@@ -422,7 +454,7 @@ async function streamKimi(req: StreamRequest, handlers: StreamHandlers): Promise
   }
 
   handlers.onUsage?.({ tokensIn, tokensOut });
-  return { text, tokensIn, tokensOut };
+  return { text, tokensIn, tokensOut, stopReason: kimiStopReason };
 }
 
 // ─── DeepSeek — OpenAI-compatible API ─────────────────────────────────
@@ -471,16 +503,21 @@ async function streamDeepSeek(req: StreamRequest, handlers: StreamHandlers): Pro
   let text = "";
   let tokensIn = 0;
   let tokensOut = 0;
+  let dsStopReason = "";
 
   for await (const data of parseSSE(res.body)) {
     if (!data || data === "[DONE]") continue;
     let evt: any;
     try { evt = JSON.parse(data); } catch { continue; }
 
-    const delta = evt.choices?.[0]?.delta?.content;
+    const choice = evt.choices?.[0];
+    const delta = choice?.delta?.content;
     if (typeof delta === "string" && delta.length > 0) {
       text += delta;
       handlers.onDelta?.(delta);
+    }
+    if (choice?.finish_reason) {
+      dsStopReason = choice.finish_reason === "length" ? "max_tokens" : choice.finish_reason;
     }
     if (evt.usage) {
       tokensIn = evt.usage.prompt_tokens ?? tokensIn;
@@ -499,7 +536,7 @@ async function streamDeepSeek(req: StreamRequest, handlers: StreamHandlers): Pro
   }
 
   handlers.onUsage?.({ tokensIn, tokensOut });
-  return { text, tokensIn, tokensOut };
+  return { text, tokensIn, tokensOut, stopReason: dsStopReason };
 }
 
 // ─── Stage 4.13 — tool-call loops per provider ─────────────────────────────

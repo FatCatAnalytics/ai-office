@@ -164,35 +164,123 @@ Return your JSON verdict now.`,
     },
   ];
 
+  // Stage 5.x.13: bumped from 2048 → 4096 default. The reviewer must emit a
+  // structured JSON with a coverage matrix + quoted-evidence issues array; on
+  // a Medium-length newsletter that easily runs 1500-2500 output tokens. The
+  // previous 2048 cap was hitting max_tokens mid-JSON, leaving the reviewer
+  // stuck on the defensive default ("QA returned no summary") and then the
+  // run was forced into fix-and-resume on no real grounds.
+  type QaParsedShape = {
+    signedOff?: boolean;
+    recommendation?: string;
+    summary?: string;
+    coverage?: { ask?: string; met?: boolean; evidence?: string }[];
+    issues?: string[];
+  };
+
   let result;
   try {
     result = await streamCompletion(
-      { provider: routed.provider, modelId: routed.modelId, apiKey, messages, maxTokens: 2048, temperature: 0.2 },
+      { provider: routed.provider, modelId: routed.modelId, apiKey, messages, maxTokens: 4096, temperature: 0.2 },
       {},
     );
   } catch (e) {
     throw new Error(`QA model call failed: ${(e as Error).message ?? e}`);
   }
 
-  const cost = recordUsage(qaAgent, project.id, result.tokensIn, result.tokensOut, deps, {
+  let totalTokensIn = result.tokensIn;
+  let totalTokensOut = result.tokensOut;
+  let parsed = extractJSON<QaParsedShape>(result.text);
+  let rawForFallback = result.text;
+  let stopReasonForFallback = result.stopReason ?? "";
+
+  // Stage 5.x.13: retry once with a much larger output budget if either the
+  // model was truncated (stop_reason=max_tokens) OR the response wasn't valid
+  // JSON. Both symptoms map to the same operator-visible bug — "QA returned
+  // no summary" — so we treat them identically.
+  const truncated = result.stopReason === "max_tokens";
+  if ((!parsed || truncated) && result.text.trim().length > 0) {
+    deps.emitEvent(
+      project.id, "qa", qaAgent.name, "qa retry",
+      truncated
+        ? `Initial QA response truncated at 4096 tokens (stop_reason=max_tokens) — retrying with 8192-token budget`
+        : `Initial QA response wasn't valid JSON — retrying with 8192-token budget and a tighter format prompt`,
+      "info",
+    );
+    // Tighten the prompt for the retry: the model still sees the original
+    // brief + deliverables, but we strip the long evidence-rule preamble
+    // that pushed many models to write 600+ token coverage entries last
+    // time. We instead nudge the model to keep the JSON compact.
+    const retryMessages: LLMMessage[] = [
+      messages[0], // keep the QA system prompt
+      messages[1], // keep the user payload (brief + deliverables)
+      {
+        role: "user",
+        content:
+          "Your previous response was either truncated or not valid JSON. Reply ONLY with the QA verdict JSON object " +
+          "described in the system prompt. Keep evidence quotes under 120 chars and limit coverage to 8 items maximum. " +
+          "No prose, no markdown fences — a single { ... } object.",
+      },
+    ];
+    try {
+      const retry = await streamCompletion(
+        { provider: routed.provider, modelId: routed.modelId, apiKey, messages: retryMessages, maxTokens: 8192, temperature: 0.1 },
+        {},
+      );
+      totalTokensIn  += retry.tokensIn;
+      totalTokensOut += retry.tokensOut;
+      const retryParsed = extractJSON<QaParsedShape>(retry.text);
+      if (retryParsed) {
+        parsed = retryParsed;
+        rawForFallback = retry.text;
+        stopReasonForFallback = retry.stopReason ?? stopReasonForFallback;
+      } else {
+        // Keep the longer text from whichever attempt produced more output,
+        // so the operator-visible fallback summary has more context.
+        if (retry.text.length > rawForFallback.length) rawForFallback = retry.text;
+        if (retry.stopReason) stopReasonForFallback = retry.stopReason;
+      }
+    } catch (e) {
+      // Don't fail the whole QA run on a retry error — fall through to the
+      // defensive fallback below with the original (truncated) text.
+      deps.emitEvent(
+        project.id, "qa", qaAgent.name, "qa retry failed",
+        `Retry call errored: ${(e as Error)?.message ?? String(e)}`,
+        "warning",
+      );
+    }
+  }
+
+  const cost = recordUsage(qaAgent, project.id, totalTokensIn, totalTokensOut, deps, {
     provider: routed.provider, modelId: routed.modelId,
   });
 
-  const parsed = extractJSON<{
-    signedOff?: boolean;
-    recommendation?: string;
-    summary?: string;
-    coverage?: { ask?: string; met?: boolean; evidence?: string }[];
-    issues?: string[];
-  }>(result.text);
+  // Defensive defaults — if QA still returned malformed JSON after the
+  // retry, build a fallback summary that surfaces WHY (instead of the
+  // cryptic "QA returned no summary"). Operators have been hitting this
+  // exact failure mode in production; the empty summary made it impossible
+  // to tell whether the reviewer actually saw the deliverables. We now
+  // include the stop_reason and the head of whatever raw text the model
+  // did produce so the next QA run is debuggable from the UI.
+  let fallbackSummary = "QA returned no summary";
+  if (!parsed) {
+    const head = rawForFallback.trim().replace(/\s+/g, " ").slice(0, 240);
+    const reasonNote = stopReasonForFallback === "max_tokens"
+      ? "output cap was hit even after retry"
+      : stopReasonForFallback && stopReasonForFallback !== "end_turn"
+        ? `stop_reason=${stopReasonForFallback}`
+        : "response was not valid JSON";
+    fallbackSummary = head
+      ? `QA verdict could not be parsed (${reasonNote}). Model said: “${head}…”`
+      : `QA verdict could not be parsed (${reasonNote}); model returned no usable text.`;
+  }
 
-  // Defensive defaults — if QA returned malformed JSON, treat as not signed off.
   const verdict: QaVerdict = {
     signedOff: Boolean(parsed?.signedOff),
     recommendation: (["ship", "fix-and-resume", "replan"].includes(parsed?.recommendation as string)
       ? parsed!.recommendation
       : (parsed?.signedOff ? "ship" : "fix-and-resume")) as QaVerdict["recommendation"],
-    summary: String(parsed?.summary ?? "QA returned no summary").slice(0, 1000),
+    summary: String(parsed?.summary ?? fallbackSummary).slice(0, 1000),
     coverage: Array.isArray(parsed?.coverage)
       ? parsed!.coverage.map(c => ({
           ask: String(c?.ask ?? "").slice(0, 300),
@@ -206,6 +294,17 @@ Return your JSON verdict now.`,
     modelUsed: routed.modelId,
     costUsd: cost,
   };
+
+  if (!parsed) {
+    // Surface the parse-failure event explicitly so it shows up in the
+    // project event log next to the verdict — makes future incidents
+    // ("QA returned no summary") instantly diagnosable.
+    deps.emitEvent(
+      project.id, "qa", qaAgent.name, "qa parse failed",
+      `Could not parse QA verdict JSON (stop_reason=${stopReasonForFallback || "unknown"}, ${totalTokensOut} output tokens).`,
+      "error",
+    );
+  }
 
   // Persist the verdict so the UI can render it later.
   storage.createQaReview({
