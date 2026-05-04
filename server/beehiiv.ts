@@ -1,16 +1,22 @@
-// ─── Beehiiv draft hookup — Stage 5.3 ────────────────────────────────────────
+// ─── Beehiiv draft hookup — Stage 5.3 / 5.x.7 ────────────────────────────────
 // When the editorial-lead's `final` task emits an issue-*.md file block, we
 // POST it to Beehiiv as a draft post via the v2 Posts API. The user reviews
 // the draft inside Beehiiv and presses Send when they want it to ship — we
 // never auto-publish.
 //
-// API contract (Beehiiv API v2, confirmed via Beehiiv docs Dec 2025):
+// API contract (Beehiiv API v2):
 //   POST https://api.beehiiv.com/v2/publications/{publication_id}/posts
 //   Headers: Authorization: Bearer <api_key>
 //            Content-Type: application/json
 //   Body:    { title, body_content (HTML), status: "draft" }
-//   The "blocks" alternative is more structured but body_content + raw HTML
-//   is the cleanest fit for a markdown→HTML pipeline.
+//
+// Plan note (Stage 5.x.7): the Posts API is enterprise-only. Standard, Scale,
+// and Max plans get HTTP 403 SEND_API_NOT_ENTERPRISE_PLAN even when posting
+// status: "draft" — Beehiiv has no parallel non-enterprise endpoint. We still
+// attempt the call (forward-compat for enterprise upgrades), and on 403 with
+// that specific error code we surface a `planRestricted` outcome so the
+// orchestrator can emit a benign info event rather than a scary warning. The
+// issue markdown is already on disk either way.
 //
 // Key/Publication-ID resolution mirrors the Tavily pattern: settings first
 // (Office Floor → Settings), then process env fallback, friendly error
@@ -159,6 +165,12 @@ export interface BeehiivPostResult {
 export interface BeehiivPostError {
   ok: false;
   error: string;
+  // Stage 5.x.7: distinguish plan-restricted (HTTP 403 with
+  // SEND_API_NOT_ENTERPRISE_PLAN) from generic failures so the orchestrator
+  // can degrade gracefully — the markdown is already saved to disk, the user
+  // just has to paste it into Beehiiv by hand on standard plans because the
+  // Posts API is enterprise-only.
+  planRestricted?: boolean;
 }
 
 export async function postBeehiivDraft(
@@ -212,9 +224,12 @@ export async function postBeehiivDraft(
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
+    const planRestricted =
+      res.status === 403 && /SEND_API_NOT_ENTERPRISE_PLAN/i.test(detail);
     return {
       ok: false,
       error: `Beehiiv ${res.status}: ${detail.slice(0, 300) || res.statusText}`,
+      planRestricted,
     };
   }
 

@@ -577,6 +577,17 @@ async function saveLiveOutput(
               `📬 ${issueBlock.filename}${idTag}${link}`,
               "success"
             );
+          } else if (result.planRestricted) {
+            // Stage 5.x.7: 403 SEND_API_NOT_ENTERPRISE_PLAN — Beehiiv's Posts
+            // API is enterprise-only and the user is on a standard plan.
+            // The markdown is already saved; degrade to an info event so
+            // the operator knows to paste it manually rather than treating
+            // this as an outright failure on every run.
+            deps.emitEvent(
+              projectId, agent.id, agent.name, "Beehiiv draft skipped (plan-restricted)",
+              `${issueBlock.filename} saved locally — Beehiiv Posts API requires an enterprise plan, paste the markdown into the Beehiiv editor manually`,
+              "info"
+            );
           } else {
             deps.emitEvent(
               projectId, agent.id, agent.name, "Beehiiv draft failed",
