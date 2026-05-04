@@ -82,75 +82,81 @@ interface Zone {
   desks: [number, number][];
 }
 
-// Stage 5.x.9: Lined-up team zones to stop sprites overlapping each other.
+// Stage 5.x.10: Zones are now organised by SPRITE IDENTITY — agents that share
+// the same sprite art always sit together so the office reads as coherent
+// teams instead of a scattered set of lookalike clones.
+//
 // Sprite art is 160 world-px wide; tiles are 120 world-px (TW). Two sprites
 // in the same row need ≥3 cols apart (= 180 screen-px horizontal) to clear
-// each other with breathing room. Front/back rows are offset by 1 col so the
-// front-row sprite slots between back-row sprites instead of straight in front
-// of one (still mildly overlaps the back sprite's lower body — natural seating
-// look).
+// each other with breathing room. When a team has 4+ agents, we use two
+// staggered rows: back row at row=2, front row at row=4 offset by 1 col so the
+// front-row sprite slots between back-row sprites.
 //
 // Bands:
-//   Top   (rows 1–4)   : Manager
-//   Upper (rows 6–10)  : Research bullpen (wide), UI/UX, QA
-//   Lower (rows 12–16) : Frontend, Backend, DevOps, Data
-//   Floor (rows 18–20) : Hot desks + Future Expansion
+//   Top   (rows 1–4)   : Manager + Editorial (single-desk coordination rooms)
+//   Upper (rows 6–10)  : Web & Research Team (6 desks, staggered) + Data &
+//                        Insights Team (3 desks, single row)
+//   Lower (rows 12–16) : Backend + DevOps & Security + QA + UI/UX
+//   Floor (rows 18–19) : Hot desks + Future Expansion
 const ZONES: Zone[] = [
   {
-    id: "manager", label: "Manager Agent",
-    col: 10, row: 1, w: 5, d: 4,
+    id: "manager", label: "Manager",
+    col: 8, row: 1, w: 4, d: 4,
     color: "#a855f7",
-    desks: [[2, 2]],
+    desks: [[1, 2]],                        // Manager Agent
   },
   {
-    // Research / data-collection bullpen — biggest zone, holds 8 desks in two
-    // staggered rows so every sprite gets clear screen-space.
-    id: "research", label: "Research Team",
-    col: 1, row: 6, w: 14, d: 5,
-    color: "#6366f1",
+    id: "editorial", label: "Editorial",
+    col: 14, row: 1, w: 4, d: 4,
+    color: "#f43f5e",
+    desks: [[1, 2]],                        // Editorial Lead
+  },
+  {
+    // 6 frontend-sprite agents grouped together. They visually look the same,
+    // and conceptually they're all browser/web/research workers — cluster lets
+    // them read as one team instead of clones scattered across two rooms.
+    id: "webresearch", label: "Web & Research Team",
+    col: 1, row: 6, w: 10, d: 5,
+    color: "#3b82f6",
     desks: [
-      [1,2],[4,2],[7,2],[10,2],     // back row, 3 cols apart
-      [2,4],[5,4],[8,4],[11,4],     // front row, offset by 1 col
+      [1,2],[4,2],[7,2],                    // back row — 3 desks
+      [2,4],[5,4],[8,4],                    // front row — offset by 1 col
     ],
   },
   {
-    id: "uiux", label: "UI/UX Design Team",
-    col: 15, row: 6, w: 4, d: 4,
-    color: "#ec4899",
-    desks: [[1,2]],
-  },
-  {
-    id: "qa", label: "QA Team",
-    col: 19, row: 6, w: 4, d: 4,
-    color: "#f59e0b",
-    desks: [[1,2]],
-  },
-  {
-    id: "frontend", label: "Frontend Dev Team",
-    col: 1, row: 12, w: 6, d: 5,
-    color: "#3b82f6",
-    desks: [[1,2],[4,2]],            // Frontend Dev + Editorial Lead/PM
-  },
-  {
-    id: "backend", label: "Backend Dev Team",
-    col: 7, row: 12, w: 6, d: 5,
-    color: "#10b981",
-    desks: [[1,2],[4,2]],            // Backend Dev + DB Architect
-  },
-  {
-    id: "devops", label: "DevOps Team",
-    col: 13, row: 12, w: 6, d: 5,
-    color: "#06b6d4",
-    desks: [[1,2],[4,2]],            // DevOps Engineer + Security Engineer
-  },
-  {
-    id: "data", label: "Data Team",
-    col: 19, row: 12, w: 4, d: 5,
+    // 3 datascientist-sprite agents grouped together.
+    id: "data", label: "Data & Insights Team",
+    col: 11, row: 6, w: 10, d: 5,
     color: "#8b5cf6",
-    desks: [[1,2]],                  // Data Scientist (tech writer goes to research)
+    desks: [[1,2],[4,2],[7,2]],             // single row of 3 (no need to stagger)
   },
   {
-    id: "hotdesk", label: "Hot Desk Zone",
+    id: "backend", label: "Backend Team",
+    col: 1, row: 12, w: 6, d: 5,
+    color: "#10b981",
+    desks: [[1,2],[4,2]],                   // Backend Dev + DB Architect
+  },
+  {
+    // DevOps + Security + Industry Reports (last two share secengineer sprite).
+    id: "devops", label: "DevOps & Security",
+    col: 7, row: 12, w: 10, d: 5,
+    color: "#06b6d4",
+    desks: [[1,2],[4,2],[7,2]],             // single row of 3
+  },
+  {
+    id: "qa", label: "QA",
+    col: 17, row: 12, w: 4, d: 5,
+    color: "#f59e0b",
+    desks: [[1,2]],                         // QA Engineer
+  },
+  {
+    id: "uiux", label: "UI / UX",
+    col: 21, row: 12, w: 3, d: 5,
+    color: "#ec4899",
+    desks: [[1,2]],                         // UI/UX Designer
+  },
+  {
+    id: "hotdesk", label: "Hot Desks",
     col: 2, row: 18, w: 12, d: 2,
     color: "#64748b",
     desks: [[1,1],[4,1],[7,1],[10,1]],
@@ -177,62 +183,78 @@ const LOUNGE = { col: 21, row: 2, w: 3, d: 5 };
 //   5) hot desk pool
 //   6) any free desk anywhere
 
-// Per-agent preferred seats. Indexes match the desks: arrays in ZONES above.
+// Per-agent preferred seats. Indexes match the `desks:` arrays in ZONES above.
+//
+// Web & Research Team (webresearch zone, 6 desks):
+//   back row — indices 0,1,2 — used for the "core team" (Frontend Dev plus the
+//                                two most prominent research agents)
+//   front row — indices 3,4,5
 const NAME_PREFERRED_DESK: Record<string, [string, number]> = {
-  // Research bullpen — 8 desks (back row 0-3, front row 4-7)
-  "Source Discovery Agent":          ["research", 0],
-  "Annual Reports / Filings Agent":  ["research", 1],
-  "Web Scraping Agent":              ["research", 2],
-  "Industry Reports Agent":          ["research", 3],
-  "Document Parsing Agent":          ["research", 4],
-  "Data Validation Agent":           ["research", 5],
-  "Deep Research Agent":             ["research", 6],
-  "Technical Writer":                ["research", 7],
-  // Lower-band team rooms (2 desks each, lined up)
-  "Frontend Dev":     ["frontend", 0],
-  "Editorial Lead":   ["frontend", 1],
-  "Backend Dev":      ["backend",  0],
-  "DB Architect":     ["backend",  1],
-  "DevOps Engineer":  ["devops",   0],
-  "Security Engineer":["devops",   1],
-  "Data Scientist":   ["data",     0],
+  // Top band
+  "Manager Agent":                   ["manager",     0],
+  "Editorial Lead":                  ["editorial",   0],
+
+  // Web & Research Team — all 6 frontend-sprite agents in one zone
+  "Frontend Dev":                    ["webresearch", 0],
+  "Source Discovery Agent":          ["webresearch", 1],
+  "Web Scraping Agent":              ["webresearch", 2],
+  "Annual Reports / Filings Agent":  ["webresearch", 3],
+  "Document Parsing Agent":          ["webresearch", 4],
+  "Data Validation Agent":           ["webresearch", 5],
+
+  // Data & Insights Team — all 3 datascientist-sprite agents in one zone
+  "Data Scientist":                  ["data",        0],
+  "Deep Research Agent":             ["data",        1],
+  "Technical Writer":                ["data",        2],
+
+  // Backend
+  "Backend Dev":                     ["backend",     0],
+  "DB Architect":                    ["backend",     1],
+
+  // DevOps & Security — DevOps + 2 secengineer-sprite agents in one zone
+  "DevOps Engineer":                 ["devops",      0],
+  "Security Engineer":               ["devops",      1],
+  "Industry Reports Agent":          ["devops",      2],
+
   // Single-desk rooms
-  "UI/UX Designer":   ["uiux",     0],
-  "QA Engineer":      ["qa",       0],
-  "Manager Agent":    ["manager",  0],
+  "QA Engineer":                     ["qa",          0],
+  "UI/UX Designer":                  ["uiux",        0],
 };
 
 // Per-agent home zone (used when the preferred desk is somehow taken).
 const NAME_AFFINITY_ZONE: Record<string, string> = {
-  "Source Discovery Agent":         "research",
-  "Annual Reports / Filings Agent": "research",
-  "Web Scraping Agent":             "research",
-  "Industry Reports Agent":         "research",
-  "Document Parsing Agent":         "research",
-  "Data Validation Agent":          "research",
-  "Deep Research Agent":            "research",
-  "Technical Writer":               "research",
+  "Frontend Dev":                   "webresearch",
+  "Source Discovery Agent":         "webresearch",
+  "Web Scraping Agent":             "webresearch",
+  "Annual Reports / Filings Agent": "webresearch",
+  "Document Parsing Agent":         "webresearch",
+  "Data Validation Agent":          "webresearch",
+  "Editorial Lead":                 "editorial",
+  "Industry Reports Agent":         "devops",
+  "Deep Research Agent":            "data",
+  "Technical Writer":               "data",
 };
 
 // Sprite-type fallback (covers any agent we didn't list by name).
 const SPRITE_PREFERRED_DESK: Record<string, [string, number]> = {
-  manager:       ["manager",  0],
-  frontend:      ["frontend", 0],
-  backend:       ["backend",  0],
-  qa:            ["qa",       0],
-  uiux:          ["uiux",     0],
-  devops:        ["devops",   0],
-  dbarchitect:   ["backend",  1],
-  datascientist: ["data",     0],
-  harvester:     ["research", 0], // research bullpen — data harvester is a research role
-  secengineer:   ["devops",   1],
-  pm:            ["frontend", 1],
+  manager:       ["manager",     0],
+  pm:            ["editorial",   0],
+  frontend:      ["webresearch", 0],
+  harvester:     ["webresearch", 1], // data harvester sits with the research crew
+  backend:       ["backend",     0],
+  dbarchitect:   ["backend",     1],
+  qa:            ["qa",          0],
+  uiux:          ["uiux",        0],
+  devops:        ["devops",      0],
+  secengineer:   ["devops",      1],
+  datascientist: ["data",        0],
 };
 
 const SPRITE_AFFINITY_ZONE: Record<string, string> = {
   manager:       "manager",
-  frontend:      "frontend",
-  pm:            "frontend",
+  pm:            "editorial",
+  frontend:      "webresearch",
+  harvester:     "webresearch",
   backend:       "backend",
   dbarchitect:   "backend",
   qa:            "qa",
@@ -240,7 +262,6 @@ const SPRITE_AFFINITY_ZONE: Record<string, string> = {
   devops:        "devops",
   secengineer:   "devops",
   datascientist: "data",
-  harvester:     "research",
 };
 
 export type DeskAssignmentMap = Map<string, [number, number]>;
@@ -487,22 +508,10 @@ function OfficeRoom() {
     );
   })();
 
-  // Zone labels — pill with zone colour tint
-  const zoneLabels = ZONES.map(z => {
-    const [lx, ly] = zoneLabel(z.col, z.row, z.w);
-    return (
-      <g key={`zl-${z.id}`}>
-        <rect x={lx-52} y={ly-13} width={104} height={20} rx="10"
-          fill="rgba(8,14,26,0.88)" stroke={z.color} strokeWidth="1" strokeOpacity="0.5"/>
-        <text x={lx} y={ly+2}
-          textAnchor="middle" fill={z.color}
-          fontSize="11" fontFamily="Inter,sans-serif" fontWeight="700"
-          letterSpacing="0.04em">
-          {z.label}
-        </text>
-      </g>
-    );
-  });
+  // Zone labels are now rendered above the sprite layer by <ZoneBanners/>
+  // (see below). We keep an empty group here so the OfficeRoom layout above is
+  // unchanged — the banners overlay handles all team-name rendering.
+  const zoneLabels = null;
 
   // Future expansion zone
   const [ex, ey] = zoneLabel(EXPANSION.col, EXPANSION.row, EXPANSION.w);
@@ -842,7 +851,7 @@ function OfficeRoom() {
       {/* ── Hot desk outline ── */}
       {hotDeskOutline}
 
-      {/* ── Zone labels ── */}
+      {/* Zone banner labels are drawn ABOVE the sprite layer in ZoneBanners */}
       {zoneLabels}
 
       {/* ── Future expansion ── */}
@@ -948,13 +957,82 @@ function MiniMap({ pan, zoom, vpW, vpH, agents, deskMap }: {
   );
 }
 
+// ─── Zone banner overlay ─────────────────────────────────────────────────────
+// Renders prominent team-name banners ABOVE the sprite layer so each section
+// is always clearly labelled, no matter how many sprites sit nearby. Each
+// banner is anchored to the top-back centre of the zone rug.
+function ZoneBanners({ zoom }: { zoom: number }) {
+  // Banner font scales with zoom but never gets too small or too big.
+  const fontSize = Math.round(clamp(18/zoom, 13, 22));
+  const padX     = Math.round(clamp(14/zoom, 10, 18));
+  const padY     = Math.round(clamp(6/zoom, 4, 9));
+
+  return (
+    <>
+      {ZONES.map(z => {
+        if (z.id === "hotdesk") return null; // hot desk has its own dashed outline
+        // Place the banner at the top-back midpoint of the zone, lifted a bit
+        // so it floats above the rug rather than sitting on it.
+        const [cx, cy] = iso(z.col + z.w / 2, z.row);
+        const lift = Math.round(clamp(34/zoom, 22, 44));
+        return (
+          <div key={`zb-${z.id}`} style={{
+            position: "absolute",
+            left: cx, top: cy - lift,
+            transform: "translate(-50%, -50%)",
+            pointerEvents: "none",
+            zIndex: 10000, // always above sprites (sprite zIndex ≤ ~3000)
+          }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: `${padY}px ${padX}px`,
+              background: "rgba(4,8,20,0.92)",
+              border: `2px solid ${z.color}`,
+              borderRadius: 999,
+              boxShadow: `0 4px 18px rgba(0,0,0,0.6), 0 0 0 1px ${z.color}33`,
+              whiteSpace: "nowrap",
+            }}>
+              <span style={{
+                width: fontSize * 0.55, height: fontSize * 0.55,
+                borderRadius: "50%", background: z.color,
+                boxShadow: `0 0 ${fontSize*0.5}px ${z.color}aa`,
+                flexShrink: 0,
+              }}/>
+              <span style={{
+                color: "#fff",
+                fontSize, fontFamily: "Inter,sans-serif",
+                fontWeight: 800, letterSpacing: "0.05em",
+                textTransform: "uppercase",
+                textShadow: "0 2px 6px rgba(0,0,0,0.85)",
+                lineHeight: 1,
+              }}>{z.label}</span>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 // ─── Agent sprite ─────────────────────────────────────────────────────────────
 const SPRITE_PX = 160; // world px
 
-function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; deskMap: DeskAssignmentMap }) {
+function AgentSprite({ agent, zoom, deskMap, hasProject }: { agent: Agent; zoom: number; deskMap: DeskAssignmentMap; hasProject: boolean }) {
   const pos = getAgentDeskPos(agent, deskMap);
   if (!pos) return null;
   const [wx, wy] = pos;
+
+  // If another agent sits roughly in front of and below this one (back-row in
+  // a staggered team layout), float the name label ABOVE the sprite so the
+  // front-row labels don't visually stack on top of the back-row ones.
+  let labelAbove = false;
+  Array.from(deskMap.values()).forEach(([otherWx, otherWy]) => {
+    if (labelAbove) return;
+    if (otherWx === wx && otherWy === wy) return;
+    if (Math.abs(otherWx - wx) < 120 && otherWy > wy + 30 && otherWy < wy + 200) {
+      labelAbove = true;
+    }
+  });
 
   const isActive  = agent.status === "working" || agent.status === "thinking";
   const isDone    = agent.status === "done";
@@ -966,7 +1044,9 @@ function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; des
   const labelSz = Math.round(clamp(12/zoom, 9, 15));
   const img = SPRITE_MAP[agent.spriteType] ?? SPRITE_MAP["manager"];
 
-  const filterStyle = isIdle
+  // When no project is running, treat every agent as visually idle so the
+  // office reads as "calm" — no blocked tinting, no active drop-shadows.
+  const filterStyle = !hasProject || isIdle
     ? "grayscale(40%) brightness(0.7)"
     : isBlocked
     ? "grayscale(20%) sepia(0.4) hue-rotate(310deg) brightness(0.75)"
@@ -992,8 +1072,8 @@ function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; des
         borderRadius:"50%",
       }}/>
 
-      {/* Active glow ring */}
-      {isActive && (
+      {/* Active glow ring — only while a project is running. */}
+      {hasProject && isActive && (
         <div style={{
           position:"absolute", bottom:0, left:"50%", transform:"translateX(-50%)",
           width:SPRITE_PX*0.7, height:SPRITE_PX*0.10,
@@ -1002,16 +1082,18 @@ function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; des
         }}/>
       )}
 
-      {/* Blocked badge */}
-      {isBlocked && (
+      {/* Blocked badge — only while a project is running. */}
+      {hasProject && isBlocked && (
         <div style={{
           position:"absolute", top:-(clamp(22/zoom,14,28)), right:0,
           fontSize:clamp(14/zoom,10,18), animation:"bounce 0.8s infinite alternate",
         }}>⛔</div>
       )}
 
-      {/* Speech bubble */}
-      {task && (isActive || isDone || isBlocked) && (
+      {/* Speech bubble — only while a project is actively running and the
+          agent is currently working on a task. Done/blocked agents don't
+          show stale bubbles between projects. */}
+      {hasProject && task && isActive && (
         <div style={{
           position:"absolute", bottom:SPRITE_PX+4,
           left:"50%", transform:"translateX(-50%)",
@@ -1043,10 +1125,13 @@ function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; des
       <img src={img} alt={agent.name}
         style={{width:"100%",display:"block",userSelect:"none"}} draggable={false}/>
 
-      {/* Name label */}
+      {/* Name label — sits below the sprite by default; floats above the
+          sprite for back-row agents so labels never stack on each other. */}
       <div style={{
         position:"absolute",
-        bottom:-(labelSz*2.8),
+        ...(labelAbove
+          ? { top: -(labelSz*2.4) }
+          : { bottom: -(labelSz*2.8) }),
         left:"50%", transform:"translateX(-50%)",
         whiteSpace:"nowrap",
         display:"flex", alignItems:"center",
@@ -1072,7 +1157,8 @@ function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; des
         }}>{agent.name}</span>
       </div>
 
-      {isDone && (
+      {/* Done celebration emoji — only while a project is running. */}
+      {hasProject && isDone && (
         <div style={{
           position:"absolute", right:0, top:-(clamp(26/zoom,18,32)),
           fontSize:clamp(16/zoom,10,20), animation:"bounce 0.6s infinite alternate",
@@ -1258,9 +1344,12 @@ export default function IsometricOffice({ agents, project }: Props) {
             return (pa?.[1]??0)-(pb?.[1]??0);
           })
           .map(agent=>(
-            <AgentSprite key={agent.id} agent={agent} zoom={zoom} deskMap={deskMap}/>
+            <AgentSprite key={agent.id} agent={agent} zoom={zoom} deskMap={deskMap} hasProject={hasProject}/>
           ))
         }
+
+        {/* Zone banners drawn after sprites so they always stay legible */}
+        <ZoneBanners zoom={zoom}/>
       </div>
 
       {/* ═══ Fixed HUD ════════════════════════════════════════════════════════ */}
