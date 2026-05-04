@@ -12,6 +12,7 @@ import BudgetPage from "./pages/BudgetPage";
 import FilesPage from "./pages/FilesPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import TemplatesPage from "./pages/TemplatesPage";
+import FailoverModal from "./components/FailoverModal";
 import { useWebSocket } from "./hooks/useWebSocket";
 import {
   LayoutDashboard, Users, LayoutGrid, Settings, Send, DollarSign, FolderOpen,
@@ -162,6 +163,9 @@ function AppShell() {
           <Route path="/settings" component={SettingsPage}/>
         </Switch>
       </div>
+
+      {/* Global failover modal — listens for `aioffice:failover_required` */}
+      <FailoverModal/>
     </div>
   );
 }

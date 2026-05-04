@@ -1,7 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { DollarSign, Zap, ArrowDownLeft, ArrowUpRight, RefreshCw, TrendingUp, Activity } from "lucide-react";
+import { DollarSign, Zap, ArrowDownLeft, ArrowUpRight, RefreshCw, TrendingUp, Activity, AlertTriangle, ExternalLink, Wallet } from "lucide-react";
 import { PROVIDER_COLORS } from "../types";
 
 interface BudgetRow {
@@ -13,6 +13,33 @@ interface BudgetRow {
   totalTokens: number;
   costUsd: number;
 }
+
+// /api/budget/balances row shape (matches hydrateBalance() in server/routes.ts).
+interface BalanceRow {
+  id: string;
+  provider: string;
+  modelId: string;
+  capUsd: number;
+  balanceUsd: number;
+  usedUsd: number;
+  source: "live" | "tracked" | "manual" | string;
+  alertThreshold: number;
+  failoverMode: "ask" | "auto" | "block" | string;
+  fallbackChain: string[];
+  lastFetchedAt: number | null;
+  fetchError: string | null;
+  pctUsed: number;
+}
+
+// Provider "top up" billing pages — opens in a new tab when the operator clicks
+// the link. These are public dashboard URLs; the user signs in there.
+const PROVIDER_BILLING_URL: Record<string, string> = {
+  anthropic: "https://console.anthropic.com/settings/billing",
+  openai:    "https://platform.openai.com/account/billing/overview",
+  google:    "https://aistudio.google.com/app/apikey",
+  kimi:      "https://platform.moonshot.cn/console/account",
+  deepseek:  "https://platform.deepseek.com/usage",
+};
 
 function fmt(n: number) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
@@ -71,6 +98,27 @@ export default function BudgetPage() {
     refetchInterval: 5000,
   });
 
+  // Provider balance caps + tracked spend (Stage 5.x.12). Updated whenever the
+  // server broadcasts `balances_update` over the websocket OR every 30 seconds
+  // as a fallback. The /refresh endpoint is the only thing that does live API
+  // calls, so we only call it on user click.
+  const { data: balances = [], refetch: refetchBalances } = useQuery<BalanceRow[]>({
+    queryKey: ["/api/budget/balances"],
+    queryFn: () => apiRequest("GET", "/api/budget/balances").then(r => r.json()),
+    refetchInterval: 30000,
+  });
+
+  const [refreshingBalances, setRefreshingBalances] = useState(false);
+  const triggerLiveRefresh = async () => {
+    if (refreshingBalances) return;
+    setRefreshingBalances(true);
+    try {
+      await apiRequest("POST", "/api/budget/balances/refresh");
+      await refetchBalances();
+    } catch { /* swallow — toast would be noisy on a poll */ }
+    finally { setRefreshingBalances(false); }
+  };
+
   // Live runs broadcast `aioffice:budget_update` from useWebSocket whenever a
   // worker records token usage. Invalidating the query gives near-instant
   // updates during streaming runs (the 5s polling interval is the fallback).
@@ -78,8 +126,15 @@ export default function BudgetPage() {
     const onBudgetUpdate = () => {
       qc.invalidateQueries({ queryKey: ["/api/budget"] });
     };
+    const onBalancesUpdate = () => {
+      qc.invalidateQueries({ queryKey: ["/api/budget/balances"] });
+    };
     window.addEventListener("aioffice:budget_update", onBudgetUpdate);
-    return () => window.removeEventListener("aioffice:budget_update", onBudgetUpdate);
+    window.addEventListener("aioffice:balances_update", onBalancesUpdate);
+    return () => {
+      window.removeEventListener("aioffice:budget_update", onBudgetUpdate);
+      window.removeEventListener("aioffice:balances_update", onBalancesUpdate);
+    };
   }, [qc]);
 
   const totalCost   = rows.reduce((s, r) => s + r.costUsd, 0);
@@ -160,6 +215,108 @@ export default function BudgetPage() {
             </div>
           </div>
         )}
+
+        {/* Provider balance caps (Stage 5.x.12) ─────────────────────────── */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Wallet size={12} className="text-cyan-400"/>
+              <span className="text-xs text-slate-500 uppercase tracking-wider">Provider balances &amp; caps</span>
+            </div>
+            <button
+              onClick={triggerLiveRefresh}
+              disabled={refreshingBalances}
+              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 disabled:opacity-50 transition-colors"
+              data-testid="button-refresh-balances">
+              <RefreshCw size={11} className={refreshingBalances ? "animate-spin" : ""}/>
+              {refreshingBalances ? "Refreshing\u2026" : "Refresh live balances"}
+            </button>
+          </div>
+
+          {balances.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-28 gap-2 text-slate-600 rounded-xl border border-slate-800 bg-slate-900/30">
+              <Wallet size={20} className="opacity-40"/>
+              <div className="text-xs text-center text-slate-500 px-4">
+                No caps set yet. Add per-provider monthly caps in <span className="text-slate-400">Settings &rarr; Budget Caps</span> to see remaining-credit bars and enable auto-failover.
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {balances
+                .slice()
+                .sort((a, b) => b.pctUsed - a.pctUsed)
+                .map((b) => {
+                  const providerColor = PROVIDER_COLORS[b.provider] ?? "#64748b";
+                  const pct = Math.min(1, b.pctUsed);
+                  const overThreshold = b.capUsd > 0 && pct >= b.alertThreshold;
+                  const exhausted = b.capUsd > 0 && pct >= 1;
+                  // bar colour: red when exhausted, amber when over the alert
+                  // threshold, otherwise the provider's brand colour.
+                  const barColor = exhausted ? "#ef4444" : overThreshold ? "#f59e0b" : providerColor;
+                  const billingUrl = PROVIDER_BILLING_URL[b.provider];
+                  return (
+                    <div
+                      key={b.id}
+                      className={`rounded-xl border px-3 py-2.5 ${
+                        exhausted
+                          ? "border-rose-500/40 bg-rose-500/5"
+                          : overThreshold
+                            ? "border-amber-500/30 bg-amber-500/5"
+                            : "border-slate-800 bg-slate-900/50"
+                      }`}
+                      data-testid={`balance-${b.id}`}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <ProviderBadge provider={b.provider}/>
+                          {b.modelId !== "*" && (
+                            <span className="font-mono text-xs text-slate-400 truncate">{b.modelId}</span>
+                          )}
+                          <span className="text-[10px] text-slate-600 uppercase tracking-wider">{b.source}</span>
+                          {exhausted && (
+                            <span className="flex items-center gap-1 text-[10px] text-rose-400 uppercase tracking-wider">
+                              <AlertTriangle size={10}/> Capped
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs font-mono text-slate-300 flex-shrink-0">
+                          {b.capUsd > 0
+                            ? <>${b.usedUsd.toFixed(2)}<span className="text-slate-600"> / </span>${b.capUsd.toFixed(2)}</>
+                            : <span className="text-slate-500">no cap set</span>}
+                        </div>
+                      </div>
+                      <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all duration-500"
+                          style={{ width: `${pct * 100}%`, background: barColor }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between mt-1.5 text-[10px] text-slate-500">
+                        <div className="flex items-center gap-2">
+                          <span>Failover: <span className="text-slate-400 font-medium">{b.failoverMode}</span></span>
+                          {b.source === "live" && b.balanceUsd > 0 && (
+                            <span>· Live balance: <span className="font-mono text-slate-400">${b.balanceUsd.toFixed(2)}</span></span>
+                          )}
+                          {b.fetchError && (
+                            <span className="text-rose-400 truncate" title={b.fetchError}>· fetch error</span>
+                          )}
+                        </div>
+                        {billingUrl && (overThreshold || exhausted) && (
+                          <a
+                            href={billingUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1 text-cyan-400 hover:text-cyan-300 transition-colors"
+                            data-testid={`topup-${b.id}`}>
+                            Top up <ExternalLink size={9}/>
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+        </div>
 
         {/* Per-model table */}
         <div>

@@ -22,7 +22,8 @@ import { storage, toolsForAgent } from "./storage";
 import { streamCompletion, calculateCost, settingKeyForProvider, type Provider, type LLMMessage } from "./llm";
 import { renderPdf, renderXlsx, renderPdfFromManifest, renderXlsxFromManifest, type RenderMeta } from "./renderers";
 import { extractManifest, manifestToMarkdown, manifestToCsv, manifestToJson, type DeliverableManifest } from "./manifest";
-import { routeForComplexity, routeForCriticalCall, normaliseComplexity, type Complexity } from "./modelRouter";
+import { routeForComplexity, routeForCriticalCall, routeWithFailover, normaliseComplexity, type Complexity } from "./modelRouter";
+import { isProviderOverCap, isCreditExhaustionError } from "./providerBalances";
 import { reviewProjectQA } from "./qaReviewer";
 import { resolveTools, tavilyConfigured } from "./tools";
 import type { Agent, Task, Project } from "@shared/schema";
@@ -927,8 +928,56 @@ async function runWorkerTask(
   // can act on. Same idea as the final-task token cap bump — per-key
   // override sitting on top of the planner's complexity tag.
   const effectiveComplexity: Complexity = plannerKey === "qa" ? "high" : complexity;
-  const routed = routeForComplexity(effectiveComplexity, agent);
-  const apiKey = storage.getSetting(settingKeyForProvider(routed.provider));
+  let routed = routeForComplexity(effectiveComplexity, agent);
+
+  // Stage 5.x.12: cap-aware pre-call check. If the operator's chosen model
+  // has already burned its monthly cap, react based on the project's
+  // failoverMode. "auto" silently re-routes through routeWithFailover; "ask"
+  // surfaces a websocket event so the operator picks a substitute, then
+  // throws so the project pauses cleanly. "block" just throws.
+  const projectFailoverMode = (project.failoverMode as string) ?? "ask";
+  const capCheck = isProviderOverCap(routed.provider);
+  if (capCheck.overCap) {
+    if (projectFailoverMode === "auto") {
+      const switched = routeWithFailover(
+        effectiveComplexity, agent,
+        new Set([`${routed.provider}:*`]),
+      );
+      if (!switched) {
+        deps.emitEvent(project.id, agent.id, agent.name, "failover failed",
+          `${routed.provider} over cap and no usable fallback for ${effectiveComplexity}-tier`,
+          "error");
+        throw new Error(`No fallback model available (${routed.provider} over cap, no other provider has budget + key)`);
+      }
+      deps.emitEvent(project.id, agent.id, agent.name, "auto-failover",
+        `${routed.provider}/${routed.modelId} over $${capCheck.capUsd.toFixed(2)} cap → switching to ${switched.provider}/${switched.modelId}`,
+        "warning");
+      routed = switched;
+    } else {
+      // ask | block: surface a modal-trigger event, mark project blocked, and throw.
+      deps.broadcast({
+        type: "failover_required",
+        projectId: project.id,
+        taskId: task.id,
+        agentId: agent.id,
+        agentName: agent.name,
+        provider: routed.provider,
+        modelId: routed.modelId,
+        capUsd: capCheck.capUsd,
+        usedUsd: capCheck.usedUsd,
+        suggestedFallback: routeWithFailover(
+          effectiveComplexity, agent,
+          new Set([`${routed.provider}:*`]),
+        ),
+      });
+      deps.emitEvent(project.id, agent.id, agent.name, "failover required",
+        `${routed.provider}/${routed.modelId} hit $${capCheck.capUsd.toFixed(2)} cap — operator must pick substitute`,
+        "error");
+      throw new Error(`Provider ${routed.provider} is over its $${capCheck.capUsd.toFixed(2)} monthly cap`);
+    }
+  }
+
+  let apiKey = storage.getSetting(settingKeyForProvider(routed.provider));
   if (!apiKey) {
     throw new Error(`No API key configured for ${routed.provider} (needed for ${effectiveComplexity}-tier task)`);
   }
@@ -969,60 +1018,95 @@ async function runWorkerTask(
     "info"
   );
 
+  // Stage 5.x.12: wrap the streamCompletion call in a tiny retry loop that
+  // catches credit-exhaustion errors thrown mid-stream and re-routes through
+  // routeWithFailover. Cap retries at 3 so a misconfigured fallback chain
+  // can't spin forever, and accumulate the exhausted model ids in `excluded`
+  // so we don't hit the same dead provider twice.
   const stream = makeStreamCoalescer(project.id, agent, task.title, deps);
+  const excluded = new Set<string>();
   let result;
-  try {
-    result = await streamCompletion(
-      {
-        provider: routed.provider,
-        modelId: routed.modelId,
-        apiKey,
-        messages,
-        // Stage 4.16: research agents that emit DeliverableManifest tables
-        // routinely need 6–8k output tokens (a 60–90 row portfolio table is
-        // ~4k tokens on its own, plus prose summary). 4096 caused mid-row
-        // truncation in project #19. Non-research agents pay for the bigger
-        // budget but rarely use it — the worker still terminates on stop_reason
-        // "end_turn" which usually fires well below the cap.
-        // Stage 5.x.5: the editorial pipeline's "final" task emits two file
-        // blocks back-to-back (issue + runner-up, ~7K + ~1K chars each =
-        // ~3-4K tokens). The 8K cap clipped issue-18's runner-up mid-tag.
-        // Bump only this one task to 16K — research / qa / factcheck still
-        // cap at 8K / 4K to keep cost bounded.
-        maxTokens: plannerKey === "final"
-          ? 16384
-          : tools.length > 0 ? 8192 : 4096,
-        temperature: 0.7,
-        tools: tools.length > 0 ? tools : undefined,
-        // Stage 4.14: cancel-aware fetch — if the operator hits Stop, every
-        // active LLM/tool call aborts and the worker's catch block will
-        // surface the AbortError as the task reason.
-        signal,
-      },
-      {
-        onDelta: (d) => stream.push(d),
-        onToolCall: ({ name, args, result }) => {
-          // Surface tool activity in the live event feed so operators can see
-          // exactly which queries / URLs the agent is hitting.
-          let argSummary = args;
-          try {
-            const parsed = JSON.parse(args);
-            if (parsed.query) argSummary = `"${String(parsed.query).slice(0, 120)}"`;
-            else if (parsed.urls) argSummary = (parsed.urls as string[]).slice(0, 3).join(", ");
-          } catch { /* keep raw args */ }
-          const ok = !result.startsWith("Error:");
-          deps.emitEvent(
-            project.id, agent.id, agent.name,
-            ok ? "used tool" : "tool error",
-            `🔍 ${name}(${argSummary}) → ${result.length.toLocaleString()} chars`,
-            ok ? "info" : "warning"
-          );
+  let attempt = 0;
+  const MAX_FAILOVER_ATTEMPTS = 3;
+  while (true) {
+    attempt += 1;
+    try {
+      result = await streamCompletion(
+        {
+          provider: routed.provider,
+          modelId: routed.modelId,
+          apiKey,
+          messages,
+          maxTokens: plannerKey === "final"
+            ? 16384
+            : tools.length > 0 ? 8192 : 4096,
+          temperature: 0.7,
+          tools: tools.length > 0 ? tools : undefined,
+          signal,
         },
+        {
+          onDelta: (d) => stream.push(d),
+          onToolCall: ({ name, args, result }) => {
+            let argSummary = args;
+            try {
+              const parsed = JSON.parse(args);
+              if (parsed.query) argSummary = `"${String(parsed.query).slice(0, 120)}"`;
+              else if (parsed.urls) argSummary = (parsed.urls as string[]).slice(0, 3).join(", ");
+            } catch { /* keep raw args */ }
+            const ok = !result.startsWith("Error:");
+            deps.emitEvent(
+              project.id, agent.id, agent.name,
+              ok ? "used tool" : "tool error",
+              `🔍 ${name}(${argSummary}) → ${result.length.toLocaleString()} chars`,
+              ok ? "info" : "warning"
+            );
+          },
+        }
+      );
+      break; // success
+    } catch (err) {
+      // Credit-exhaust mid-stream. Same branching as the pre-call cap check:
+      // auto → silently retry on next chain entry; ask → emit modal event
+      // and propagate so the project pauses; block → just propagate.
+      if (isCreditExhaustionError(err) && attempt < MAX_FAILOVER_ATTEMPTS) {
+        excluded.add(`${routed.provider}:*`);
+        if (projectFailoverMode === "auto") {
+          const switched = routeWithFailover(effectiveComplexity, agent, excluded);
+          if (switched) {
+            deps.emitEvent(project.id, agent.id, agent.name, "auto-failover",
+              `${routed.provider}/${routed.modelId} reported credit-exhaust mid-run → retrying with ${switched.provider}/${switched.modelId}`,
+              "warning");
+            routed = switched;
+            const nextKey = storage.getSetting(settingKeyForProvider(routed.provider));
+            if (!nextKey) throw new Error(`Failover target ${routed.provider} has no API key configured`);
+            apiKey = nextKey;
+            storage.updateTask(task.id, { modelUsed: routed.modelId });
+            continue;
+          }
+        } else {
+          deps.broadcast({
+            type: "failover_required",
+            projectId: project.id,
+            taskId: task.id,
+            agentId: agent.id,
+            agentName: agent.name,
+            provider: routed.provider,
+            modelId: routed.modelId,
+            capUsd: 0,
+            usedUsd: 0,
+            reason: "runtime_credit_exhaust",
+            suggestedFallback: routeWithFailover(effectiveComplexity, agent, excluded),
+          });
+          deps.emitEvent(project.id, agent.id, agent.name, "failover required",
+            `${routed.provider}/${routed.modelId} returned credit-exhaust error — operator must pick substitute`,
+            "error");
+        }
       }
-    );
-  } finally {
-    stream.end();
+      stream.end();
+      throw err;
+    }
   }
+  stream.end();
 
   const cost = recordUsage(agent, project.id, result.tokensIn, result.tokensOut, deps, { provider: routed.provider, modelId: routed.modelId });
   deps.emitEvent(

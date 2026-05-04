@@ -3,13 +3,15 @@ import type { Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import path from "path";
 import fs from "fs";
-import { storage } from "./storage";
+import { storage, db } from "./storage";
+import * as schema from "@shared/schema";
 import type { Agent, Task, Project } from "@shared/schema";
 import { runLiveOrchestration, resumeLiveOrchestration, cancelProject, isProjectRunning } from "./liveOrchestrator";
 import { refreshAllProviders } from "./modelsRefresh";
 import { handleLogin, handleLogout, handleMe, isWsUpgradeAuthenticated } from "./auth";
 import { fireTemplate, recomputeNextRun, setSchedulerKickoff } from "./projectScheduler";
 import { describeCron, validateCron, nextRun } from "./cron";
+import { refreshProviderBalances } from "./providerBalances";
 
 // ─── WebSocket broadcast ───────────────────────────────────────────────────────
 const wsClients = new Set<WebSocket>();
@@ -940,6 +942,200 @@ export function registerRoutes(httpServer: Server, app: Express) {
     const record = storage.recordTokenUsage({ provider, modelId, agentId, projectId, tokensIn: tokensIn ?? 0, tokensOut: tokensOut ?? 0, costUsd: costUsd ?? 0 });
     broadcast({ type: "budget_update", summary: storage.getBudgetSummary() });
     res.json(record);
+  });
+
+  // ── Provider balances (Stage 5.x.12) ──────────────────────────────────────
+  // Live + tracked credit balances per provider, plus operator-set caps
+  // and fallback chains. Same row schema for both data sources — the UI
+  // doesn't need to special-case the live-vs-tracked distinction.
+
+  // Hydrate a balance row for the wire: parse fallbackChain JSON and add
+  // a `pctUsed` convenience number so the UI can render bars without doing
+  // its own division (and so the cap === 0 case stays out of NaN-land).
+  const hydrateBalance = (b: schema.ProviderBalance) => {
+    let chain: string[] = [];
+    try {
+      const parsed = JSON.parse(b.fallbackChain);
+      if (Array.isArray(parsed)) chain = parsed.filter((x): x is string => typeof x === "string");
+    } catch { /* leave empty */ }
+    const pctUsed = b.capUsd > 0 ? Math.min(1, b.usedUsd / b.capUsd) : 0;
+    return { ...b, fallbackChain: chain, pctUsed };
+  };
+
+  app.get("/api/budget/balances", (_req, res) => {
+    res.json(storage.getProviderBalances().map(hydrateBalance));
+  });
+
+  app.post("/api/budget/balances/refresh", async (_req, res) => {
+    try {
+      const result = await refreshProviderBalances();
+      broadcast({ type: "balances_update", balances: result });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Upsert. Used by Settings to set a cap, change failoverMode, or edit the
+  // fallbackChain. Body shape:
+  //   { provider, modelId?, capUsd?, alertThreshold?, failoverMode?, fallbackChain?: string[] }
+  app.post("/api/budget/balances", (req, res) => {
+    const body = req.body ?? {};
+    if (!body.provider || typeof body.provider !== "string") {
+      return res.status(400).json({ error: "provider is required" });
+    }
+    const modelId = typeof body.modelId === "string" && body.modelId.length > 0 ? body.modelId : "*";
+    const id = `${body.provider}:${modelId}`;
+    const existing = storage.getProviderBalance(id);
+    const fallbackChain = Array.isArray(body.fallbackChain)
+      ? JSON.stringify(body.fallbackChain.filter((x: unknown) => typeof x === "string"))
+      : (existing?.fallbackChain ?? "[]");
+    if (typeof body.failoverMode === "string" && !["ask", "auto", "block"].includes(body.failoverMode)) {
+      return res.status(400).json({ error: "failoverMode must be ask|auto|block" });
+    }
+    const updated = storage.upsertProviderBalance({
+      id,
+      provider: body.provider,
+      modelId,
+      capUsd: typeof body.capUsd === "number" ? body.capUsd : (existing?.capUsd ?? 0),
+      balanceUsd: existing?.balanceUsd ?? 0,
+      usedUsd: existing?.usedUsd ?? 0,
+      source: existing?.source ?? "tracked",
+      alertThreshold: typeof body.alertThreshold === "number" ? body.alertThreshold : (existing?.alertThreshold ?? 0.85),
+      failoverMode: typeof body.failoverMode === "string" ? body.failoverMode : (existing?.failoverMode ?? "ask"),
+      fallbackChain,
+      lastFetchedAt: existing?.lastFetchedAt ?? null,
+      fetchError: existing?.fetchError ?? null,
+    });
+    broadcast({ type: "balances_update", balances: storage.getProviderBalances().map(hydrateBalance) });
+    res.json(hydrateBalance(updated));
+  });
+
+  app.delete("/api/budget/balances/:id", (req, res) => {
+    const id = decodeURIComponent(req.params.id);
+    storage.deleteProviderBalance(id);
+    broadcast({ type: "balances_update", balances: storage.getProviderBalances().map(hydrateBalance) });
+    res.json({ ok: true });
+  });
+
+  // Operator-driven failover: pick a model after seeing the modal. Resumes
+  // the project (via the same hook the resume button uses) once the
+  // override is recorded. The actual model switch is applied by the
+  // orchestrator on the next worker pickup — this endpoint just records the
+  // operator's choice + nudges the project.
+  app.post("/api/projects/:id/failover", (req, res) => {
+    const projectId = parseInt(req.params.id, 10);
+    if (Number.isNaN(projectId)) return res.status(400).json({ error: "invalid project id" });
+    const project = storage.getProject(projectId);
+    if (!project) return res.status(404).json({ error: "project not found" });
+    const { provider, modelId, mode } = req.body ?? {};
+    if (mode && !["ask", "auto", "block"].includes(mode)) {
+      return res.status(400).json({ error: "mode must be ask|auto|block" });
+    }
+    if (mode) {
+      storage.updateProject(projectId, { failoverMode: mode });
+    }
+    // If the operator picked a substitute model + provider, prepend it to
+    // the fallback chain of the *current* (capped) provider so the next
+    // routing call lands on it deterministically.
+    if (provider && modelId) {
+      const currentRow = storage.getProviderBalances().find((b) => b.provider === provider && b.usedUsd >= b.capUsd && b.capUsd > 0);
+      if (currentRow) {
+        let chain: string[] = [];
+        try {
+          const parsed = JSON.parse(currentRow.fallbackChain);
+          if (Array.isArray(parsed)) chain = parsed.filter((x): x is string => typeof x === "string");
+        } catch { /* default empty */ }
+        const tag = `${provider}:${modelId}`;
+        if (!chain.includes(tag)) chain = [tag, ...chain];
+        storage.setProviderBalanceFailover(currentRow.id, currentRow.failoverMode, chain);
+      }
+    }
+    // Resume the orchestrator if it's currently paused on this project. We
+    // re-build the same deps the regular /resume endpoint uses so the
+    // resumed run keeps emitting events on the same websocket channel.
+    if (project.status === "blocked") {
+      setImmediate(() => {
+        resumeLiveOrchestration(projectId, {
+          broadcast,
+          emitEvent,
+          setAgentStatus,
+          generateSimulatedFiles,
+        }).catch((e) => {
+          const manager = storage.getAgent("manager");
+          emitEvent(projectId, "manager", manager?.name ?? "Manager Agent", "failover resume error",
+            `${(e as Error).message ?? e}`, "error");
+          setAgentStatus("manager", "idle", null);
+        });
+      });
+    }
+    broadcast({ type: "failover_resolved", projectId, provider, modelId, mode });
+    res.json({ ok: true });
+  });
+
+  // ── DB browser (Stage 5.x.12) ────────────────────────────────────────────────────────
+  // Read-only paginated rows + delete-by-id. Tables and primary-key column
+  // names are HARD-WHITELISTED — there is no client-supplied SQL anywhere
+  // in this surface. The whitelist mirrors shared/schema.ts.
+
+  type DbTable = {
+    name: string;
+    pk: string;            // primary-key column (used by DELETE)
+    label: string;
+    description: string;
+  };
+
+  const DB_TABLES: DbTable[] = [
+    { name: "agents",            pk: "id", label: "Agents",            description: "Roster of AI agents (manager + workers)." },
+    { name: "projects",          pk: "id", label: "Projects",          description: "All projects, including templated runs." },
+    { name: "tasks",             pk: "id", label: "Tasks",             description: "Individual tasks the manager assigns to agents." },
+    { name: "agent_events",      pk: "id", label: "Agent events",      description: "Activity-feed log entries for every project." },
+    { name: "settings",          pk: "key", label: "Settings",         description: "Provider API keys + feature flags + migration markers." },
+    { name: "token_usage",       pk: "id", label: "Token usage",       description: "Per-call token + cost ledger (drives the budget page)." },
+    { name: "project_files",     pk: "id", label: "Project files",     description: "Saved deliverables (paths + metadata; bytes on disk)." },
+    { name: "models",            pk: "id", label: "Models registry",   description: "Discovered provider models + tier/pool assignments." },
+    { name: "qa_reviews",        pk: "id", label: "QA reviews",        description: "Manager sign-off rows produced by the QA agent." },
+    { name: "project_templates", pk: "id", label: "Project templates", description: "Recurring + ad-hoc project recipes." },
+    { name: "provider_balances", pk: "id", label: "Provider balances", description: "Per-provider monthly cap + spend tracker." },
+  ];
+
+  app.get("/api/db/tables", (_req, res) => {
+    // Stamp each table with its current row count so the UI can render the
+    // browser's left rail without a per-table follow-up request.
+    const out = DB_TABLES.map((t) => {
+      const row = (db as unknown as { $client: { prepare: (sql: string) => { get: () => { c: number } } } })
+        .$client.prepare(`SELECT COUNT(*) as c FROM ${t.name}`).get();
+      return { ...t, count: row?.c ?? 0 };
+    });
+    res.json(out);
+  });
+
+  app.get("/api/db/tables/:name/rows", (req, res) => {
+    const def = DB_TABLES.find((t) => t.name === req.params.name);
+    if (!def) return res.status(404).json({ error: "unknown table" });
+    const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? "100"), 10)));
+    const offset = Math.max(0, parseInt(String(req.query.offset ?? "0"), 10));
+    // Safe because table name comes from the whitelist; limit/offset are
+    // numeric.
+    const client = (db as unknown as { $client: { prepare: (sql: string) => { all: () => unknown[]; get: () => { c: number } } } }).$client;
+    const rows = client.prepare(`SELECT * FROM ${def.name} ORDER BY ${def.pk} DESC LIMIT ${limit} OFFSET ${offset}`).all();
+    const total = client.prepare(`SELECT COUNT(*) as c FROM ${def.name}`).get();
+    res.json({ table: def.name, pk: def.pk, limit, offset, total: total?.c ?? 0, rows });
+  });
+
+  app.delete("/api/db/tables/:name/rows/:id", (req, res) => {
+    const def = DB_TABLES.find((t) => t.name === req.params.name);
+    if (!def) return res.status(404).json({ error: "unknown table" });
+    const rawId = decodeURIComponent(req.params.id);
+    // For numeric pk columns (everything except settings.key), coerce so
+    // SQLite's typeof match works regardless of how the client serialised it.
+    const id: string | number = def.pk === "key" ? rawId : Number(rawId);
+    if (def.pk !== "key" && Number.isNaN(id as number)) {
+      return res.status(400).json({ error: "invalid id for numeric primary key" });
+    }
+    const client = (db as unknown as { $client: { prepare: (sql: string) => { run: (...args: unknown[]) => { changes: number } } } }).$client;
+    const out = client.prepare(`DELETE FROM ${def.name} WHERE ${def.pk} = ?`).run(id);
+    res.json({ ok: true, changes: out.changes });
   });
 
   // ── Models registry (latest-models checker) ───────────────────────────────────

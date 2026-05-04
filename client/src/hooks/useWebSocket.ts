@@ -132,6 +132,19 @@ export function useWebSocket() {
               window.dispatchEvent(new CustomEvent("aioffice:budget_update", { detail: msg }));
               break;
 
+            // Stage 5.x.12: provider balance refresh + failover lifecycle.
+            // The pages re-query the relevant endpoints; the modal listens
+            // for `failover_required` and pops itself open.
+            case "balances_update":
+              window.dispatchEvent(new CustomEvent("aioffice:balances_update", { detail: msg }));
+              break;
+            case "failover_required":
+              window.dispatchEvent(new CustomEvent("aioffice:failover_required", { detail: msg }));
+              break;
+            case "failover_resolved":
+              window.dispatchEvent(new CustomEvent("aioffice:failover_resolved", { detail: msg }));
+              break;
+
             // QA sign-off verdict broadcast at the end of a project
             case "qa_review":
               window.dispatchEvent(new CustomEvent("aioffice:qa_review", { detail: msg }));

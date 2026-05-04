@@ -21,6 +21,7 @@
 
 import { storage } from "./storage";
 import { settingKeyForProvider, type Provider } from "./llm";
+import { isProviderOverCap } from "./providerBalances";
 import type { Agent } from "@shared/schema";
 
 export type Complexity = "low" | "medium" | "high";
@@ -123,6 +124,79 @@ export function routeForComplexity(complexity: Complexity, fallbackAgent: Agent)
 // The fallbackAgent.provider key is honored if everything else is missing.
 export function routeForCriticalCall(fallbackAgent: Agent): RoutedModel {
   return routeForComplexity("high", fallbackAgent);
+}
+
+// Stage 5.x.12: routing variant that knows about provider caps. Same
+// resolution order as routeForComplexity, but every step skips:
+//   • providers whose monthly cap is exhausted (per provider_balances.usedUsd
+//     >= provider_balances.capUsd, when capUsd > 0), AND
+//   • any model id explicitly listed in `excluded` (used by the orchestrator
+//     after a runtime credit-exhaust error so we don't immediately re-route
+//     back to the same dead model).
+// The third resolution layer (TIER_PREFERENCES) ALWAYS gets a chance even when
+// the operator's pinned default is excluded — the whole point of a fallback
+// chain is to keep the project moving.
+export function routeWithFailover(
+  complexity: Complexity,
+  fallbackAgent: Agent,
+  excluded: Set<string> = new Set(),
+): RoutedModel | null {
+  const isUsable = (provider: Provider, modelId: string): boolean => {
+    if (!hasKey(provider)) return false;
+    if (excluded.has(`${provider}:${modelId}`)) return false;
+    if (excluded.has(`${provider}:*`)) return false;
+    try {
+      if (isProviderOverCap(provider).overCap) return false;
+    } catch { /* balance row not yet seeded — treat as not-over-cap */ }
+    return true;
+  };
+
+  // 1. Operator-pinned default for the tier.
+  try {
+    const pinned = storage.getPreferredModelForTier(complexity);
+    if (pinned && isUsable(pinned.provider as Provider, pinned.modelId)) {
+      return {
+        provider: pinned.provider as Provider,
+        modelId: pinned.modelId,
+        reason: `${complexity}-tier → operator default w/ budget (${pinned.displayName || pinned.modelId})`,
+      };
+    }
+  } catch { /* registry not yet migrated; fall through */ }
+
+  // 2. Pool members for the tier.
+  try {
+    const pool = storage.getPoolModelsForTier(complexity);
+    for (const m of pool) {
+      if (isUsable(m.provider as Provider, m.modelId)) {
+        return {
+          provider: m.provider as Provider,
+          modelId: m.modelId,
+          reason: `${complexity}-tier → pool member w/ budget (${m.displayName || m.modelId})`,
+        };
+      }
+    }
+  } catch { /* migration race; fall through */ }
+
+  // 3. Hardcoded fallback chain.
+  const prefs = TIER_PREFERENCES[complexity] ?? TIER_PREFERENCES.medium;
+  for (const pick of prefs) {
+    if (isUsable(pick.provider, pick.modelId)) {
+      return { ...pick, reason: `${pick.reason} (failover-aware)` };
+    }
+  }
+
+  // 4. Agent default — only if we haven't excluded it.
+  const agentProvider = (fallbackAgent.provider as Provider) ?? "anthropic";
+  if (isUsable(agentProvider, fallbackAgent.modelId)) {
+    return {
+      provider: agentProvider,
+      modelId: fallbackAgent.modelId,
+      reason: `failover → agent default ${fallbackAgent.modelId}`,
+    };
+  }
+
+  // 5. Truly nothing left. Caller must pause the project / surface the modal.
+  return null;
 }
 
 // Map a free-form complexity hint from the planner to the canonical tier.

@@ -23,6 +23,7 @@ import type {
   Model, InsertModel,
   QaReview, InsertQaReview,
   ProjectTemplate, InsertProjectTemplate,
+  ProviderBalance, InsertProviderBalance,
 } from "@shared/schema";
 
 const sqlite = new Database("data.db");
@@ -211,6 +212,21 @@ sqlite.exec(`
   -- Cost note: a row in this table does nothing on its own — it's the
   -- scheduler tick (server/projectScheduler.ts) that spawns projects from
   -- enabled rows when their next_run_at is in the past.
+  CREATE TABLE IF NOT EXISTS provider_balances (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL DEFAULT '*',
+    cap_usd REAL NOT NULL DEFAULT 0,
+    balance_usd REAL NOT NULL DEFAULT 0,
+    used_usd REAL NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'tracked',
+    alert_threshold REAL NOT NULL DEFAULT 0.85,
+    failover_mode TEXT NOT NULL DEFAULT 'ask',
+    fallback_chain TEXT NOT NULL DEFAULT '[]',
+    last_fetched_at INTEGER,
+    fetch_error TEXT,
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
   CREATE TABLE IF NOT EXISTS project_templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -243,6 +259,13 @@ try {
 // template into the bypass.
 try {
   sqlite.exec(`ALTER TABLE project_templates ADD COLUMN reference_plan TEXT NOT NULL DEFAULT ''`);
+} catch { /* column already exists */ }
+
+// Stage 5.x.12 safe migration: per-project failover mode (ask | auto | block).
+// Pre-existing rows default to 'ask' so behaviour is unchanged until the
+// operator opts a project into auto-failover from Settings.
+try {
+  sqlite.exec(`ALTER TABLE projects ADD COLUMN failover_mode TEXT NOT NULL DEFAULT 'ask'`);
 } catch { /* column already exists */ }
 
 // Stage 4.5 safe migrations: existing rows with retired Anthropic model ids.
@@ -650,6 +673,15 @@ export interface IStorage {
   // QA reviews
   getLatestQaReview(projectId: number): QaReview | undefined;
   createQaReview(data: InsertQaReview): QaReview;
+
+  // Provider balances (Stage 5.x.12)
+  getProviderBalances(): ProviderBalance[];
+  getProviderBalance(id: string): ProviderBalance | undefined;
+  upsertProviderBalance(data: InsertProviderBalance): ProviderBalance;
+  setProviderBalanceCap(id: string, capUsd: number): ProviderBalance | undefined;
+  setProviderBalanceFailover(id: string, failoverMode: string, fallbackChain: string[]): ProviderBalance | undefined;
+  recordProviderBalanceFetch(id: string, balanceUsd: number, source: string, error?: string | null): ProviderBalance | undefined;
+  deleteProviderBalance(id: string): void;
 
   // Project templates (Stage 5.1)
   getProjectTemplates(): ProjectTemplate[];
@@ -1204,6 +1236,95 @@ class SQLiteStorage implements IStorage {
 
   createQaReview(data: InsertQaReview): QaReview {
     return db.insert(schema.qaReviews).values({ ...data, createdAt: Date.now() }).returning().get()!;
+  }
+
+  // ── Provider balances (Stage 5.x.12) ──
+  // The id is canonical "<provider>:<modelId>". Use modelId === "*" for the
+  // whole-provider bucket (most providers cap at the account level, not
+  // per-model). The fetcher (server/providerBalances.ts) keeps `balanceUsd`
+  // in sync with the live API where available, otherwise falls back to
+  // capUsd − usedUsd computed from the token_usage table.
+  getProviderBalances(): ProviderBalance[] {
+    return db.select().from(schema.providerBalances)
+      .orderBy(desc(schema.providerBalances.updatedAt))
+      .all();
+  }
+
+  getProviderBalance(id: string): ProviderBalance | undefined {
+    return db.select().from(schema.providerBalances)
+      .where(eq(schema.providerBalances.id, id))
+      .get();
+  }
+
+  upsertProviderBalance(data: InsertProviderBalance): ProviderBalance {
+    const id = data.id || `${data.provider}:${data.modelId ?? "*"}`;
+    const existing = db.select().from(schema.providerBalances)
+      .where(eq(schema.providerBalances.id, id))
+      .get();
+    const now = Date.now();
+    if (existing) {
+      // Only overwrite fields that were explicitly provided so callers can
+      // do partial updates without clobbering operator-set values like
+      // capUsd or fallbackChain.
+      const next = {
+        provider: data.provider ?? existing.provider,
+        modelId: data.modelId ?? existing.modelId,
+        capUsd: data.capUsd ?? existing.capUsd,
+        balanceUsd: data.balanceUsd ?? existing.balanceUsd,
+        usedUsd: data.usedUsd ?? existing.usedUsd,
+        source: data.source ?? existing.source,
+        alertThreshold: data.alertThreshold ?? existing.alertThreshold,
+        failoverMode: data.failoverMode ?? existing.failoverMode,
+        fallbackChain: data.fallbackChain ?? existing.fallbackChain,
+        lastFetchedAt: data.lastFetchedAt ?? existing.lastFetchedAt,
+        fetchError: data.fetchError ?? existing.fetchError,
+        updatedAt: now,
+      };
+      return db.update(schema.providerBalances).set(next)
+        .where(eq(schema.providerBalances.id, id)).returning().get()!;
+    }
+    return db.insert(schema.providerBalances).values({
+      ...data,
+      id,
+      updatedAt: now,
+    }).returning().get()!;
+  }
+
+  setProviderBalanceCap(id: string, capUsd: number): ProviderBalance | undefined {
+    return db.update(schema.providerBalances)
+      .set({ capUsd, updatedAt: Date.now() })
+      .where(eq(schema.providerBalances.id, id))
+      .returning().get();
+  }
+
+  setProviderBalanceFailover(id: string, failoverMode: string, fallbackChain: string[]): ProviderBalance | undefined {
+    return db.update(schema.providerBalances)
+      .set({
+        failoverMode,
+        fallbackChain: JSON.stringify(fallbackChain),
+        updatedAt: Date.now(),
+      })
+      .where(eq(schema.providerBalances.id, id))
+      .returning().get();
+  }
+
+  recordProviderBalanceFetch(id: string, balanceUsd: number, source: string, error?: string | null): ProviderBalance | undefined {
+    return db.update(schema.providerBalances)
+      .set({
+        balanceUsd,
+        source,
+        lastFetchedAt: Date.now(),
+        fetchError: error ?? null,
+        updatedAt: Date.now(),
+      })
+      .where(eq(schema.providerBalances.id, id))
+      .returning().get();
+  }
+
+  deleteProviderBalance(id: string): void {
+    db.delete(schema.providerBalances)
+      .where(eq(schema.providerBalances.id, id))
+      .run();
   }
 
   // ── Project templates (Stage 5.1) ──
