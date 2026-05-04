@@ -25,7 +25,6 @@ import { extractManifest, manifestToMarkdown, manifestToCsv, manifestToJson, typ
 import { routeForComplexity, routeForCriticalCall, normaliseComplexity, type Complexity } from "./modelRouter";
 import { reviewProjectQA } from "./qaReviewer";
 import { resolveTools, tavilyConfigured } from "./tools";
-import { beehiivConfigured, postBeehiivDraft } from "./beehiiv";
 import type { Agent, Task, Project } from "@shared/schema";
 
 export interface LiveOrchestratorDeps {
@@ -530,82 +529,6 @@ async function saveLiveOutput(
         );
       }
     }
-    // ─── Stage 5.3 / 5.x.6 — Beehiiv draft hookup ─────────────────────────
-    // After saving file blocks, if any saved file is an issue-*.md (the
-    // editorial pipeline's final newsletter output), POST the markdown to
-    // Beehiiv as a DRAFT post. The user reviews the draft inside Beehiiv
-    // and presses Send manually — we never auto-publish. The runner-up
-    // file is intentionally not posted (it's a planning artefact).
-    //
-    // Stage 5.x.6: every gate is now an explicit event so we can tell from
-    // the activity feed exactly why the hook fired or didn't. Before this
-    // change, three different silent-skip paths (no issue file in blocks,
-    // env vars missing, library not configured) all looked identical to
-    // an operator: nothing happened in Beehiiv, no log, no clue why.
-    // Hook is now gated ONLY on "is there an issue-*.md in the saved
-    // blocks" — env-var presence is checked for logging clarity, not as
-    // a silent precondition. If env vars are missing we emit a clear
-    // warning; if they're present, we attempt the post and log the
-    // outcome regardless. Independent of QA status.
-    if (saved > 0) {
-      const issueBlock = fileBlocks.find(b => /^issue-\d+\.md$/i.test(b.filename));
-      if (!issueBlock) {
-        deps.emitEvent(
-          projectId, agent.id, agent.name, "Beehiiv hook skipped",
-          `No issue-*.md among ${fileBlocks.length} saved file block(s) — nothing to post`,
-          "info"
-        );
-      } else if (!beehiivConfigured()) {
-        deps.emitEvent(
-          projectId, agent.id, agent.name, "Beehiiv hook skipped",
-          `${issueBlock.filename} ready to post but Beehiiv API key + publication ID not configured (Office Floor → Settings → Beehiiv)`,
-          "warning"
-        );
-      } else {
-        deps.emitEvent(
-          projectId, agent.id, agent.name, "Beehiiv hook entry",
-          `Posting ${issueBlock.filename} (${(issueBlock.content.length / 1024).toFixed(1)} KB markdown) to Beehiiv as draft…`,
-          "info"
-        );
-        try {
-          const result = await postBeehiivDraft(issueBlock.content);
-          if (result.ok) {
-            const link = result.webUrl ? ` — ${result.webUrl}` : "";
-            const idTag = result.postId ? ` (post ${result.postId})` : "";
-            deps.emitEvent(
-              projectId, agent.id, agent.name, "Beehiiv draft created",
-              `📬 ${issueBlock.filename}${idTag}${link}`,
-              "success"
-            );
-          } else if (result.planRestricted) {
-            // Stage 5.x.7: 403 SEND_API_NOT_ENTERPRISE_PLAN — Beehiiv's Posts
-            // API is enterprise-only and the user is on a standard plan.
-            // The markdown is already saved; degrade to an info event so
-            // the operator knows to paste it manually rather than treating
-            // this as an outright failure on every run.
-            deps.emitEvent(
-              projectId, agent.id, agent.name, "Beehiiv draft skipped (plan-restricted)",
-              `${issueBlock.filename} saved locally — Beehiiv Posts API requires an enterprise plan, paste the markdown into the Beehiiv editor manually`,
-              "info"
-            );
-          } else {
-            deps.emitEvent(
-              projectId, agent.id, agent.name, "Beehiiv draft failed",
-              result.error,
-              "warning"
-            );
-          }
-        } catch (e) {
-          console.error(`[live] Beehiiv post error:`, e);
-          deps.emitEvent(
-            projectId, agent.id, agent.name, "Beehiiv draft failed",
-            (e as Error).message ?? String(e),
-            "warning"
-          );
-        }
-      }
-    }
-
     // If at least one explicit file block saved, we're done — don't double
     // up by also writing ${slug}_${agent.id}.md with the raw <file>…</file>
     // wrappers in it. (If every block failed, fall through to legacy.)
@@ -637,7 +560,7 @@ async function saveLiveOutput(
         content = fencePy ? fencePy[1].trim() : rawOutput;
       } else if (fmt === "markdown") {
         const body = manifest ? manifestToMarkdown(manifest) : rawOutput.trim();
-        content = `# ${task.title}\n\n**Project:** ${project.name}  \n**Agent:** ${agent.name} (\`${agent.modelId}\`)  \n**Mode:** Live AI  \n**Completed:** ${new Date().toLocaleString()}\n\n---\n\n${body}\n`;
+        content = `# ${task.title}\n\n${body}\n`;
       } else if (fmt === "pdf") {
         content = manifest
           ? await renderPdfFromManifest(manifest, meta)
@@ -1529,6 +1452,15 @@ async function runQaSignOff(
         ? `✓ Project signed off — ${verdict.summary.slice(0, 140)}`
         : `✗ ${verdict.issues.length} issue${verdict.issues.length !== 1 ? "s" : ""} — recommendation: ${verdict.recommendation}`,
       verdict.signedOff ? "success" : "warning"
+    );
+    // Stage 5.x.8: surface the verdict's summary + counts as a discrete event
+    // so the operator can see at a glance what the QA reviewer concluded
+    // without opening the verdict panel. Independent of sign-off status.
+    const coverageMet = verdict.coverage.filter(c => c.met).length;
+    deps.emitEvent(
+      projectId, "qa", qaAgent.name, "qa review summary",
+      `${verdict.recommendation} · ${coverageMet}/${verdict.coverage.length} coverage met · ${verdict.issues.length} issue${verdict.issues.length !== 1 ? "s" : ""} — ${verdict.summary.slice(0, 200)}`,
+      "info"
     );
     deps.setAgentStatus("qa", verdict.signedOff ? "done" : "idle", null);
     if (verdict.signedOff) {
