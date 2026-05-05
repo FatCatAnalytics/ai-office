@@ -824,11 +824,12 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       <div className="flex flex-1 overflow-hidden min-h-0">
 
         {/* LEFT panel — Task Flow + Quick Actions (moved from right side in 5.x.11) */}
-        {/* Stage 5.x.15: clamp width so the panel adapts to narrow viewports
-            instead of forcing horizontal scroll. min 180 / preferred 17vw /
-            max 220px keeps the layout fitting any browser size. */}
+        {/* Stage 5.x.19: tightened from 180/17vw/220 → 168/14vw/200. Combined
+            with the smaller sidebar (152/12vw/188) and the right panel that
+            now actually shrinks (flex-shrink turned ON below), the columns
+            fit any reasonable viewport without clipping. */}
         <div className="flex flex-col border-r border-slate-800 bg-slate-900/60 flex-shrink-0 overflow-hidden"
-          style={{ width: "clamp(180px, 17vw, 220px)" }}>
+          style={{ width: "clamp(168px, 14vw, 200px)" }}>
           {/* Task flow */}
           <div className="flex flex-col overflow-hidden min-h-0" style={{ flex: "1 1 0" }}>
             <TaskFlowPanel agents={agents} tasks={tasks} />
@@ -858,9 +859,16 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
         </main>
 
         {/* RIGHT panel — Activity Feed only (Stage 5.x.11) */}
-        {/* Stage 5.x.15: same responsive clamp as left panel. */}
-        <div className="flex flex-col border-l border-slate-800 bg-slate-900/60 flex-shrink-0 overflow-hidden"
-          style={{ width: "clamp(200px, 19vw, 240px)" }}>
+        {/* Stage 5.x.19: this is the panel that was getting clipped on the
+            user's screenshot — the previous flex-shrink-0 + 200/19vw/240
+            meant the panel kept its natural width even when total column
+            width exceeded the viewport, and the parent's overflow-hidden
+            simply chopped off the right edge instead of letting the panel
+            shrink. Two changes: drop flex-shrink-0 (let it shrink under
+            pressure) and lower the clamp to 168/15vw/216. The activity
+            feed text inside is already truncate/wrap-friendly. */}
+        <div className="flex flex-col border-l border-slate-800 bg-slate-900/60 overflow-hidden"
+          style={{ width: "clamp(168px, 15vw, 216px)", flex: "0 1 auto", minWidth: 168 }}>
           <div className="flex flex-col overflow-hidden flex-1 min-h-0">
             <ActivityFeed events={events} connected={connected} liveStreams={liveStreams} />
           </div>

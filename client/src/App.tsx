@@ -51,11 +51,14 @@ function AppShell() {
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden" style={{ fontFamily:"Inter, sans-serif" }}>
       {/* ── Sidebar ── */}
-      {/* Stage 5.x.15: responsive sidebar width — clamps so it never eats more
-          than ~16vw on wide screens or shrinks below 168px on narrow ones. */}
+      {/* Stage 5.x.19: tightened sidebar so the three columns + main canvas
+          fit at narrower viewports without clipping the activity feed. The
+          previous 168/14vw/208 still pushed the right panel off-screen on
+          ~1280px-wide windows because flex-shrink-0 on every column meant
+          they kept their natural width even when overflowing. */}
       <aside
         className="flex flex-col border-r border-slate-800 bg-slate-900/70 backdrop-blur flex-shrink-0"
-        style={{ width: "clamp(168px, 14vw, 208px)" }}>
+        style={{ width: "clamp(152px, 12vw, 188px)" }}>
         {/* Logo */}
         <div className="flex items-center gap-2.5 px-4 py-4 border-b border-slate-800">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
