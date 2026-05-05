@@ -1328,7 +1328,23 @@ async function runWaveConcurrent(
         // Brief idle gap so the UI can settle the "done" pulse before reset
         setTimeout(() => deps.setAgentStatus(agent.id, "idle", null), 600);
       } catch (e) {
-        const reason = (e as Error)?.message ?? String(e);
+        // Stage 5.x.18: turn opaque error messages into something an operator
+        // can act on. Node's undici surfaces ANY network/DNS/TLS failure as
+        // a TypeError with the bare string "fetch failed" — which then ends
+        // up on the task card as the blockedReason and tells the user nothing
+        // useful. Provider streaming calls now retry transient failures via
+        // fetchWithRetry, so by the time we land here the failure has already
+        // survived 3 attempts. Annotate accordingly so the user knows it's
+        // a sustained network/provider outage, not a one-off blip they should
+        // ignore.
+        const raw = (e as Error)?.message ?? String(e);
+        const isBareFetchFailed = /^\s*fetch failed\s*$/i.test(raw);
+        const isTransientNet = /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|UND_ERR/i.test(raw);
+        const reason = isBareFetchFailed
+          ? `Network error reaching the model provider after 3 retries ("fetch failed"). The provider may be down or the VPS lost connectivity briefly. Try "Manager reassign" to route to a different provider, or re-run the task in a moment.`
+          : isTransientNet
+            ? `Network error after retries: ${raw}. Provider may be flapping — try Manager reassign or re-run.`
+            : raw;
         storage.updateTask(task.id, { status: "blocked", blockedReason: reason });
         deps.broadcast({ type: "task_update", task: { ...task, status: "blocked", blockedReason: reason, waveIndex } });
         deps.setAgentStatus(agent.id, "blocked", task.title);

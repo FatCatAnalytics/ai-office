@@ -166,7 +166,12 @@ async function streamAnthropic(req: StreamRequest, handlers: StreamHandlers): Pr
     messages,
   };
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  // Stage 5.x.18: streaming fetches now use fetchWithRetry so transient
+  // network errors (TypeError: fetch failed from undici) and 502/503/504
+  // gateway hiccups don't blow up an entire research task. Previously these
+  // bare fetch() calls let a single ECONNRESET set blockedReason="fetch
+  // failed" on the task card with no recovery.
+  const res = await fetchWithRetry("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -222,7 +227,8 @@ async function streamOpenAI(req: StreamRequest, handlers: StreamHandlers): Promi
     stream_options: { include_usage: true },
   };
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  // Stage 5.x.18: see Anthropic call above — retry on transient network errors.
+  const res = await fetchWithRetry("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -293,7 +299,8 @@ async function streamGoogle(req: StreamRequest, handlers: StreamHandlers): Promi
   // Use streamGenerateContent with SSE
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(req.modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(req.apiKey)}`;
 
-  const res = await fetch(url, {
+  // Stage 5.x.18: see Anthropic call above — retry on transient network errors.
+  const res = await fetchWithRetry(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -349,7 +356,8 @@ async function callKimiHost(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<{ res: Response; errText?: string }> {
-  const res = await fetch(`https://${host}/v1/chat/completions`, {
+  // Stage 5.x.18: see Anthropic call above — retry on transient network errors.
+  const res = await fetchWithRetry(`https://${host}/v1/chat/completions`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -472,7 +480,8 @@ async function streamDeepSeek(req: StreamRequest, handlers: StreamHandlers): Pro
     stream: true,
   };
 
-  const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+  // Stage 5.x.18: see Anthropic call above — retry on transient network errors.
+  const res = await fetchWithRetry("https://api.deepseek.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "content-type": "application/json",
