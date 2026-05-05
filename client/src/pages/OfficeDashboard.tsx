@@ -521,76 +521,86 @@ function TopStatsBar({ agents, project, tasks }: { agents: Agent[]; project: Pro
   // Suppress unused warning for tasks param (kept for future per-task stats)
   void tasks;
 
+  // Stage 5.x.21: top status bar tightened to fit any reasonable viewport
+  // without an internal horizontal scrollbar.
+  //   • padding px-4 → px-2.5, gap-3 → gap-2 between segments
+  //   • big numbers text-xl → text-base, text-lg → text-sm
+  //   • label fonts text-xs unchanged but text-[10px] for the smaller ones
+  //   • "Office Status" segment label hidden under sm breakpoint
+  //   • progress bar w-28 → w-20
+  //   • overflow-x-auto → overflow-x-hidden so any residual overflow on a
+  //     very narrow window is silently clipped instead of producing the
+  //     scrollbar the user kept seeing.
   return (
-    <div className="flex items-center gap-0 border-b border-slate-800 bg-slate-900/70 backdrop-blur flex-shrink-0 overflow-x-auto"
-      style={{ height: 48 }}>
+    <div className="flex items-center gap-0 border-b border-slate-800 bg-slate-900/70 backdrop-blur flex-shrink-0 overflow-x-hidden"
+      style={{ height: 44 }}>
       {/* Label */}
-      <div className="flex items-center gap-2 px-4 border-r border-slate-800 h-full flex-shrink-0">
-        <ChevronDown size={11} className="text-slate-500" />
-        <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">Office Status</span>
+      <div className="hidden md:flex items-center gap-1.5 px-3 border-r border-slate-800 h-full flex-shrink-0">
+        <ChevronDown size={10} className="text-slate-500" />
+        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">Office Status</span>
       </div>
 
       {/* Agent stats */}
-      <div className="flex items-center gap-3 px-4 border-r border-slate-800 h-full flex-shrink-0">
+      <div className="flex items-center gap-2 px-2.5 border-r border-slate-800 h-full flex-shrink-0">
         <div className="flex items-baseline gap-1">
-          <span className="text-xl font-bold text-slate-100 font-mono">{totalAgents}</span>
-          <span className="text-xs text-slate-500">Total Agents</span>
+          <span className="text-base font-bold text-slate-100 font-mono">{totalAgents}</span>
+          <span className="text-[10px] text-slate-500">Total</span>
         </div>
         <div className="flex items-baseline gap-1">
-          <span className="text-xl font-bold text-emerald-400 font-mono">{activeAgents}</span>
-          <span className="text-xs text-slate-500">Active</span>
+          <span className="text-base font-bold text-emerald-400 font-mono">{activeAgents}</span>
+          <span className="text-[10px] text-slate-500">Active</span>
         </div>
         <div className="flex items-baseline gap-1">
-          <span className="text-xl font-bold text-slate-400 font-mono">{idleAgents}</span>
-          <span className="text-xs text-slate-500">Idle</span>
+          <span className="text-base font-bold text-slate-400 font-mono">{idleAgents}</span>
+          <span className="text-[10px] text-slate-500">Idle</span>
         </div>
         {blockedAgents > 0 && (
           <div className="flex items-baseline gap-1">
-            <span className="text-xl font-bold text-rose-400 font-mono">{blockedAgents}</span>
-            <span className="text-xs text-slate-500">Blocked</span>
+            <span className="text-base font-bold text-rose-400 font-mono">{blockedAgents}</span>
+            <span className="text-[10px] text-slate-500">Blocked</span>
           </div>
         )}
       </div>
 
       {/* Progress */}
-      <div className="flex items-center gap-3 px-4 border-r border-slate-800 h-full flex-shrink-0">
-        <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap">Project Progress</span>
-        <div className="flex items-center gap-2">
-          <div className="w-28 h-2 rounded-full bg-slate-700 overflow-hidden">
+      <div className="flex items-center gap-2 px-2.5 border-r border-slate-800 h-full flex-shrink-0">
+        <span className="hidden lg:inline text-[10px] text-slate-500 uppercase tracking-wider whitespace-nowrap">Progress</span>
+        <div className="flex items-center gap-1.5">
+          <div className="w-20 h-1.5 rounded-full bg-slate-700 overflow-hidden">
             <div className="h-full rounded-full transition-all duration-500"
               style={{ width: `${progress}%`, background: "linear-gradient(90deg, #06b6d4, #8b5cf6)" }} />
           </div>
-          <span className="text-lg font-bold text-slate-100 font-mono">{progress}%</span>
+          <span className="text-sm font-bold text-slate-100 font-mono">{progress}%</span>
         </div>
       </div>
 
       {/* Tasks completed */}
-      <div className="flex items-center gap-2 px-4 border-r border-slate-800 h-full flex-shrink-0">
-        <CheckCircle2 size={12} className="text-cyan-400" />
-        <span className="text-xs text-slate-500 whitespace-nowrap">Tasks Completed</span>
-        <span className="text-lg font-bold text-slate-100 font-mono">{tasksCompleted}</span>
-        <span className="text-xs text-slate-600">/ {tasksTotal}</span>
+      <div className="flex items-center gap-1.5 px-2.5 border-r border-slate-800 h-full flex-shrink-0">
+        <CheckCircle2 size={11} className="text-cyan-400" />
+        <span className="hidden lg:inline text-[10px] text-slate-500 whitespace-nowrap">Tasks</span>
+        <span className="text-sm font-bold text-slate-100 font-mono">{tasksCompleted}</span>
+        <span className="text-[10px] text-slate-600">/ {tasksTotal}</span>
       </div>
 
       {/* Avg response time */}
-      <div className="flex items-center gap-2 px-4 border-r border-slate-800 h-full flex-shrink-0">
-        <Clock size={12} className="text-cyan-400" />
-        <span className="text-xs text-slate-500 whitespace-nowrap">Avg Response</span>
-        <span className="text-lg font-bold text-cyan-400 font-mono">{avgResponse.toFixed(1)}s</span>
+      <div className="flex items-center gap-1.5 px-2.5 border-r border-slate-800 h-full flex-shrink-0">
+        <Clock size={11} className="text-cyan-400" />
+        <span className="hidden xl:inline text-[10px] text-slate-500 whitespace-nowrap">Avg</span>
+        <span className="text-sm font-bold text-cyan-400 font-mono">{avgResponse.toFixed(1)}s</span>
       </div>
 
       {/* Tokens */}
-      <div className="flex items-center gap-2 px-4 border-r border-slate-800 h-full flex-shrink-0">
-        <Zap size={12} className="text-amber-400" />
-        <span className="text-xs text-slate-500">Tokens Used</span>
-        <span className="text-lg font-bold text-amber-400 font-mono">{formatTokens(tokensUsed)}</span>
+      <div className="flex items-center gap-1.5 px-2.5 border-r border-slate-800 h-full flex-shrink-0">
+        <Zap size={11} className="text-amber-400" />
+        <span className="hidden lg:inline text-[10px] text-slate-500">Tokens</span>
+        <span className="text-sm font-bold text-amber-400 font-mono">{formatTokens(tokensUsed)}</span>
       </div>
 
       {/* Cost */}
-      <div className="flex items-center gap-2 px-4 h-full flex-shrink-0">
-        <DollarSign size={12} className="text-emerald-400" />
-        <span className="text-xs text-slate-500 whitespace-nowrap">Cost Today</span>
-        <span className="text-lg font-bold text-emerald-400 font-mono">${costToday.toFixed(2)}</span>
+      <div className="flex items-center gap-1.5 px-2.5 h-full flex-shrink-0">
+        <DollarSign size={11} className="text-emerald-400" />
+        <span className="hidden lg:inline text-[10px] text-slate-500 whitespace-nowrap">Cost</span>
+        <span className="text-sm font-bold text-emerald-400 font-mono">${costToday.toFixed(2)}</span>
       </div>
     </div>
   );
@@ -643,19 +653,19 @@ function BottomBar({ onCameraChange }: { onCameraChange?: (view: string) => void
   const [speed, setSpeed] = useState<"1x" | "4x">("1x");
 
   return (
-    <div className="flex items-center gap-0 border-t border-slate-800 bg-slate-900/80 backdrop-blur flex-shrink-0 overflow-x-auto"
-      style={{ height: 44 }}>
+    <div className="flex items-center gap-0 border-t border-slate-800 bg-slate-900/80 backdrop-blur flex-shrink-0 overflow-x-hidden w-full min-w-0"
+      style={{ height: 40 }}>
       {/* Time controls */}
-      <div className="flex items-center gap-2 px-4 border-r border-slate-800 h-full flex-shrink-0">
-        <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap">Time Controls</span>
+      <div className="flex items-center gap-1.5 px-2.5 border-r border-slate-800 h-full flex-shrink-0">
+        <span className="hidden lg:inline text-[10px] text-slate-500 uppercase tracking-wider whitespace-nowrap">Time</span>
         <button
           onClick={() => setIsPlaying(p => !p)}
-          className="w-7 h-7 rounded-md flex items-center justify-center border border-slate-700 hover:border-cyan-500/40 text-slate-400 hover:text-cyan-400 transition-all">
-          {isPlaying ? <Pause size={11} /> : <Play size={11} />}
+          className="w-6 h-6 rounded-md flex items-center justify-center border border-slate-700 hover:border-cyan-500/40 text-slate-400 hover:text-cyan-400 transition-all">
+          {isPlaying ? <Pause size={10} /> : <Play size={10} />}
         </button>
         <button
           onClick={() => setSpeed(s => s === "1x" ? "4x" : "1x")}
-          className={`px-2.5 py-1 rounded-md text-xs font-bold border transition-all ${
+          className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold border transition-all ${
             speed === "4x"
               ? "border-cyan-500/40 text-cyan-400 bg-cyan-500/10"
               : "border-slate-700 text-slate-500 hover:border-slate-600"
@@ -665,16 +675,16 @@ function BottomBar({ onCameraChange }: { onCameraChange?: (view: string) => void
       </div>
 
       {/* Today's schedule */}
-      <div className="flex items-center gap-0 px-4 border-r border-slate-800 h-full flex-shrink-0 flex-1 overflow-x-auto">
-        <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap mr-3">Today's Schedule</span>
-        <div className="flex items-center gap-2">
+      <div className="flex items-center gap-0 px-2.5 border-r border-slate-800 h-full flex-1 min-w-0 overflow-x-hidden">
+        <span className="hidden lg:inline text-[10px] text-slate-500 uppercase tracking-wider whitespace-nowrap mr-2">Schedule</span>
+        <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
           {SCHEDULE_ITEMS.map((item, i) => (
-            <div key={item.label} className="flex items-center gap-1">
-              {i > 0 && <div className="w-4 h-px bg-slate-700 mx-0.5" />}
-              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md"
+            <div key={item.label} className="flex items-center gap-1 flex-shrink min-w-0">
+              {i > 0 && <div className="w-3 h-px bg-slate-700 mx-0.5 flex-shrink-0" />}
+              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-md"
                 style={{ background: item.color + "18", border: `1px solid ${item.color}44` }}>
                 <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: item.color }} />
-                <span className="text-slate-400 whitespace-nowrap" style={{ fontSize: 9, fontFamily: "monospace" }}>{item.time}</span>
+                <span className="hidden xl:inline text-slate-400 whitespace-nowrap" style={{ fontSize: 9, fontFamily: "monospace" }}>{item.time}</span>
                 <span className="text-slate-300 whitespace-nowrap" style={{ fontSize: 9 }}>{item.label}</span>
               </div>
             </div>
