@@ -49,7 +49,7 @@ function AppShell() {
   // stats bar. Header counters are derived inside OfficeDashboard.
 
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden" style={{ fontFamily:"Inter, sans-serif" }}>
+    <div className="flex h-screen w-screen max-w-full bg-slate-950 text-slate-100 overflow-hidden" style={{ fontFamily:"Inter, sans-serif" }}>
       {/* ── Sidebar ── */}
       {/* Stage 5.x.19: tightened sidebar so the three columns + main canvas
           fit at narrower viewports without clipping the activity feed. The
@@ -147,7 +147,12 @@ function AppShell() {
       </aside>
 
       {/* ── Main content ── */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Stage 5.x.20: min-w-0 is REQUIRED on a flex child for it to shrink
+          past its content's intrinsic size. Without it, pages with wide
+          content (Templates header row, Office Floor 3-column layout, etc.)
+          push the wrapper wider than its parent and Safari clips the right
+          edge. overflow-x-hidden is belt-and-braces. */}
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <Switch>
           <Route path="/">
             <OfficeDashboard
