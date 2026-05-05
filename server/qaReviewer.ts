@@ -181,7 +181,12 @@ Return your JSON verdict now.`,
   let result;
   try {
     result = await streamCompletion(
-      { provider: routed.provider, modelId: routed.modelId, apiKey, messages, maxTokens: 4096, temperature: 0.2 },
+      // Stage 5.x.17: QA initial cap 4096 → 8192. The 5.x.13 bump fixed the
+      // common case but a coverage matrix with 8 quoted-evidence rows over
+      // a long technical article was still hitting the cap. Doubling the
+      // initial budget keeps cost low for short reviews (we only pay for
+      // emitted tokens) while removing the truncation pressure.
+      { provider: routed.provider, modelId: routed.modelId, apiKey, messages, maxTokens: 8192, temperature: 0.2 },
       {},
     );
   } catch (e) {
@@ -203,8 +208,8 @@ Return your JSON verdict now.`,
     deps.emitEvent(
       project.id, "qa", qaAgent.name, "qa retry",
       truncated
-        ? `Initial QA response truncated at 4096 tokens (stop_reason=max_tokens) — retrying with 8192-token budget`
-        : `Initial QA response wasn't valid JSON — retrying with 8192-token budget and a tighter format prompt`,
+        ? `Initial QA response truncated at 8192 tokens (stop_reason=max_tokens) — retrying with 16384-token budget`
+        : `Initial QA response wasn't valid JSON — retrying with 16384-token budget and a tighter format prompt`,
       "info",
     );
     // Tighten the prompt for the retry: the model still sees the original
@@ -224,7 +229,7 @@ Return your JSON verdict now.`,
     ];
     try {
       const retry = await streamCompletion(
-        { provider: routed.provider, modelId: routed.modelId, apiKey, messages: retryMessages, maxTokens: 8192, temperature: 0.1 },
+        { provider: routed.provider, modelId: routed.modelId, apiKey, messages: retryMessages, maxTokens: 16384, temperature: 0.1 },
         {},
       );
       totalTokensIn  += retry.tokensIn;

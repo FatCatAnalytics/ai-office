@@ -1072,16 +1072,23 @@ async function runWorkerTask(
           modelId: routed.modelId,
           apiKey,
           messages,
-          // Stage 5.x.16: bumped non-final caps so long-form deliverables
-          // (technical articles, full reviews, multi-section reports) don't
-          // silently truncate. The 4096 default was hitting max_tokens on
-          // ~2,500-word articles; the 8192 tool-mode default was clipping
-          // research syntheses after a few rounds of search results. Final-
-          // task budget unchanged. QA self-review gets the bigger non-final
-          // budget too because thorough reviews routinely exceed 4K tokens.
+          // Stage 5.x.17: another budget bump after a 2,500-word technical
+          // article still got cut off mid-section (supply-chain diagram
+          // truncation, no conclusion) under the 5.x.16 caps. New ceilings:
+          //   • non-final non-tool: 8192 → 16384 (matches old final cap;
+          //     long-form articles, multi-section reports, full reviews)
+          //   • tool-mode: 12288 → 16384 (research syntheses after several
+          //     tool rounds — the visible synthesis was being clipped)
+          //   • final: 16384 → 24576 (final compositions that aggregate
+          //     multiple deliverables)
+          // 24K is within the per-call output cap of every frontier model we
+          // route to (Anthropic Claude 4.x ≥ 64K, GPT-5/o-series 32K+, Gemini
+          // 2.5 64K). Smaller-cap providers (Kimi/DeepSeek, ~8K) will simply
+          // stop early on end_turn — the empty-output guard plus stopReason
+          // surfacing will catch any genuine truncation that survives this.
           maxTokens: plannerKey === "final"
-            ? 16384
-            : tools.length > 0 ? 12288 : 8192,
+            ? 24576
+            : tools.length > 0 ? 16384 : 16384,
           temperature: 0.7,
           tools: tools.length > 0 ? tools : undefined,
           signal,
