@@ -158,7 +158,10 @@ function KanbanColumn({ status, tasks, agents, onReassign }: {
   const Icon = icons[status] ?? Clock;
 
   return (
-    <div className="flex flex-col gap-3 min-w-[240px] flex-1 min-h-0">
+    // Stage 5.x.15: drop min-w so 4 columns fit any viewport without
+    // horizontal scroll. flex-1 + basis-0 + min-w-0 lets columns share
+    // available width equally and shrink when the viewport is narrow.
+    <div className="flex flex-col gap-3 flex-1 basis-0 min-w-0 min-h-0">
       <div className="flex items-center justify-between px-1 flex-shrink-0">
         <div className="flex items-center gap-2">
           <Icon size={14} className={sc.text} style={status === "in_progress" ? { animation:"none" } : {}}/>
@@ -279,7 +282,10 @@ export default function TaskBoardPage({ tasks: liveTasks, project: liveProject, 
       </div>
 
       {/* Board */}
-      <div className="flex-1 overflow-x-auto min-h-0">
+      {/* Stage 5.x.15: outer is overflow-hidden (no horizontal scroll); each
+          column scrolls vertically inside itself. Columns share width via
+          flex-1 basis-0 so they always fit the viewport. */}
+      <div className="flex-1 overflow-hidden min-h-0 min-w-0">
         {!activeProject ? (
           <div className="flex items-center justify-center h-full text-slate-600 text-sm">
             Submit a project to see tasks here
@@ -289,7 +295,7 @@ export default function TaskBoardPage({ tasks: liveTasks, project: liveProject, 
             <Loader2 size={18} className="animate-spin"/> Loading tasks...
           </div>
         ) : (
-          <div className="flex gap-4 p-6 h-full min-h-0">
+          <div className="flex gap-3 lg:gap-4 p-3 lg:p-6 h-full min-h-0 min-w-0">
             {columns.map(col => (
               <KanbanColumn
                 key={col}

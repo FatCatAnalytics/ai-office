@@ -51,7 +51,11 @@ function AppShell() {
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden" style={{ fontFamily:"Inter, sans-serif" }}>
       {/* ── Sidebar ── */}
-      <aside className="flex flex-col w-52 border-r border-slate-800 bg-slate-900/70 backdrop-blur flex-shrink-0">
+      {/* Stage 5.x.15: responsive sidebar width — clamps so it never eats more
+          than ~16vw on wide screens or shrinks below 168px on narrow ones. */}
+      <aside
+        className="flex flex-col border-r border-slate-800 bg-slate-900/70 backdrop-blur flex-shrink-0"
+        style={{ width: "clamp(168px, 14vw, 208px)" }}>
         {/* Logo */}
         <div className="flex items-center gap-2.5 px-4 py-4 border-b border-slate-800">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"

@@ -824,8 +824,11 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       <div className="flex flex-1 overflow-hidden min-h-0">
 
         {/* LEFT panel — Task Flow + Quick Actions (moved from right side in 5.x.11) */}
+        {/* Stage 5.x.15: clamp width so the panel adapts to narrow viewports
+            instead of forcing horizontal scroll. min 180 / preferred 17vw /
+            max 220px keeps the layout fitting any browser size. */}
         <div className="flex flex-col border-r border-slate-800 bg-slate-900/60 flex-shrink-0 overflow-hidden"
-          style={{ width: 220 }}>
+          style={{ width: "clamp(180px, 17vw, 220px)" }}>
           {/* Task flow */}
           <div className="flex flex-col overflow-hidden min-h-0" style={{ flex: "1 1 0" }}>
             <TaskFlowPanel agents={agents} tasks={tasks} />
@@ -855,8 +858,9 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
         </main>
 
         {/* RIGHT panel — Activity Feed only (Stage 5.x.11) */}
+        {/* Stage 5.x.15: same responsive clamp as left panel. */}
         <div className="flex flex-col border-l border-slate-800 bg-slate-900/60 flex-shrink-0 overflow-hidden"
-          style={{ width: 240 }}>
+          style={{ width: "clamp(200px, 19vw, 240px)" }}>
           <div className="flex flex-col overflow-hidden flex-1 min-h-0">
             <ActivityFeed events={events} connected={connected} liveStreams={liveStreams} />
           </div>
