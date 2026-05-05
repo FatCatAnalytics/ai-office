@@ -439,12 +439,15 @@ const AGENT_DEFAULT_FORMAT: Record<string, string> = {
   pm:            "markdown",
 };
 
+// Stage 5.x.16: optional stopReason lets the saver write a helpful stub when
+// the agent returned empty/near-empty output, instead of a heading-only file.
 async function saveLiveOutput(
   projectId: number,
   task: Task,
   agent: Agent,
   rawOutput: string,
-  deps: LiveOrchestratorDeps
+  deps: LiveOrchestratorDeps,
+  stopReason?: string
 ): Promise<void> {
   const project = storage.getProject(projectId);
   if (!project) return;
@@ -560,8 +563,30 @@ async function saveLiveOutput(
         const fencePy = rawOutput.match(/```(?:python|py)?\s*([\s\S]*?)```/);
         content = fencePy ? fencePy[1].trim() : rawOutput;
       } else if (fmt === "markdown") {
+        // Stage 5.x.16: refuse to silently save heading-only markdown. If the
+        // agent returned empty/near-empty output (already retried once at the
+        // call site), write a clear stub explaining what happened so the
+        // operator can act — instead of a confusing 54-byte file with just
+        // the task title. Threshold matches the upstream EMPTY_THRESHOLD.
         const body = manifest ? manifestToMarkdown(manifest) : rawOutput.trim();
-        content = `# ${task.title}\n\n${body}\n`;
+        if (body.length < 80) {
+          const reasonLine = stopReason && stopReason !== "unknown" && stopReason !== ""
+            ? `Model stop reason: \`${stopReason}\`. `
+            : "";
+          const hint = stopReason === "max_tokens"
+            ? "The model hit its output token cap before producing visible text — likely burned its budget on hidden reasoning. Re-run this task or raise the budget."
+            : stopReason === "refusal"
+            ? "The model refused to answer. Check the task prompt for content-policy triggers, or reassign to a different model."
+            : "The agent produced no usable output even after one automatic retry. Re-run the task, reassign to a different agent, or adjust the task description.";
+          content = `# ${task.title}\n\n> ⚠️ **Empty output.** ${reasonLine}${hint}\n\n*Raw response (${body.length} chars):*\n\n\`\`\`\n${body || "(empty)"}\n\`\`\`\n`;
+          deps.emitEvent(
+            projectId, agent.id, agent.name, "saved empty stub",
+            `⚠️ ${task.title}: wrote stub markdown (${body.length} chars of body, stop=${stopReason ?? "unknown"})`,
+            "warning"
+          );
+        } else {
+          content = `# ${task.title}\n\n${body}\n`;
+        }
       } else if (fmt === "pdf") {
         content = manifest
           ? await renderPdfFromManifest(manifest, meta)
@@ -904,6 +929,16 @@ async function replanAfterFailure(
 
 // ─── Worker execution ───────────────────────────────────────────────────────
 
+// Stage 5.x.16: runWorkerTask now returns both the text AND the model's stop
+// reason (max_tokens, end_turn, refusal, tool_use, etc). Callers use stopReason
+// to detect silent truncation — e.g. a 0-char response with stopReason
+// "max_tokens" means the model burned its budget on hidden reasoning before
+// emitting any visible text. The empty-output guard at the call site retries
+// once when this happens, instead of saving a heading-only file.
+export interface WorkerTaskResult {
+  text: string;
+  stopReason: string;
+}
 async function runWorkerTask(
   project: Project,
   task: Task,
@@ -912,7 +947,7 @@ async function runWorkerTask(
   deps: LiveOrchestratorDeps,
   signal?: AbortSignal,
   plannerKey?: string
-): Promise<string> {
+): Promise<WorkerTaskResult> {
   const sharedContext = buildSharedContext(priorOutputs);
 
   // ── Cost-aware routing ──
@@ -1037,9 +1072,16 @@ async function runWorkerTask(
           modelId: routed.modelId,
           apiKey,
           messages,
+          // Stage 5.x.16: bumped non-final caps so long-form deliverables
+          // (technical articles, full reviews, multi-section reports) don't
+          // silently truncate. The 4096 default was hitting max_tokens on
+          // ~2,500-word articles; the 8192 tool-mode default was clipping
+          // research syntheses after a few rounds of search results. Final-
+          // task budget unchanged. QA self-review gets the bigger non-final
+          // budget too because thorough reviews routinely exceed 4K tokens.
           maxTokens: plannerKey === "final"
             ? 16384
-            : tools.length > 0 ? 8192 : 4096,
+            : tools.length > 0 ? 12288 : 8192,
           temperature: 0.7,
           tools: tools.length > 0 ? tools : undefined,
           signal,
@@ -1109,12 +1151,22 @@ async function runWorkerTask(
   stream.end();
 
   const cost = recordUsage(agent, project.id, result.tokensIn, result.tokensOut, deps, { provider: routed.provider, modelId: routed.modelId });
+  // Stage 5.x.16: surface stopReason in the event log so operators can see
+  // "max_tokens" / "refusal" / "end_turn" directly in the activity feed.
+  // Anything other than a clean stop is flagged with a warning glyph.
+  const stopReason = result.stopReason ?? "unknown";
+  const cleanStop = stopReason === "end_turn"
+    || stopReason === "stop"
+    || stopReason === "STOP"
+    || stopReason === "tool_use"
+    || stopReason === "tool_calls"
+    || stopReason === "";
   deps.emitEvent(
     project.id, agent.id, agent.name, "model response",
-    `${result.tokensIn.toLocaleString()} in / ${result.tokensOut.toLocaleString()} out · $${cost.toFixed(4)} · ${routed.modelId}`,
-    "info"
+    `${result.tokensIn.toLocaleString()} in / ${result.tokensOut.toLocaleString()} out · $${cost.toFixed(4)} · ${routed.modelId}${cleanStop ? "" : ` · ⚠️ stop=${stopReason}`}`,
+    cleanStop ? "info" : "warning"
   );
-  return result.text;
+  return { text: result.text, stopReason };
 }
 
 // Run a list of tasks under a concurrency cap. Returns successes + failures.
@@ -1152,7 +1204,52 @@ async function runWaveConcurrent(
       deps.broadcast({ type: "task_update", task: { ...task, status: "in_progress", waveIndex } });
       const plannerKey = plannerKeyByTaskId?.get(task.id);
       try {
-        let output = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
+        let workerResult = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
+        let output = workerResult.text;
+        let stopReason = workerResult.stopReason;
+
+        // Stage 5.x.16 — Empty-output guard for EVERY regular task.
+        // The previous behaviour silently saved a heading-only markdown file
+        // when the agent returned no visible text (model hit max_tokens on
+        // hidden reasoning, refused, emitted only tool calls, etc.). This
+        // produced files like "# Review article\n\n\n" with no body — the
+        // exact failure mode reported by the user on the SME Medium article
+        // run. The guard now retries once with a tightened prompt, then
+        // surfaces a warning with the stop reason if still empty so the
+        // operator can act instead of staring at a confusing empty file.
+        // QA self-review keeps its own stricter guard below (verdict-marker
+        // check) — but it also benefits from this baseline check.
+        const EMPTY_THRESHOLD = 80;
+        const looksEmpty = output.trim().length < EMPTY_THRESHOLD;
+        if (looksEmpty) {
+          deps.emitEvent(
+            project.id, agent.id, agent.name, "empty output",
+            `⚠️ Agent returned only ${output.trim().length} chars (stop=${stopReason}) — retrying once`,
+            "warning"
+          );
+          const retry = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
+          if (retry.text.trim().length >= EMPTY_THRESHOLD) {
+            output = retry.text;
+            stopReason = retry.stopReason;
+            deps.emitEvent(
+              project.id, agent.id, agent.name, "retry recovered",
+              `✓ Retry produced ${retry.text.length} chars — using retry result`,
+              "info"
+            );
+          } else {
+            // Both attempts empty. Keep whichever has more content (usually
+            // the retry) so saveLiveOutput can write a clear stub instead
+            // of a blank file. Mark the task with blockedReason context so
+            // the manager's replanner can route around it.
+            output = retry.text.length > output.length ? retry.text : output;
+            stopReason = retry.stopReason;
+            deps.emitEvent(
+              project.id, agent.id, agent.name, "retry still empty",
+              `⚠️ Retry also produced ${retry.text.trim().length} chars (stop=${retry.stopReason}) — saving stub and marking complete; manager may replan`,
+              "warning"
+            );
+          }
+        }
 
         // Stage 5.x.5 — QA enforcement.
         // The 8-step QA self-review must be substantive and contain explicit
@@ -1185,7 +1282,9 @@ async function runWaveConcurrent(
               `⚠️ QA output inadequate (${output.length} chars, ${verdictHits} verdict markers) — retrying once`,
               "warning"
             );
-            output = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
+            const qaRetry = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
+            output = qaRetry.text;
+            stopReason = qaRetry.stopReason;
             const verdictHits2 = countMarkers(output);
             const stillInadequate = output.length < 200 || verdictHits2 < 6;
             deps.emitEvent(
@@ -1206,6 +1305,8 @@ async function runWaveConcurrent(
           }
         }
 
+        // Stage 5.x.16: pass stopReason context to the saver so it can write a
+        // helpful stub instead of a heading-only file when output is empty.
         // Stage 4.17: persist raw markdown output on the task itself so QA can review
         // worker reasoning (formatter agents read priorOutputs separately via files).
         storage.updateTask(task.id, { status: "done", output });
@@ -1215,7 +1316,7 @@ async function runWaveConcurrent(
           project.id, agent.id, agent.name, "completed task",
           `✓ Finished: ${task.title}`, "success"
         );
-        await saveLiveOutput(project.id, task, agent, output, deps);
+        await saveLiveOutput(project.id, task, agent, output, deps, stopReason);
         successes.push({ task, agent, output });
         // Brief idle gap so the UI can settle the "done" pulse before reset
         setTimeout(() => deps.setAgentStatus(agent.id, "idle", null), 600);
