@@ -153,6 +153,48 @@ function clipPayload(text: string): string {
   return text.slice(0, MAX_TOTAL_CHARS) + "\n\n[...response truncated to fit context]";
 }
 
+// Stage 5.x.14: retry policy for Tavily.
+//
+// Before this stage, callTavily was a single fetch() with no timeout and no
+// retries. A transient network blip during wave-1 of a research project
+// (cold TLS, DNS warm-up, Cloudflare in-between bouncing a connection)
+// would surface as a literal Node.js "fetch failed" error, which the
+// orchestrator caught and used to mark the task blocked. The manager's
+// replanner then routed around the failure on the next try — but the dead
+// card stayed visible on the kanban, scaring operators into thinking the
+// run was broken when it had actually self-healed.
+//
+// New behaviour: every Tavily call gets up to TAVILY_MAX_ATTEMPTS attempts
+// with exponential backoff (300ms → 900ms → 2.7s) plus jitter, and a
+// 30-second per-attempt timeout via AbortController. We retry only on
+// transient classes (network errors, 408/425/429/5xx). Permanent errors
+// (400/401/403/404) bail out immediately so we don't burn budget retrying
+// a bad request.
+const TAVILY_MAX_ATTEMPTS = 3;
+const TAVILY_TIMEOUT_MS = 30_000;
+const TAVILY_BACKOFF_MS = [300, 900, 2700];
+
+function isTransientStatus(status: number): boolean {
+  // 408 Request Timeout, 425 Too Early, 429 Too Many Requests, any 5xx.
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function isTransientNetworkError(err: unknown): boolean {
+  // Node's undici surfaces network/DNS/TLS issues as a TypeError with the
+  // message "fetch failed" and (often) a `cause` chain. Treat anything that
+  // smells like a network error as retryable; an AbortError due to our own
+  // timeout signal is also retryable.
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name ?? "";
+  const msg  = (err as { message?: string }).message ?? "";
+  if (name === "AbortError" || name === "TimeoutError") return true;
+  return /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network|UND_ERR/i.test(msg);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function callTavily<T>(path: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   const apiKey = resolveTavilyKey();
   if (!apiKey) {
@@ -160,17 +202,64 @@ async function callTavily<T>(path: string, body: Record<string, unknown>, signal
       "Tavily API key not configured. Set TAVILY_API_KEY in the VPS env or paste it into Office Floor → Settings → Web Search Tools.",
     );
   }
-  const res = await fetch(`https://api.tavily.com${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...body, api_key: apiKey }),
-    signal,
-  });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`Tavily ${path} ${res.status}: ${detail.slice(0, 200)}`);
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < TAVILY_MAX_ATTEMPTS; attempt++) {
+    // Per-attempt timeout. We compose with the caller's signal so a worker
+    // cancellation still aborts mid-flight without waiting for the timeout.
+    const timeoutCtl = new AbortController();
+    const timer = setTimeout(() => timeoutCtl.abort(), TAVILY_TIMEOUT_MS);
+    const onCallerAbort = () => timeoutCtl.abort();
+    if (signal) {
+      if (signal.aborted) timeoutCtl.abort();
+      else signal.addEventListener("abort", onCallerAbort, { once: true });
+    }
+
+    try {
+      const res = await fetch(`https://api.tavily.com${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...body, api_key: apiKey }),
+        signal: timeoutCtl.signal,
+      });
+
+      if (res.ok) {
+        return (await res.json()) as T;
+      }
+
+      const detail = await res.text().catch(() => "");
+      const errMsg = `Tavily ${path} ${res.status}: ${detail.slice(0, 200)}`;
+
+      // Permanent failure — don't retry.
+      if (!isTransientStatus(res.status)) {
+        throw new Error(errMsg);
+      }
+      // Transient HTTP failure — record + fall through to retry.
+      lastErr = new Error(errMsg);
+    } catch (err) {
+      // If the caller's signal aborted (worker cancellation), don't retry.
+      if (signal?.aborted) throw err;
+      // Treat our own timeout as a transient error worth retrying.
+      if (!isTransientNetworkError(err)) throw err;
+      lastErr = err;
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onCallerAbort);
+    }
+
+    // Sleep with a small jitter (±25%) before the next attempt, unless this
+    // was the last attempt.
+    if (attempt < TAVILY_MAX_ATTEMPTS - 1) {
+      const base = TAVILY_BACKOFF_MS[attempt] ?? 1000;
+      const jitter = Math.floor(base * 0.25 * (Math.random() * 2 - 1));
+      await sleep(base + jitter);
+    }
   }
-  return (await res.json()) as T;
+
+  // Exhausted retries — surface the last error with attempt context so the
+  // operator-facing event log makes the failure mode legible.
+  const lastMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  throw new Error(`Tavily ${path} failed after ${TAVILY_MAX_ATTEMPTS} attempts: ${lastMsg}`);
 }
 
 // ─── tool: tavily_search ────────────────────────────────────────────────────

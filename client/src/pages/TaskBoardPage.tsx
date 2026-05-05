@@ -4,8 +4,19 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Task, Agent, Project } from "../types";
 import {
   LayoutGrid, AlertTriangle, CheckCircle2, Clock, Loader2, RefreshCw,
-  ChevronDown, GitBranch, ArrowRight, Flag, Layers, Link2,
+  ChevronDown, GitBranch, ArrowRight, Flag, Layers, Link2, Eye, EyeOff,
 } from "lucide-react";
+
+// Stage 5.x.14: When the manager replans around a transient failure it marks
+// the now-obsolete downstream tasks with this exact reason. They live in the
+// DB as `blocked` but are not actually blocking progress — fresh replacements
+// are running. We hide them from the kanban by default so operators don't
+// think the run is broken when it's actually self-healed. Mirrors the backend
+// filter at server/liveOrchestrator.ts:1698.
+const SUPERSEDED_REASON = "Superseded by replan";
+function isSuperseded(task: Task): boolean {
+  return task.status === "blocked" && task.blockedReason === SUPERSEDED_REASON;
+}
 
 // Parse the JSON-encoded dependsOn list off a Task. Returns the count of
 // real dependencies (dropping anything unparseable).
@@ -212,12 +223,19 @@ export default function TaskBoardPage({ tasks: liveTasks, project: liveProject, 
     },
   });
 
+  // Stage 5.x.14: hide "Superseded by replan" cards by default — they're
+  // historical noise after the manager routes around a failure.
+  const [showSuperseded, setShowSuperseded] = useState(false);
+  const supersededCount = tasks.filter(isSuperseded).length;
+
+  const visibleTasks = showSuperseded ? tasks : tasks.filter(t => !isSuperseded(t));
+
   const columns = ["todo", "in_progress", "blocked", "done"] as const;
   const grouped = Object.fromEntries(
-    columns.map(s => [s, tasks.filter(t => t.status === s)])
+    columns.map(s => [s, visibleTasks.filter(t => t.status === s)])
   ) as Record<string, Task[]>;
 
-  const blockedCount = tasks.filter(t => t.status === "blocked").length;
+  const blockedCount = visibleTasks.filter(t => t.status === "blocked").length;
 
   return (
     <div className="flex flex-col h-full bg-slate-950">
@@ -230,6 +248,18 @@ export default function TaskBoardPage({ tasks: liveTasks, project: liveProject, 
             <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/30 flex items-center gap-1">
               <AlertTriangle size={10}/> {blockedCount} blocked
             </span>
+          )}
+          {supersededCount > 0 && (
+            <button
+              onClick={() => setShowSuperseded(v => !v)}
+              className="text-xs font-medium px-2 py-0.5 rounded-full bg-slate-800/80 text-slate-400 border border-slate-700 hover:border-slate-500 hover:text-slate-200 transition-colors flex items-center gap-1"
+              title={showSuperseded
+                ? `Hide ${supersededCount} task${supersededCount === 1 ? "" : "s"} the manager replanned around`
+                : `Show ${supersededCount} task${supersededCount === 1 ? "" : "s"} the manager replanned around (hidden by default)`}
+              data-testid="toggle-superseded">
+              {showSuperseded ? <EyeOff size={10}/> : <Eye size={10}/>}
+              {showSuperseded ? `Hide ${supersededCount} superseded` : `${supersededCount} superseded hidden`}
+            </button>
           )}
         </div>
 
@@ -277,7 +307,7 @@ export default function TaskBoardPage({ tasks: liveTasks, project: liveProject, 
       {activeProject && (
         <div className="flex items-center gap-6 px-6 py-3 border-t border-slate-800 bg-slate-900/60 text-xs text-slate-500">
           <span className="text-slate-300 font-semibold">{activeProject.name}</span>
-          <span>{tasks.length} total tasks</span>
+          <span>{visibleTasks.length} total tasks{supersededCount > 0 && !showSuperseded ? ` (+${supersededCount} superseded hidden)` : ""}</span>
           <span className="text-emerald-400">{grouped.done?.length ?? 0} done</span>
           <span className="text-blue-400">{grouped.in_progress?.length ?? 0} in progress</span>
           {blockedCount > 0 && <span className="text-rose-400">{blockedCount} blocked</span>}
