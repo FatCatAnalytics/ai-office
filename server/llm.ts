@@ -418,9 +418,19 @@ async function streamKimi(req: StreamRequest, handlers: StreamHandlers): Promise
       );
     }
     if (res.status === 429) {
+      // Stage 5.x.22: distinguish overload (transient, retry-eligible) from
+      // genuine billing/quota (permanent). fetchWithRetry already retried
+      // transient 429s 3 times; if we land here with status 429 it means
+      // either retries exhausted (tag the error transient) or the body said
+      // permanent (throw billing error so user actually checks their balance).
+      if (classify429(errText ?? "") === "permanent") {
+        throw new Error(
+          `Kimi API 429 (billing/quota): account is rate-limited or out of credit. ` +
+            `Check balance at platform.kimi.ai. Detail: ${snippet}`,
+        );
+      }
       throw new Error(
-        `Kimi API 429 (billing/quota): account is rate-limited or out of credit. ` +
-          `Check balance at platform.kimi.ai. Detail: ${snippet}`,
+        `${TRANSIENT_OVERLOAD_TAG} Kimi API 429 (engine overloaded after retries): ${snippet}`,
       );
     }
     throw new Error(`Kimi API ${res.status} (transient): ${snippet}`);
@@ -501,9 +511,15 @@ async function streamDeepSeek(req: StreamRequest, handlers: StreamHandlers): Pro
       );
     }
     if (res.status === 429) {
+      // Stage 5.x.22: see Kimi handler above for rationale.
+      if (classify429(errText ?? "") === "permanent") {
+        throw new Error(
+          `DeepSeek API 429 (billing/quota): account is rate-limited or out of credit. ` +
+            `Check balance at platform.deepseek.com. Detail: ${snippet}`,
+        );
+      }
       throw new Error(
-        `DeepSeek API 429 (billing/quota): account is rate-limited or out of credit. ` +
-          `Check balance at platform.deepseek.com. Detail: ${snippet}`,
+        `${TRANSIENT_OVERLOAD_TAG} DeepSeek API 429 (engine overloaded after retries): ${snippet}`,
       );
     }
     throw new Error(`DeepSeek API ${res.status} (transient): ${snippet}`);
@@ -582,19 +598,56 @@ interface OpenAIChoiceMessage {
 // Stage 4.17: transient-error retry. Provider edges (Moonshot/Cloudflare,
 // Anthropic, Gemini) occasionally return 502/503/504 or hard timeout for a
 // few seconds. We retry up to 3 times with exponential backoff (1s, 2s, 4s)
-// before surfacing the error. 4xx errors (auth, bad request, rate-limit)
-// pass through immediately — retry won't help and just burns time.
+// before surfacing the error. Genuine 4xx errors (auth, billing/quota) pass
+// through immediately — retry won't help and just burns time.
+//
+// Stage 5.x.22: 429 "engine overloaded" / generic rate-limit bodies are now
+// treated as transient and ALSO retried in the short loop. We only fail-fast
+// on 429s whose body indicates a permanent quota/billing condition.
 //
 // Aborts (the user pressing Stop) bypass retry: if AbortError fires we throw
 // it back up immediately so cancelProject() stays snappy.
+//
+// When fetchWithRetry exhausts retries on a transient overload, the error
+// message starts with the TRANSIENT_OVERLOAD_TAG so the orchestrator can
+// recognise it and (for non-urgent projects) schedule a long-wait retry
+// instead of blocking the task.
 const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS = [1000, 2000, 4000];
+export const TRANSIENT_OVERLOAD_TAG = "[transient_overload]";
+
+/**
+ * Inspect a 429 response body to decide whether it represents a transient
+ * provider-side overload (retryable) or a permanent billing/quota condition
+ * (fail-fast, retry won't help).
+ *
+ * Transient signals: "engine_overloaded", "overloaded", "rate_limit_exceeded",
+ * "please try again", "server is busy", "capacity".
+ * Permanent signals: "insufficient_quota", "billing", "no credit",
+ * "out of credit", "payment", "subscription".
+ *
+ * Default for ambiguous 429 bodies: TREAT AS TRANSIENT. A wrong retry costs
+ * a few minutes; a wrong fail-fast blocks the task and frustrates the user.
+ */
+export function classify429(body: string): "transient" | "permanent" {
+  const lower = body.toLowerCase();
+  // Permanent indicators take precedence.
+  if (
+    /insufficient[_\s]quota|no\s+credit|out\s+of\s+credit|billing|payment\s+required|subscription\s+(expired|required|inactive)/i.test(
+      lower,
+    )
+  ) {
+    return "permanent";
+  }
+  return "transient";
+}
 
 async function fetchWithRetry(
   url: string,
   init: RequestInit,
 ): Promise<Response> {
   let lastErr: unknown;
+  let lastWasTransientOverload = false;
   for (let attempt = 0; attempt < RETRY_MAX_ATTEMPTS; attempt++) {
     try {
       const res = await fetch(url, init);
@@ -602,17 +655,46 @@ async function fetchWithRetry(
       if (res.status === 502 || res.status === 503 || res.status === 504) {
         const body = await res.text().catch(() => "");
         lastErr = new Error(`${url} ${res.status}: ${body.slice(0, 200)}`);
+        lastWasTransientOverload = true;
         if (attempt < RETRY_MAX_ATTEMPTS - 1) {
           await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS[attempt]));
           continue;
         }
-        throw lastErr;
+        throw new Error(`${TRANSIENT_OVERLOAD_TAG} ${(lastErr as Error).message}`);
+      }
+      // 429 — distinguish transient overload from permanent quota.
+      if (res.status === 429) {
+        const body = await res.text().catch(() => "");
+        const kind = classify429(body);
+        if (kind === "permanent") {
+          // Permanent: don't tag as transient; let caller throw billing error.
+          // Re-construct a Response so the calling site's normal error path
+          // (which inspects res.status === 429) runs unchanged.
+          return new Response(body, {
+            status: 429,
+            statusText: res.statusText,
+            headers: res.headers,
+          });
+        }
+        lastErr = new Error(`${url} 429 (overloaded): ${body.slice(0, 200)}`);
+        lastWasTransientOverload = true;
+        if (attempt < RETRY_MAX_ATTEMPTS - 1) {
+          await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS[attempt]));
+          continue;
+        }
+        throw new Error(`${TRANSIENT_OVERLOAD_TAG} ${(lastErr as Error).message}`);
       }
       return res;
     } catch (e) {
       // AbortError (user-cancel) bypasses retry.
       if ((e as Error)?.name === "AbortError") throw e;
+      // If we already wrapped this as a transient-overload throw above, just
+      // propagate; don't let the network catch double-wrap it.
+      if (typeof (e as Error)?.message === "string" && (e as Error).message.startsWith(TRANSIENT_OVERLOAD_TAG)) {
+        throw e;
+      }
       lastErr = e;
+      lastWasTransientOverload = false;
       // Network error / DNS failure / fetch threw — also transient.
       if (attempt < RETRY_MAX_ATTEMPTS - 1) {
         await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS[attempt]));
@@ -620,6 +702,10 @@ async function fetchWithRetry(
       }
       throw e;
     }
+  }
+  // Should be unreachable; guard for the type system.
+  if (lastWasTransientOverload && lastErr instanceof Error) {
+    throw new Error(`${TRANSIENT_OVERLOAD_TAG} ${lastErr.message}`);
   }
   throw lastErr ?? new Error("fetchWithRetry: exhausted attempts");
 }

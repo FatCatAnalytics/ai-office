@@ -958,6 +958,9 @@ class SQLiteStorage implements IStorage {
   }
   getResumableTasks(projectId: number): Task[] {
     // Tasks that haven't completed and weren't superseded by a replan.
+    // Stage 5.x.22: waiting_retry tasks are also resumable — the user can
+    // either let the scheduled timer fire or kick off a manual resume which
+    // will pick them up like any other pending task.
     return db
       .select()
       .from(schema.tasks)
@@ -965,6 +968,7 @@ class SQLiteStorage implements IStorage {
       .all()
       .filter((t) => {
         if (t.status === "todo" || t.status === "in_progress") return true;
+        if (t.status === "waiting_retry") return true;
         if (t.status === "blocked" && t.blockedReason !== "Superseded by replan") return true;
         return false;
       });

@@ -19,7 +19,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { storage, toolsForAgent } from "./storage";
-import { streamCompletion, calculateCost, settingKeyForProvider, type Provider, type LLMMessage } from "./llm";
+import { streamCompletion, calculateCost, settingKeyForProvider, TRANSIENT_OVERLOAD_TAG, type Provider, type LLMMessage } from "./llm";
 import { renderPdf, renderXlsx, renderPdfFromManifest, renderXlsxFromManifest, type RenderMeta } from "./renderers";
 import { extractManifest, manifestToMarkdown, manifestToCsv, manifestToJson, type DeliverableManifest } from "./manifest";
 import { routeForComplexity, routeForCriticalCall, routeWithFailover, normaliseComplexity, type Complexity } from "./modelRouter";
@@ -77,6 +77,38 @@ const MAX_REPLANS = 1;
 //     marks the project + its in-flight tasks as cancelled. Idempotent.
 const runningProjects = new Map<number, AbortController>();
 
+// ─── Stage 5.x.22 — long-wait retry registry ─────────────────────────────
+// When a non-urgent project's task fails with a transient provider overload
+// (Kimi 429 engine_overloaded, Anthropic 503, etc.) AFTER the short retry
+// loop in fetchWithRetry has already given up, we don't want to block the
+// task and force the user to manually click Manager reassign. Instead we
+// schedule ONE long-wait retry (default 30 min) and surface a
+// "waiting_retry" status so the user knows what's happening.
+//
+// Implementation notes:
+//   • Timers are in-memory (Map<taskId, NodeJS.Timeout>). They survive
+//     across waves but NOT across process restarts — if the VPS restarts,
+//     waiting_retry tasks stay in that state until the user runs Resume,
+//     which resets them to "todo" via getResumableTasks (see storage.ts).
+//     This is intentional: re-arming timers automatically on cold start
+//     would surprise users who restarted because they wanted to stop.
+//   • Only ONE long-wait retry per task. After that, fail fast. This
+//     prevents infinite loops when a provider is genuinely down for hours.
+//   • Default delay is 30 minutes; configurable via LONG_WAIT_RETRY_MS env.
+const longWaitTimers = new Map<number, NodeJS.Timeout>();
+const longWaitAttempts = new Map<number, number>();
+const LONG_WAIT_RETRY_MS = Number(process.env.LONG_WAIT_RETRY_MS) || 30 * 60 * 1000;
+const LONG_WAIT_MAX_ATTEMPTS = 1;
+
+function cancelLongWaitRetry(taskId: number): void {
+  const timer = longWaitTimers.get(taskId);
+  if (timer) {
+    clearTimeout(timer);
+    longWaitTimers.delete(taskId);
+  }
+  longWaitAttempts.delete(taskId);
+}
+
 export function isProjectRunning(projectId: number): boolean {
   return runningProjects.has(projectId);
 }
@@ -101,9 +133,11 @@ export function cancelProject(
 
   // 2. Mark in-flight + queued tasks as blocked-by-cancel so the kanban
   //    reflects reality immediately (don't wait for the worker's catch).
+  // Stage 5.x.22: also clear any waiting_retry timers — cancel beats wait.
   const tasks = storage.getTasks(projectId);
   for (const t of tasks) {
-    if (t.status === "in_progress" || t.status === "todo") {
+    if (t.status === "in_progress" || t.status === "todo" || t.status === "waiting_retry") {
+      cancelLongWaitRetry(t.id);
       storage.updateTask(t.id, { status: "blocked", blockedReason: reason });
       deps.broadcast({ type: "task_update", task: { ...t, status: "blocked", blockedReason: reason } });
     }
@@ -1340,11 +1374,85 @@ async function runWaveConcurrent(
         const raw = (e as Error)?.message ?? String(e);
         const isBareFetchFailed = /^\s*fetch failed\s*$/i.test(raw);
         const isTransientNet = /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|UND_ERR/i.test(raw);
+        const isProviderOverload = raw.includes(TRANSIENT_OVERLOAD_TAG);
         const reason = isBareFetchFailed
           ? `Network error reaching the model provider after 3 retries ("fetch failed"). The provider may be down or the VPS lost connectivity briefly. Try "Manager reassign" to route to a different provider, or re-run the task in a moment.`
           : isTransientNet
             ? `Network error after retries: ${raw}. Provider may be flapping — try Manager reassign or re-run.`
             : raw;
+
+        // Stage 5.x.22 — long-wait retry for non-urgent projects on transient
+        // overloads. fetchWithRetry already burned 3 short retries; instead
+        // of blocking the task and forcing the user to click Manager reassign,
+        // wait LONG_WAIT_RETRY_MS (default 30 min) and try once more. Only
+        // applies to priority low|normal AND only one long-wait retry per
+        // task (longWaitAttempts cap). Urgent priorities still fail fast.
+        const isLongWaitEligible =
+          (isProviderOverload || isTransientNet) &&
+          (project.priority === "low" || project.priority === "normal") &&
+          (longWaitAttempts.get(task.id) ?? 0) < LONG_WAIT_MAX_ATTEMPTS &&
+          !signal?.aborted;
+
+        if (isLongWaitEligible) {
+          const attemptNo = (longWaitAttempts.get(task.id) ?? 0) + 1;
+          longWaitAttempts.set(task.id, attemptNo);
+          const retryAt = new Date(Date.now() + LONG_WAIT_RETRY_MS);
+          const waitMin = Math.round(LONG_WAIT_RETRY_MS / 60000);
+          const waitReason = `Provider overloaded — retrying at ${retryAt.toLocaleTimeString()} (≈${waitMin} min). Underlying error: ${raw.replace(TRANSIENT_OVERLOAD_TAG, "").trim().slice(0, 240)}`;
+          storage.updateTask(task.id, { status: "waiting_retry", blockedReason: waitReason });
+          deps.broadcast({ type: "task_update", task: { ...task, status: "waiting_retry", blockedReason: waitReason, waveIndex } });
+          deps.setAgentStatus(agent.id, "idle", null);
+          deps.emitEvent(
+            project.id, agent.id, agent.name, "waiting retry",
+            `⏳ Transient overload — will retry in ~${waitMin} min (attempt ${attemptNo}/${LONG_WAIT_MAX_ATTEMPTS})`,
+            "warning"
+          );
+
+          // Schedule the retry. We capture the references we need so the
+          // timer can fire even after the current wave loop has returned.
+          const timer = setTimeout(async () => {
+            longWaitTimers.delete(task.id);
+            // If the project was cancelled or task already moved on, bail.
+            const live = storage.getTask(task.id);
+            if (!live || live.status !== "waiting_retry") return;
+            if (signal?.aborted) return;
+            try {
+              storage.updateTask(task.id, { status: "in_progress", blockedReason: null });
+              deps.broadcast({ type: "task_update", task: { ...live, status: "in_progress", blockedReason: null } });
+              deps.setAgentStatus(agent.id, "working", task.title);
+              deps.emitEvent(
+                project.id, agent.id, agent.name, "long-wait retry start",
+                `▶ Long-wait retry firing now after ${waitMin} min wait`,
+                "info"
+              );
+              const retry = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
+              if (retry.text.trim().length === 0) {
+                throw new Error("long-wait retry returned empty output");
+              }
+              await saveLiveOutput(project.id, task, agent, retry.text, deps, retry.stopReason);
+              storage.updateTask(task.id, { status: "done", blockedReason: null });
+              deps.broadcast({ type: "task_update", task: { ...live, status: "done", blockedReason: null, waveIndex } });
+              deps.setAgentStatus(agent.id, "done", null);
+              deps.emitEvent(
+                project.id, agent.id, agent.name, "long-wait retry success",
+                `✓ Recovered from transient overload after long-wait retry`,
+                "success"
+              );
+              setTimeout(() => deps.setAgentStatus(agent.id, "idle", null), 600);
+            } catch (retryErr) {
+              const rmsg = (retryErr as Error)?.message ?? String(retryErr);
+              const finalReason = `Long-wait retry also failed (${rmsg.replace(TRANSIENT_OVERLOAD_TAG, "").trim().slice(0, 240)}). Try Manager reassign to route to a different provider.`;
+              storage.updateTask(task.id, { status: "blocked", blockedReason: finalReason });
+              deps.broadcast({ type: "task_update", task: { ...live, status: "blocked", blockedReason: finalReason, waveIndex } });
+              deps.setAgentStatus(agent.id, "blocked", task.title);
+              deps.emitEvent(project.id, agent.id, agent.name, "long-wait retry failed", finalReason, "error");
+            }
+          }, LONG_WAIT_RETRY_MS);
+          longWaitTimers.set(task.id, timer);
+          // Don't push to failures — a waiting_retry is not a failure yet.
+          continue;
+        }
+
         storage.updateTask(task.id, { status: "blocked", blockedReason: reason });
         deps.broadcast({ type: "task_update", task: { ...task, status: "blocked", blockedReason: reason, waveIndex } });
         deps.setAgentStatus(agent.id, "blocked", task.title);
@@ -1735,9 +1843,11 @@ async function resumeLiveOrchestrationInner(
     return;
   }
 
-  // Reset blocked tasks back to "todo" so they re-run cleanly.
+  // Reset blocked / waiting_retry tasks back to "todo" so they re-run cleanly.
   for (const t of resumable) {
-    if (t.status === "blocked" || t.status === "in_progress") {
+    if (t.status === "blocked" || t.status === "in_progress" || t.status === "waiting_retry") {
+      // Stage 5.x.22: cancel any scheduled long-wait timer for this task.
+      cancelLongWaitRetry(t.id);
       storage.updateTask(t.id, { status: "todo", blockedReason: null });
       deps.broadcast({ type: "task_update", task: { ...t, status: "todo", blockedReason: null } });
     }
