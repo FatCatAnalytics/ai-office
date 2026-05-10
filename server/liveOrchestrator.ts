@@ -603,19 +603,28 @@ async function saveLiveOutput(
         // operator can act — instead of a confusing 54-byte file with just
         // the task title. Threshold matches the upstream EMPTY_THRESHOLD.
         const body = manifest ? manifestToMarkdown(manifest) : rawOutput.trim();
-        if (body.length < 80) {
+        // Stage 5.x.23: catch garbled tool-call leakage at save time even if
+        // the upstream guard didn't fire (defence-in-depth). Better to write
+        // a clear stub the operator can act on than to ship a markdown file
+        // whose first line is `ే####functions.tavily_search:11've{...}`.
+        const isGarbled = body.length >= 80 && looksLikeLeakedToolCall(body);
+        if (body.length < 80 || isGarbled) {
           const reasonLine = stopReason && stopReason !== "unknown" && stopReason !== ""
             ? `Model stop reason: \`${stopReason}\`. `
             : "";
-          const hint = stopReason === "max_tokens"
+          const hint = isGarbled
+            ? "The model wrote tool-call syntax as plain text instead of issuing a structured tool call — a known failure mode for some providers (Kimi, DeepSeek) on tool-heavy tasks. Auto-retry on a different provider also failed; manager replan recommended."
+            : stopReason === "max_tokens"
             ? "The model hit its output token cap before producing visible text — likely burned its budget on hidden reasoning. Re-run this task or raise the budget."
             : stopReason === "refusal"
             ? "The model refused to answer. Check the task prompt for content-policy triggers, or reassign to a different model."
             : "The agent produced no usable output even after one automatic retry. Re-run the task, reassign to a different agent, or adjust the task description.";
-          content = `# ${task.title}\n\n> ⚠️ **Empty output.** ${reasonLine}${hint}\n\n*Raw response (${body.length} chars):*\n\n\`\`\`\n${body || "(empty)"}\n\`\`\`\n`;
+          const headerLabel = isGarbled ? "Garbled output" : "Empty output";
+          content = `# ${task.title}\n\n> ⚠️ **${headerLabel}.** ${reasonLine}${hint}\n\n*Raw response (${body.length} chars):*\n\n\`\`\`\n${body.slice(0, 4000) || "(empty)"}${body.length > 4000 ? `\n…[truncated ${body.length - 4000} chars]` : ""}\n\`\`\`\n`;
           deps.emitEvent(
-            projectId, agent.id, agent.name, "saved empty stub",
-            `⚠️ ${task.title}: wrote stub markdown (${body.length} chars of body, stop=${stopReason ?? "unknown"})`,
+            projectId, agent.id, agent.name,
+            isGarbled ? "saved garbled stub" : "saved empty stub",
+            `⚠️ ${task.title}: wrote stub markdown (${body.length} chars of body, stop=${stopReason ?? "unknown"}${isGarbled ? ", garbled tool-call leakage" : ""})`,
             "warning"
           );
         } else {
@@ -972,7 +981,54 @@ async function replanAfterFailure(
 export interface WorkerTaskResult {
   text: string;
   stopReason: string;
+  /**
+   * Stage 5.x.23: provider that ultimately produced the output. The empty /
+   * garbled-output guard uses this to force a DIFFERENT provider on retry
+   * via routeWithFailover's `excluded` set, so a Kimi/DeepSeek hallucination
+   * gets a fresh attempt on Anthropic/Gemini/OpenAI instead of being asked
+   * the same question by the same model.
+   */
+  provider?: string;
 }
+
+/**
+ * Stage 5.x.23: detect output that looks like the model wrote a tool call
+ * as plain text instead of issuing a structured tool call. Common failure
+ * modes seen in the field (Kimi, DeepSeek):
+ *   - "functions.tavily_search:11({\"query\":\"...\"})"
+ *   - "####functions.tavily_search:11've{\"query\":..."
+ *   - "Functions.tavily_search:26({...})"
+ *   - leading replacement chars (U+FFFD) or random non-Latin codepoints
+ *     followed by ASCII function-call syntax ("ే####functions." /
+ *     "�啊 Functions.")
+ *
+ * The output is judged garbled if any of these markers appears in the FIRST
+ * 400 chars OR the markers collectively constitute >5% of the output. We
+ * keep the threshold conservative — well-formed reports occasionally mention
+ * "functions." or "tool_call" in prose without being garbled.
+ */
+export function looksLikeLeakedToolCall(text: string): boolean {
+  if (!text || text.length === 0) return false;
+  const head = text.slice(0, 400);
+  const HEAD_PATTERNS = [
+    /functions\.[a-z_]+:\d+/i,                  // functions.tavily_search:11
+    /Functions\.[a-z_]+:\d+/,                   // Functions.tavily_search:26
+    /####\s*functions?\./i,                     // ####functions.
+    /<\|fim_[a-z]+\|>/i,                        // <|fim_prefix|> etc.
+    /<\|tool_call\|>/i,                         // <|tool_call|>
+    /^[\s\S]{0,5}[\uFFFD\u0E00-\u0E7F\u0C00-\u0C7F\u4E00-\u9FFF]{1,3}#{2,}/, // weird-char + hashes near start
+  ];
+  for (const re of HEAD_PATTERNS) {
+    if (re.test(head)) return true;
+  }
+  // Whole-document ratio check: count tool-call-syntax matches.
+  const matches = text.match(/[Ff]unctions?\.[a-z_]+:\d+/g) ?? [];
+  if (matches.length >= 3 && matches.join("").length / text.length > 0.05) {
+    return true;
+  }
+  return false;
+}
+
 async function runWorkerTask(
   project: Project,
   task: Task,
@@ -980,7 +1036,14 @@ async function runWorkerTask(
   priorOutputs: PriorOutput[],
   deps: LiveOrchestratorDeps,
   signal?: AbortSignal,
-  plannerKey?: string
+  plannerKey?: string,
+  /**
+   * Stage 5.x.23: when set, the routing layer adds `${excludeProvider}:*`
+   * to the failover excluded set so the retry lands on a different provider.
+   * Used by the empty-output / garbled-output guard to escape a misbehaving
+   * provider without bouncing off the same one.
+   */
+  excludeProvider?: string,
 ): Promise<WorkerTaskResult> {
   const sharedContext = buildSharedContext(priorOutputs);
 
@@ -998,6 +1061,30 @@ async function runWorkerTask(
   // override sitting on top of the planner's complexity tag.
   const effectiveComplexity: Complexity = plannerKey === "qa" ? "high" : complexity;
   let routed = routeForComplexity(effectiveComplexity, agent);
+
+  // Stage 5.x.23: caller-requested provider exclusion (used by the
+  // empty-output / garbled-output guard for retries on a different provider).
+  // We honour it BEFORE the cap-check so the cap-check sees the new route.
+  if (excludeProvider && routed.provider === excludeProvider) {
+    const switched = routeWithFailover(
+      effectiveComplexity, agent,
+      new Set([`${excludeProvider}:*`]),
+    );
+    if (switched) {
+      deps.emitEvent(
+        project.id, agent.id, agent.name, "retry on different provider",
+        `Excluding ${excludeProvider} for retry → routing to ${switched.provider}/${switched.modelId}`,
+        "info",
+      );
+      routed = switched;
+    } else {
+      deps.emitEvent(
+        project.id, agent.id, agent.name, "retry exclusion failed",
+        `No alternative provider available for ${effectiveComplexity}-tier excluding ${excludeProvider} — falling back to original route`,
+        "warning",
+      );
+    }
+  }
 
   // Stage 5.x.12: cap-aware pre-call check. If the operator's chosen model
   // has already burned its monthly cap, react based on the project's
@@ -1207,7 +1294,7 @@ async function runWorkerTask(
     `${result.tokensIn.toLocaleString()} in / ${result.tokensOut.toLocaleString()} out · $${cost.toFixed(4)} · ${routed.modelId}${cleanStop ? "" : ` · ⚠️ stop=${stopReason}`}`,
     cleanStop ? "info" : "warning"
   );
-  return { text: result.text, stopReason };
+  return { text: result.text, stopReason, provider: routed.provider };
 }
 
 // Run a list of tasks under a concurrency cap. Returns successes + failures.
@@ -1252,41 +1339,116 @@ async function runWaveConcurrent(
         // Stage 5.x.16 — Empty-output guard for EVERY regular task.
         // The previous behaviour silently saved a heading-only markdown file
         // when the agent returned no visible text (model hit max_tokens on
-        // hidden reasoning, refused, emitted only tool calls, etc.). This
-        // produced files like "# Review article\n\n\n" with no body — the
-        // exact failure mode reported by the user on the SME Medium article
-        // run. The guard now retries once with a tightened prompt, then
-        // surfaces a warning with the stop reason if still empty so the
-        // operator can act instead of staring at a confusing empty file.
-        // QA self-review keeps its own stricter guard below (verdict-marker
-        // check) — but it also benefits from this baseline check.
+        // hidden reasoning, refused, emitted only tool calls, etc.). The
+        // guard retries once and surfaces a warning with the stop reason
+        // if still empty so the operator can act instead of staring at a
+        // confusing empty file.
+        //
+        // Stage 5.x.23 — the guard now ALSO catches the "model wrote tool
+        // call as plain text" failure (e.g. Kimi/DeepSeek emitting
+        // `ే####functions.tavily_search:11've{"query":"..."}` as the
+        // entire response). When either failure mode fires, the retry is
+        // forced onto a DIFFERENT provider via runWorkerTask's
+        // excludeProvider arg — same provider, same garbage. The chunked
+        // retry path for compile tasks that hit max_tokens lives below.
         const EMPTY_THRESHOLD = 80;
         const looksEmpty = output.trim().length < EMPTY_THRESHOLD;
-        if (looksEmpty) {
+        const looksGarbled = !looksEmpty && looksLikeLeakedToolCall(output);
+        const guardKind: "empty" | "garbled" | null =
+          looksEmpty ? "empty" : looksGarbled ? "garbled" : null;
+        if (guardKind) {
+          const failedProvider = workerResult.provider;
           deps.emitEvent(
-            project.id, agent.id, agent.name, "empty output",
-            `⚠️ Agent returned only ${output.trim().length} chars (stop=${stopReason}) — retrying once`,
+            project.id, agent.id, agent.name,
+            guardKind === "empty" ? "empty output" : "garbled output",
+            guardKind === "empty"
+              ? `⚠️ Agent returned only ${output.trim().length} chars (stop=${stopReason}) on ${failedProvider ?? "unknown provider"} — retrying on a different provider`
+              : `⚠️ Agent on ${failedProvider ?? "unknown provider"} produced leaked tool-call syntax (${output.length} chars; head: ${JSON.stringify(output.slice(0, 80))}) — retrying on a different provider`,
             "warning"
           );
-          const retry = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
-          if (retry.text.trim().length >= EMPTY_THRESHOLD) {
+          const retry = await runWorkerTask(
+            project, task, agent, priorOutputs, deps, signal, plannerKey,
+            failedProvider, // exclude the misbehaving provider
+          );
+          const retryEmpty = retry.text.trim().length < EMPTY_THRESHOLD;
+          const retryGarbled = !retryEmpty && looksLikeLeakedToolCall(retry.text);
+          if (!retryEmpty && !retryGarbled) {
             output = retry.text;
             stopReason = retry.stopReason;
             deps.emitEvent(
               project.id, agent.id, agent.name, "retry recovered",
-              `✓ Retry produced ${retry.text.length} chars — using retry result`,
+              `✓ Retry on ${retry.provider ?? "different provider"} produced ${retry.text.length} chars of clean output — using retry result`,
               "info"
             );
           } else {
-            // Both attempts empty. Keep whichever has more content (usually
-            // the retry) so saveLiveOutput can write a clear stub instead
-            // of a blank file. Mark the task with blockedReason context so
-            // the manager's replanner can route around it.
+            // Both attempts bad. Keep whichever has more content so
+            // saveLiveOutput can write a clear stub instead of a blank
+            // file. Mark the task with blockedReason context so the
+            // manager's replanner can route around it.
             output = retry.text.length > output.length ? retry.text : output;
             stopReason = retry.stopReason;
+            const retryKind = retryEmpty ? "empty" : "garbled";
             deps.emitEvent(
-              project.id, agent.id, agent.name, "retry still empty",
-              `⚠️ Retry also produced ${retry.text.trim().length} chars (stop=${retry.stopReason}) — saving stub and marking complete; manager may replan`,
+              project.id, agent.id, agent.name, `retry still ${retryKind}`,
+              `⚠️ Retry on ${retry.provider ?? "different provider"} ALSO ${retryKind} (${retry.text.trim().length} chars, stop=${retry.stopReason}) — saving stub and marking complete; manager may replan`,
+              "warning"
+            );
+          }
+        }
+
+        // Stage 5.x.23 — auto-chunk fallback for the final compile task.
+        // When a compile-style task hits max_tokens (output got truncated to
+        // empty or near-empty), the prior outputs are too large to summarise
+        // in one shot. Split the prior outputs in half, run the compile on
+        // each half independently, then concatenate. This is a SAFETY NET on
+        // top of the larger budget from Stage 5.x.17 — most compiles still
+        // fit in one call. We only attempt this once (no recursion) so a
+        // truly oversized job still surfaces a clear error.
+        const isCompileTask = (
+          /compile.*final|final.*compile|consolidate|consolidat.*final|technical.writer/i.test(task.title)
+          || plannerKey === "compile" || plannerKey === "final-compile" || plannerKey === "final"
+        );
+        const compileTruncated =
+          isCompileTask
+          && stopReason === "max_tokens"
+          && priorOutputs.length >= 2;
+        if (compileTruncated) {
+          deps.emitEvent(
+            project.id, agent.id, agent.name, "compile auto-chunk",
+            `⚠️ Compile hit max_tokens with ${priorOutputs.length} prior outputs — splitting in half and re-running`,
+            "warning"
+          );
+          try {
+            const mid = Math.ceil(priorOutputs.length / 2);
+            const halfA = priorOutputs.slice(0, mid);
+            const halfB = priorOutputs.slice(mid);
+            const partA = await runWorkerTask(project, task, agent, halfA, deps, signal, plannerKey);
+            const partB = await runWorkerTask(project, task, agent, halfB, deps, signal, plannerKey);
+            const merged =
+              `${partA.text.trim()}\n\n---\n\n${partB.text.trim()}\n\n` +
+              `<!-- Stage 5.x.23 auto-chunked compile: ${halfA.length}+${halfB.length} prior outputs merged due to max_tokens -->\n`;
+            if (merged.trim().length > output.trim().length) {
+              output = merged;
+              // Use the worse of the two stop reasons for visibility.
+              stopReason = (partA.stopReason === "max_tokens" || partB.stopReason === "max_tokens")
+                ? "max_tokens_chunked"
+                : (partA.stopReason || partB.stopReason || stopReason);
+              deps.emitEvent(
+                project.id, agent.id, agent.name, "compile chunked recovered",
+                `✓ Auto-chunked compile produced ${merged.length} chars (A=${partA.text.length}, B=${partB.text.length})`,
+                "info"
+              );
+            } else {
+              deps.emitEvent(
+                project.id, agent.id, agent.name, "compile chunked failed",
+                `⚠️ Auto-chunked compile didn't yield more content than original (A=${partA.text.length}, B=${partB.text.length}, original=${output.length}) — keeping original\n`,
+                "warning"
+              );
+            }
+          } catch (chunkErr) {
+            deps.emitEvent(
+              project.id, agent.id, agent.name, "compile chunked errored",
+              `⚠️ Auto-chunked compile threw: ${(chunkErr as Error)?.message ?? String(chunkErr)} — keeping original output`,
               "warning"
             );
           }
