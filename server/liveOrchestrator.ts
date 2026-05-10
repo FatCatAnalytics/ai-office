@@ -475,13 +475,23 @@ const AGENT_DEFAULT_FORMAT: Record<string, string> = {
 
 // Stage 5.x.16: optional stopReason lets the saver write a helpful stub when
 // the agent returned empty/near-empty output, instead of a heading-only file.
+//
+// Stage 5.x.25: optional incompleteCompile + priorOutputs let the saver, when
+// the compile output materially under-shipped its upstreams, write an
+// *-incomplete.md stub explaining the gap AND promote the largest upstream's
+// data into the compile's Excel slot — so the user gets a real, complete
+// dataset in the file format they requested instead of a 9-row sample.
 async function saveLiveOutput(
   projectId: number,
   task: Task,
   agent: Agent,
   rawOutput: string,
   deps: LiveOrchestratorDeps,
-  stopReason?: string
+  stopReason?: string,
+  opts?: {
+    incompleteCompile?: { outputRows: number; upstreamRows: number; ratio: number };
+    priorOutputs?: PriorOutput[];
+  }
 ): Promise<void> {
   const project = storage.getProject(projectId);
   if (!project) return;
@@ -590,9 +600,125 @@ async function saveLiveOutput(
     );
   }
 
+  // Stage 5.x.25: when the compile-task completeness guard fires AND the
+  // auto-retry didn't recover, identify the single best upstream output to
+  // promote into the user's binary deliverable slots (Excel, PDF, CSV, JSON).
+  // "Best" = upstream with the most data rows by countDataRows. We promote
+  // its rendered form so the file the user downloads actually contains the
+  // full dataset, not the 9-row sample.
+  const incompleteCompile = opts?.incompleteCompile;
+  const upstreamForPromotion = (incompleteCompile && opts?.priorOutputs && opts.priorOutputs.length > 0)
+    ? [...opts.priorOutputs]
+        .map(p => ({ p, rows: countDataRows(p.output ?? "") }))
+        .filter(x => x.rows > 0)
+        .sort((a, b) => b.rows - a.rows)[0]?.p
+    : undefined;
+  if (incompleteCompile) {
+    deps.emitEvent(
+      projectId, agent.id, agent.name, "compile incomplete at save",
+      upstreamForPromotion
+        ? `⚠️ Compile output had ${incompleteCompile.outputRows} rows vs ${incompleteCompile.upstreamRows} upstream (${(incompleteCompile.ratio * 100).toFixed(1)}%) — will write *-incomplete.md stub and promote largest upstream (${upstreamForPromotion.task.title}) for binary formats.`
+        : `⚠️ Compile output had ${incompleteCompile.outputRows} rows vs ${incompleteCompile.upstreamRows} upstream (${(incompleteCompile.ratio * 100).toFixed(1)}%) — will write *-incomplete.md stub but no upstream available to promote.`,
+      "warning"
+    );
+  }
+
   for (const fmt of formats) {
     const extMime = EXT_BY_FORMAT[fmt];
     if (!extMime) continue;
+
+    // Stage 5.x.25: incomplete-compile branch. For non-markdown formats,
+    // promote the largest upstream's content via the same renderer (so an
+    // Excel request gets a real Excel of the upstream dataset, not the
+    // sample). For markdown, skip — the markdown branch below writes a
+    // dedicated *-incomplete.md stub explaining the situation.
+    if (incompleteCompile && fmt !== "markdown") {
+      try {
+        if (upstreamForPromotion) {
+          const upstreamRaw = upstreamForPromotion.output ?? "";
+          const upstreamManifest = extractManifest(upstreamRaw);
+          const promotedMeta: RenderMeta = {
+            ...meta,
+            taskTitle: `${task.title} — promoted from ${upstreamForPromotion.task.title}`,
+            agentName: `${upstreamForPromotion.agent.name} (promoted)`,
+          };
+          let promoted: Buffer | string;
+          if (fmt === "json") {
+            promoted = upstreamManifest
+              ? manifestToJson(upstreamManifest)
+              : (() => {
+                  const parsed = extractJSON(upstreamRaw);
+                  return parsed ? JSON.stringify(parsed, null, 2) : upstreamRaw;
+                })();
+          } else if (fmt === "csv") {
+            promoted = upstreamManifest
+              ? manifestToCsv(upstreamManifest)
+              : (() => {
+                  const fenceCsv = upstreamRaw.match(/```(?:csv)?\s*([\s\S]*?)```/);
+                  return fenceCsv ? fenceCsv[1].trim() : upstreamRaw;
+                })();
+          } else if (fmt === "python") {
+            const fencePy = upstreamRaw.match(/```(?:python|py)?\s*([\s\S]*?)```/);
+            promoted = fencePy ? fencePy[1].trim() : upstreamRaw;
+          } else if (fmt === "pdf") {
+            promoted = upstreamManifest
+              ? await renderPdfFromManifest(upstreamManifest, promotedMeta)
+              : await renderPdf(upstreamRaw, promotedMeta);
+          } else if (fmt === "excel") {
+            promoted = upstreamManifest
+              ? await renderXlsxFromManifest(upstreamManifest, promotedMeta)
+              : await renderXlsx(upstreamRaw, promotedMeta);
+          } else {
+            promoted = upstreamRaw;
+          }
+          const promotedFilename = `${slug}_${agent.id}.${extMime.ext}`;
+          const promotedSaved = storage.saveProjectFile(
+            {
+              projectId, taskId: task.id, agentId: agent.id,
+              filename: promotedFilename, fileType: fmt, mimeType: extMime.mime,
+              filePath: "",
+              description: `${agent.name}: ${task.title} — promoted from ${upstreamForPromotion.agent.name} (compile shipped only ${incompleteCompile.outputRows}/${incompleteCompile.upstreamRows} rows)`,
+            },
+            promoted
+          );
+          deps.broadcast({ type: "file_created", projectId, file: promotedSaved });
+          deps.emitEvent(
+            projectId, agent.id, agent.name, `promoted upstream ${fmt}`,
+            `✅ ${promotedSaved.filename} (${(promotedSaved.sizeBytes / 1024).toFixed(1)} KB) — rendered from ${upstreamForPromotion.task.title} since the compile output was incomplete`,
+            "success"
+          );
+        } else {
+          // No upstream candidate — write a stub explaining why no binary file.
+          const stubMd =
+            `# ${task.title} (${fmt} format requested)\n\n` +
+            `> ⚠️ **Incomplete compile — ${fmt.toUpperCase()} render skipped.**\n>\n` +
+            `> The compile task produced only ${incompleteCompile.outputRows} data rows but the upstream agents provided ${incompleteCompile.upstreamRows} rows total (${(incompleteCompile.ratio * 100).toFixed(1)}%). Auto-retry with a stronger "include all rows" instruction did not recover. No upstream output was suitable for promotion. Manager replan recommended — reassign the compile to a higher-tier model with a larger output budget, or split it into per-source compiles.\n`;
+          const stubFilename = `${slug}_${agent.id}.${fmt}-incomplete.md`;
+          const stubSaved = storage.saveProjectFile(
+            {
+              projectId, taskId: task.id, agentId: agent.id,
+              filename: stubFilename, fileType: "markdown",
+              mimeType: "text/markdown",
+              filePath: "", description: `${agent.name}: ${task.title} — ${fmt} skipped (incomplete)`,
+            },
+            stubMd
+          );
+          deps.broadcast({ type: "file_created", projectId, file: stubSaved });
+          deps.emitEvent(
+            projectId, agent.id, agent.name, `skipped ${fmt} render`,
+            `⚠️ ${stubFilename} (no upstream to promote, wrote stub instead)`,
+            "warning"
+          );
+        }
+      } catch (e) {
+        console.error(`[live] ${fmt} promote/stub error:`, e);
+        deps.emitEvent(
+          projectId, agent.id, agent.name, "promote failed",
+          `${fmt}: ${(e as Error).message ?? e}`, "warning"
+        );
+      }
+      continue;
+    }
 
     // Stage 5.x.24: skip non-markdown formats when raw output is garbled.
     // Markdown still runs so its branch can write the inline stub. We add
@@ -675,6 +801,26 @@ async function saveLiveOutput(
             projectId, agent.id, agent.name,
             isGarbled ? "saved garbled stub" : "saved empty stub",
             `⚠️ ${task.title}: wrote stub markdown (${body.length} chars of body, stop=${stopReason ?? "unknown"}${isGarbled ? ", garbled tool-call leakage" : ""})`,
+            "warning"
+          );
+        } else if (incompleteCompile) {
+          // Stage 5.x.25: compile output passed garble/empty checks but is
+          // materially incomplete (sample-only). Save the markdown the model
+          // produced, prefixed with a clear warning banner, so the user sees
+          // both what was written AND why the binary deliverables came from
+          // an upstream task instead.
+          const promotedNote = upstreamForPromotion
+            ? `Binary formats (Excel/PDF/CSV/JSON) for this task were rendered from upstream task **"${upstreamForPromotion.task.title}"** by **${upstreamForPromotion.agent.name}** — those files contain the full ${incompleteCompile.upstreamRows}-row dataset.`
+            : `No upstream output was suitable for promotion — binary deliverables for this task were skipped. Manager replan recommended.`;
+          content =
+            `# ${task.title}\n\n` +
+            `> ⚠️ **Incomplete compile.** This output contains only ${incompleteCompile.outputRows} of ${incompleteCompile.upstreamRows} rows from the upstream tasks (${(incompleteCompile.ratio * 100).toFixed(1)}%). An auto-retry with a stronger "include all rows" instruction did not recover.\n>\n` +
+            `> ${promotedNote}\n\n` +
+            `---\n\n` +
+            `${body}\n`;
+          deps.emitEvent(
+            projectId, agent.id, agent.name, "saved incomplete markdown",
+            `⚠️ ${task.title}: wrote markdown with incomplete-compile banner (${body.length} chars, ${incompleteCompile.outputRows}/${incompleteCompile.upstreamRows} rows)`,
             "warning"
           );
         } else {
@@ -1039,6 +1185,18 @@ export interface WorkerTaskResult {
    * the same question by the same model.
    */
   provider?: string;
+  /**
+   * Stage 5.x.25: set when the completeness guard fired and the auto-retry
+   * still produced fewer than `threshold` of the upstream data rows. The
+   * saver uses this to write an *-incomplete.md stub and promote the
+   * largest upstream Excel as the compile's Excel output instead of
+   * shipping a polluted/sample-only artifact.
+   */
+  incompleteCompile?: {
+    outputRows: number;
+    upstreamRows: number;
+    ratio: number;
+  };
 }
 
 /**
@@ -1079,6 +1237,136 @@ export function looksLikeLeakedToolCall(text: string): boolean {
   return false;
 }
 
+/**
+ * Stage 5.x.25: count the number of data rows present in a text blob across
+ * the three structures we ship as deliverables — CSV fences, markdown tables,
+ * and JSON arrays. Returns the MAX across detected structures (so a doc with
+ * both a markdown table and a CSV fence isn't double-counted, and we use the
+ * most data-dense view).
+ *
+ * Used by the completeness guard to detect compile tasks that emitted a
+ * 9-row sample when the upstreams had 277 rows. Conservative — if it can't
+ * confidently parse a structure, it returns 0 for that structure rather than
+ * a noisy guess.
+ */
+export function countDataRows(text: string): number {
+  if (!text || text.length === 0) return 0;
+  let best = 0;
+
+  // CSV fences: ```csv ... ``` or just ``` ... ``` containing comma-separated
+  // header + rows. Count non-empty lines minus 1 (header).
+  const csvFenceRe = /```(?:csv)?\s*\n([\s\S]*?)```/gi;
+  let m: RegExpExecArray | null;
+  while ((m = csvFenceRe.exec(text)) !== null) {
+    const body = (m[1] ?? "").trim();
+    if (!body) continue;
+    const lines = body.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+    if (lines.length < 2) continue;
+    // Heuristic: first line and a sampled middle line must both have ≥1 comma
+    // to count as CSV. Avoids treating prose code fences as CSV.
+    const sample = lines[Math.floor(lines.length / 2)] ?? "";
+    if (!lines[0].includes(",") || !sample.includes(",")) continue;
+    const dataRows = lines.length - 1; // minus header
+    if (dataRows > best) best = dataRows;
+  }
+
+  // Markdown tables: header line + |---| separator + ≥1 data row.
+  // Find every contiguous block of "| ... |" lines and check the second is a
+  // separator. Count data rows = total lines − 2 (header + separator).
+  const lines = text.split("\n");
+  let blockStart = -1;
+  const flushBlock = (endExclusive: number) => {
+    if (blockStart < 0) return;
+    const block = lines.slice(blockStart, endExclusive);
+    if (block.length >= 3) {
+      const sep = block[1] ?? "";
+      if (/^\s*\|?\s*[:\- |]+\s*\|?\s*$/.test(sep) && /---/.test(sep)) {
+        const dataRows = block.length - 2;
+        if (dataRows > best) best = dataRows;
+      }
+    }
+    blockStart = -1;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i] ?? "";
+    const isTableLine = /^\s*\|.*\|\s*$/.test(ln);
+    if (isTableLine) {
+      if (blockStart < 0) blockStart = i;
+    } else {
+      flushBlock(i);
+    }
+  }
+  flushBlock(lines.length);
+
+  // JSON arrays: try parsing the whole text, or a top-level fenced ```json …```
+  // block, or the largest [...] / {...} fragment. Count the longest array we
+  // can find — top-level array, or `data`/`rows`/`items`/`portfolio`
+  // properties on a top-level object.
+  const tryJsonRowCount = (raw: string): number => {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.length;
+      if (parsed && typeof parsed === "object") {
+        let max = 0;
+        for (const k of ["data", "rows", "items", "records", "portfolio", "companies", "results"]) {
+          const v = (parsed as Record<string, unknown>)[k];
+          if (Array.isArray(v) && v.length > max) max = v.length;
+        }
+        // Also scan all top-level array properties as a fallback.
+        for (const v of Object.values(parsed as Record<string, unknown>)) {
+          if (Array.isArray(v) && v.length > max) max = v.length;
+        }
+        return max;
+      }
+    } catch {
+      // not JSON
+    }
+    return 0;
+  };
+  const jsonFenceRe = /```json\s*\n([\s\S]*?)```/gi;
+  let jm: RegExpExecArray | null;
+  while ((jm = jsonFenceRe.exec(text)) !== null) {
+    const n = tryJsonRowCount((jm[1] ?? "").trim());
+    if (n > best) best = n;
+  }
+  // Try the whole blob too (covers raw-JSON outputs).
+  const trimmed = text.trim();
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+    const n = tryJsonRowCount(trimmed);
+    if (n > best) best = n;
+  }
+
+  return best;
+}
+
+/**
+ * Stage 5.x.25: detect compile tasks that shipped only a fraction of the
+ * data they were handed. Pattern from the PE Fund failure: validation agent
+ * delivered 277 rows across three sheets; the technical-writer compile
+ * emitted a 9-row sample (3 per fund) — clean text, no garble, no
+ * truncation flag, but materially incomplete.
+ *
+ * Returns null when not applicable (non-compile, tiny corpus). Returns an
+ * info object when the ratio is below `threshold` so the guard can retry
+ * and/or surface a stub.
+ */
+export function looksIncompleteCompile(
+  output: string,
+  priorOutputs: { output: string }[],
+  isCompileTask: boolean,
+  opts?: { threshold?: number; minUpstreamRows?: number },
+): { incomplete: true; outputRows: number; upstreamRows: number; ratio: number } | null {
+  if (!isCompileTask) return null;
+  const threshold = opts?.threshold ?? 0.5;
+  const minUpstreamRows = opts?.minUpstreamRows ?? 20;
+  const upstreamRows = priorOutputs.reduce((sum, p) => sum + countDataRows(p.output ?? ""), 0);
+  if (upstreamRows < minUpstreamRows) return null;
+  const outputRows = countDataRows(output);
+  const ratio = upstreamRows === 0 ? 1 : outputRows / upstreamRows;
+  if (ratio >= threshold) return null;
+  return { incomplete: true, outputRows, upstreamRows, ratio };
+}
+
 async function runWorkerTask(
   project: Project,
   task: Task,
@@ -1094,6 +1382,13 @@ async function runWorkerTask(
    * provider without bouncing off the same one.
    */
   excludeProvider?: string,
+  /**
+   * Stage 5.x.25: extra instruction appended to the user message. Used by
+   * the completeness guard to retry a compile task with explicit "include
+   * ALL rows from upstream sources, do not summarise" guidance after the
+   * first attempt shipped only a fraction of the upstream data.
+   */
+  extraInstruction?: string,
 ): Promise<WorkerTaskResult> {
   const sharedContext = buildSharedContext(priorOutputs);
 
@@ -1198,7 +1493,7 @@ async function runWorkerTask(
     },
     {
       role: "user",
-      content: `## Project\n**${project.name}** — priority: ${project.priority}\n\n${project.description || "(no description provided)"}\n\n${sharedContext}\n\n## Your Task\n**${task.title}** (priority: ${task.priority})\n\n${task.description}\n\nProduce the deliverable now.`,
+      content: `## Project\n**${project.name}** — priority: ${project.priority}\n\n${project.description || "(no description provided)"}\n\n${sharedContext}\n\n## Your Task\n**${task.title}** (priority: ${task.priority})\n\n${task.description}\n\nProduce the deliverable now.${extraInstruction ? `\n\n${extraInstruction}` : ""}`,
     },
   ];
 
@@ -1466,7 +1761,88 @@ async function runWorkerTaskWithGuards(
     }
   }
 
-  return { text: output, stopReason, provider: workerResult.provider };
+  // ---- Stage 5.x.25: completeness guard for compile tasks ----
+  // Pattern: a compile/final task ships clean text with no garble and a
+  // normal stop reason, BUT only contains a fraction of the data rows
+  // present in its upstreams (e.g. 9-row sample vs 277 upstream rows).
+  // Run AFTER auto-chunk so chunked recovery has a chance first.
+  let incompleteCompile: WorkerTaskResult["incompleteCompile"];
+  const completeness = looksIncompleteCompile(output, priorOutputs, isCompileTask);
+  if (completeness) {
+    deps.emitEvent(
+      project.id, agent.id, agent.name, "compile incomplete",
+      `⚠️ Compile output has ${completeness.outputRows} data rows but upstreams provided ${completeness.upstreamRows} (${(completeness.ratio * 100).toFixed(1)}%). Retrying with explicit instruction to include ALL rows.`,
+      "warning"
+    );
+    try {
+      const extra =
+        `## CRITICAL COMPLETENESS REQUIREMENT\n\n` +
+        `Your previous attempt produced only ${completeness.outputRows} data rows, but the upstream agents provided ${completeness.upstreamRows} rows total. ` +
+        `That output was rejected as incomplete — a SAMPLE is not an acceptable deliverable for this task.\n\n` +
+        `**You MUST include EVERY row from the upstream sources in your output.** Do not summarise, do not truncate, do not pick representative examples. ` +
+        `Concatenate and de-duplicate the full upstream data into a single table or structured deliverable. ` +
+        `Aim for at least ${Math.ceil(completeness.upstreamRows * 0.9)} data rows in your final output. ` +
+        `If the corpus is large, prefer a CSV code fence or markdown table over prose so every row fits.`;
+      const retry = await runWorkerTask(
+        project, task, agent, priorOutputs, deps, signal, plannerKey,
+        undefined, // do not exclude provider — a different provider isn't
+                   // necessarily better at this; the prompt fix is what matters.
+        extra,
+      );
+      const retryRows = countDataRows(retry.text);
+      const retryRatio = completeness.upstreamRows === 0 ? 1 : retryRows / completeness.upstreamRows;
+      const retryGarbled = looksLikeLeakedToolCall(retry.text);
+      const retryEmpty = retry.text.trim().length < EMPTY_THRESHOLD;
+      if (!retryGarbled && !retryEmpty && retryRows > completeness.outputRows) {
+        // Use the retry if it gave us materially more rows, even if still
+        // below threshold — a 60% recovery beats the original 3%.
+        output = retry.text;
+        stopReason = retry.stopReason;
+        if (retryRatio >= 0.5) {
+          deps.emitEvent(
+            project.id, agent.id, agent.name, "compile completeness recovered",
+            `✓ Completeness retry produced ${retryRows} rows (${(retryRatio * 100).toFixed(1)}% of upstream) — above 50% threshold, using retry result`,
+            "info"
+          );
+        } else {
+          incompleteCompile = {
+            outputRows: retryRows,
+            upstreamRows: completeness.upstreamRows,
+            ratio: retryRatio,
+          };
+          deps.emitEvent(
+            project.id, agent.id, agent.name, "compile still incomplete",
+            `⚠️ Completeness retry improved to ${retryRows} rows (${(retryRatio * 100).toFixed(1)}%) but still under 50% — using retry text and flagging for stub + upstream promotion`,
+            "warning"
+          );
+        }
+      } else {
+        incompleteCompile = {
+          outputRows: completeness.outputRows,
+          upstreamRows: completeness.upstreamRows,
+          ratio: completeness.ratio,
+        };
+        deps.emitEvent(
+          project.id, agent.id, agent.name, "compile retry no help",
+          `⚠️ Completeness retry produced ${retryRows} rows (${retryGarbled ? "garbled" : retryEmpty ? "empty" : "not better"}) — keeping original output and flagging for stub + upstream promotion`,
+          "warning"
+        );
+      }
+    } catch (retryErr) {
+      incompleteCompile = {
+        outputRows: completeness.outputRows,
+        upstreamRows: completeness.upstreamRows,
+        ratio: completeness.ratio,
+      };
+      deps.emitEvent(
+        project.id, agent.id, agent.name, "compile retry errored",
+        `⚠️ Completeness retry threw: ${(retryErr as Error)?.message ?? String(retryErr)} — flagging for stub + upstream promotion`,
+        "warning"
+      );
+    }
+  }
+
+  return { text: output, stopReason, provider: workerResult.provider, incompleteCompile };
 }
 
 // Run a list of tasks under a concurrency cap. Returns successes + failures.
@@ -1576,7 +1952,13 @@ async function runWaveConcurrent(
           project.id, agent.id, agent.name, "completed task",
           `✓ Finished: ${task.title}`, "success"
         );
-        await saveLiveOutput(project.id, task, agent, output, deps, stopReason);
+        // Stage 5.x.25: forward incompleteCompile + priorOutputs so the saver
+        // can promote the largest upstream into the user's binary slots when
+        // the compile shipped only a sample of the upstream data.
+        await saveLiveOutput(project.id, task, agent, output, deps, stopReason, {
+          incompleteCompile: guarded.incompleteCompile,
+          priorOutputs,
+        });
         successes.push({ task, agent, output });
         // Brief idle gap so the UI can settle the "done" pulse before reset
         setTimeout(() => deps.setAgentStatus(agent.id, "idle", null), 600);
@@ -1655,7 +2037,12 @@ async function runWaveConcurrent(
               if (looksLikeLeakedToolCall(retry.text)) {
                 throw new Error("long-wait retry returned garbled tool-call leakage even after provider failover");
               }
-              await saveLiveOutput(project.id, task, agent, retry.text, deps, retry.stopReason);
+              // Stage 5.x.25: same forwarding for the long-wait retry path —
+              // the unified guard may have flagged the retry as incomplete.
+              await saveLiveOutput(project.id, task, agent, retry.text, deps, retry.stopReason, {
+                incompleteCompile: retry.incompleteCompile,
+                priorOutputs,
+              });
               storage.updateTask(task.id, { status: "done", blockedReason: null });
               deps.broadcast({ type: "task_update", task: { ...live, status: "done", blockedReason: null, waveIndex } });
               deps.setAgentStatus(agent.id, "done", null);
