@@ -573,9 +573,59 @@ async function saveLiveOutput(
     if (saved > 0) return;
   }
 
+  // Stage 5.x.24 — format-agnostic garbled-output guard. If the raw output
+  // looks like leaked tool-call syntax, we refuse to render any non-markdown
+  // format (PDF, Excel, CSV, JSON, Python) because the renderers would
+  // happily produce a polluted PDF / Excel / CSV with garbage in it. Emit a
+  // clear stub markdown alongside so the operator sees what happened, and
+  // skip the binary render entirely. The markdown branch below already
+  // produces an inline garbled stub via its own length+garbled check, so
+  // we leave it to handle markdown.
+  const rawIsGarbled = !manifest && rawOutput.trim().length >= 80 && looksLikeLeakedToolCall(rawOutput);
+  if (rawIsGarbled) {
+    deps.emitEvent(
+      projectId, agent.id, agent.name, "garbled output at save",
+      `⚠️ Raw output looked like leaked tool-call syntax — refusing to render non-markdown formats (will write .md stub instead). Head: ${JSON.stringify(rawOutput.slice(0, 80))}`,
+      "warning"
+    );
+  }
+
   for (const fmt of formats) {
     const extMime = EXT_BY_FORMAT[fmt];
     if (!extMime) continue;
+
+    // Stage 5.x.24: skip non-markdown formats when raw output is garbled.
+    // Markdown still runs so its branch can write the inline stub. We add
+    // an extra .md stub for the format the user actually wanted (e.g. PDF
+    // or Excel) so they get a clear file in the project's downloads list.
+    if (rawIsGarbled && fmt !== "markdown") {
+      try {
+        const stubMd =
+          `# ${task.title} (${fmt} format requested)\n\n` +
+          `> ⚠️ **Garbled output — ${fmt.toUpperCase()} render skipped.**\n>\n` +
+          `> The agent's response contained leaked tool-call syntax instead of usable content, so the ${fmt} renderer was not run (a polluted ${fmt} file would be worse than no file). Auto-retry on a different provider also failed; manager replan recommended.\n\n` +
+          `*Raw response (${rawOutput.length} chars):*\n\n\`\`\`\n${rawOutput.slice(0, 4000)}${rawOutput.length > 4000 ? `\n…[truncated ${rawOutput.length - 4000} chars]` : ""}\n\`\`\`\n`;
+        const stubFilename = `${slug}_${agent.id}.${fmt}-skipped.md`;
+        const stubSaved = storage.saveProjectFile(
+          {
+            projectId, taskId: task.id, agentId: agent.id,
+            filename: stubFilename, fileType: "markdown",
+            mimeType: "text/markdown",
+            filePath: "", description: `${agent.name}: ${task.title} — ${fmt} skipped (garbled)`,
+          },
+          stubMd
+        );
+        deps.broadcast({ type: "file_created", projectId, file: stubSaved });
+        deps.emitEvent(
+          projectId, agent.id, agent.name, `skipped ${fmt} render`,
+          `⚠️ ${stubFilename} (wrote stub instead of running ${fmt} renderer on garbled output)`,
+          "warning"
+        );
+      } catch (e) {
+        console.error(`[live] ${fmt} stub-save error:`, e);
+      }
+      continue;
+    }
 
     let content: Buffer | string = rawOutput;
     try {
@@ -1297,6 +1347,128 @@ async function runWorkerTask(
   return { text: result.text, stopReason, provider: routed.provider };
 }
 
+// ─── Stage 5.x.24 — unified worker guard ──────────────────────────────────
+// Wraps runWorkerTask with all post-completion guards in one place:
+//   1. Empty-output guard (Stage 5.x.16) — retry once if output is empty.
+//   2. Garbled-output guard (Stage 5.x.23) — retry once if the model wrote
+//      tool-call syntax as plain text. The retry forces a different
+//      provider via excludeProvider so we don't bounce off the same
+//      misbehaving model.
+//   3. Compile auto-chunk (Stage 5.x.23) — if a compile-style task hits
+//      max_tokens, split prior outputs in half, run twice, concatenate.
+//
+// Stage 5.x.22's long-wait retry path used to call runWorkerTask directly,
+// missing all of these. By centralising the guards here, every call site
+// (main wave worker, long-wait retry, future paths) gets identical
+// protection without duplicating ~100 lines of guard logic.
+async function runWorkerTaskWithGuards(
+  project: Project,
+  task: Task,
+  agent: Agent,
+  priorOutputs: PriorOutput[],
+  deps: LiveOrchestratorDeps,
+  signal: AbortSignal | undefined,
+  plannerKey: string | undefined,
+): Promise<WorkerTaskResult> {
+  const workerResult = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
+  let output = workerResult.text;
+  let stopReason = workerResult.stopReason;
+
+  // ---- Empty + garbled guard ----
+  const EMPTY_THRESHOLD = 80;
+  const looksEmpty = output.trim().length < EMPTY_THRESHOLD;
+  const looksGarbled = !looksEmpty && looksLikeLeakedToolCall(output);
+  const guardKind: "empty" | "garbled" | null =
+    looksEmpty ? "empty" : looksGarbled ? "garbled" : null;
+  if (guardKind) {
+    const failedProvider = workerResult.provider;
+    deps.emitEvent(
+      project.id, agent.id, agent.name,
+      guardKind === "empty" ? "empty output" : "garbled output",
+      guardKind === "empty"
+        ? `⚠️ Agent returned only ${output.trim().length} chars (stop=${stopReason}) on ${failedProvider ?? "unknown provider"} — retrying on a different provider`
+        : `⚠️ Agent on ${failedProvider ?? "unknown provider"} produced leaked tool-call syntax (${output.length} chars; head: ${JSON.stringify(output.slice(0, 80))}) — retrying on a different provider`,
+      "warning"
+    );
+    const retry = await runWorkerTask(
+      project, task, agent, priorOutputs, deps, signal, plannerKey,
+      failedProvider,
+    );
+    const retryEmpty = retry.text.trim().length < EMPTY_THRESHOLD;
+    const retryGarbled = !retryEmpty && looksLikeLeakedToolCall(retry.text);
+    if (!retryEmpty && !retryGarbled) {
+      output = retry.text;
+      stopReason = retry.stopReason;
+      deps.emitEvent(
+        project.id, agent.id, agent.name, "retry recovered",
+        `✓ Retry on ${retry.provider ?? "different provider"} produced ${retry.text.length} chars of clean output — using retry result`,
+        "info"
+      );
+    } else {
+      output = retry.text.length > output.length ? retry.text : output;
+      stopReason = retry.stopReason;
+      const retryKind = retryEmpty ? "empty" : "garbled";
+      deps.emitEvent(
+        project.id, agent.id, agent.name, `retry still ${retryKind}`,
+        `⚠️ Retry on ${retry.provider ?? "different provider"} ALSO ${retryKind} (${retry.text.trim().length} chars, stop=${retry.stopReason}) — saving stub and marking complete; manager may replan`,
+        "warning"
+      );
+    }
+  }
+
+  // ---- Compile auto-chunk fallback ----
+  const isCompileTask = (
+    /compile.*final|final.*compile|consolidate|consolidat.*final|technical.writer/i.test(task.title)
+    || plannerKey === "compile" || plannerKey === "final-compile" || plannerKey === "final"
+  );
+  const compileTruncated =
+    isCompileTask
+    && stopReason === "max_tokens"
+    && priorOutputs.length >= 2;
+  if (compileTruncated) {
+    deps.emitEvent(
+      project.id, agent.id, agent.name, "compile auto-chunk",
+      `⚠️ Compile hit max_tokens with ${priorOutputs.length} prior outputs — splitting in half and re-running`,
+      "warning"
+    );
+    try {
+      const mid = Math.ceil(priorOutputs.length / 2);
+      const halfA = priorOutputs.slice(0, mid);
+      const halfB = priorOutputs.slice(mid);
+      const partA = await runWorkerTask(project, task, agent, halfA, deps, signal, plannerKey);
+      const partB = await runWorkerTask(project, task, agent, halfB, deps, signal, plannerKey);
+      const merged =
+        `${partA.text.trim()}\n\n---\n\n${partB.text.trim()}\n\n` +
+        `<!-- Stage 5.x.23 auto-chunked compile: ${halfA.length}+${halfB.length} prior outputs merged due to max_tokens -->\n`;
+      if (merged.trim().length > output.trim().length) {
+        output = merged;
+        stopReason = (partA.stopReason === "max_tokens" || partB.stopReason === "max_tokens")
+          ? "max_tokens_chunked"
+          : (partA.stopReason || partB.stopReason || stopReason);
+        deps.emitEvent(
+          project.id, agent.id, agent.name, "compile chunked recovered",
+          `✓ Auto-chunked compile produced ${merged.length} chars (A=${partA.text.length}, B=${partB.text.length})`,
+          "info"
+        );
+      } else {
+        deps.emitEvent(
+          project.id, agent.id, agent.name, "compile chunked failed",
+          `⚠️ Auto-chunked compile didn't yield more content than original (A=${partA.text.length}, B=${partB.text.length}, original=${output.length}) — keeping original\n`,
+          "warning"
+        );
+      }
+    } catch (chunkErr) {
+      deps.emitEvent(
+        project.id, agent.id, agent.name, "compile chunked errored",
+        `⚠️ Auto-chunked compile threw: ${(chunkErr as Error)?.message ?? String(chunkErr)} — keeping original output`,
+        "warning"
+      );
+    }
+  }
+
+  return { text: output, stopReason, provider: workerResult.provider };
+}
+
 // Run a list of tasks under a concurrency cap. Returns successes + failures.
 async function runWaveConcurrent(
   project: Project,
@@ -1332,127 +1504,12 @@ async function runWaveConcurrent(
       deps.broadcast({ type: "task_update", task: { ...task, status: "in_progress", waveIndex } });
       const plannerKey = plannerKeyByTaskId?.get(task.id);
       try {
-        let workerResult = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
-        let output = workerResult.text;
-        let stopReason = workerResult.stopReason;
-
-        // Stage 5.x.16 — Empty-output guard for EVERY regular task.
-        // The previous behaviour silently saved a heading-only markdown file
-        // when the agent returned no visible text (model hit max_tokens on
-        // hidden reasoning, refused, emitted only tool calls, etc.). The
-        // guard retries once and surfaces a warning with the stop reason
-        // if still empty so the operator can act instead of staring at a
-        // confusing empty file.
-        //
-        // Stage 5.x.23 — the guard now ALSO catches the "model wrote tool
-        // call as plain text" failure (e.g. Kimi/DeepSeek emitting
-        // `ే####functions.tavily_search:11've{"query":"..."}` as the
-        // entire response). When either failure mode fires, the retry is
-        // forced onto a DIFFERENT provider via runWorkerTask's
-        // excludeProvider arg — same provider, same garbage. The chunked
-        // retry path for compile tasks that hit max_tokens lives below.
-        const EMPTY_THRESHOLD = 80;
-        const looksEmpty = output.trim().length < EMPTY_THRESHOLD;
-        const looksGarbled = !looksEmpty && looksLikeLeakedToolCall(output);
-        const guardKind: "empty" | "garbled" | null =
-          looksEmpty ? "empty" : looksGarbled ? "garbled" : null;
-        if (guardKind) {
-          const failedProvider = workerResult.provider;
-          deps.emitEvent(
-            project.id, agent.id, agent.name,
-            guardKind === "empty" ? "empty output" : "garbled output",
-            guardKind === "empty"
-              ? `⚠️ Agent returned only ${output.trim().length} chars (stop=${stopReason}) on ${failedProvider ?? "unknown provider"} — retrying on a different provider`
-              : `⚠️ Agent on ${failedProvider ?? "unknown provider"} produced leaked tool-call syntax (${output.length} chars; head: ${JSON.stringify(output.slice(0, 80))}) — retrying on a different provider`,
-            "warning"
-          );
-          const retry = await runWorkerTask(
-            project, task, agent, priorOutputs, deps, signal, plannerKey,
-            failedProvider, // exclude the misbehaving provider
-          );
-          const retryEmpty = retry.text.trim().length < EMPTY_THRESHOLD;
-          const retryGarbled = !retryEmpty && looksLikeLeakedToolCall(retry.text);
-          if (!retryEmpty && !retryGarbled) {
-            output = retry.text;
-            stopReason = retry.stopReason;
-            deps.emitEvent(
-              project.id, agent.id, agent.name, "retry recovered",
-              `✓ Retry on ${retry.provider ?? "different provider"} produced ${retry.text.length} chars of clean output — using retry result`,
-              "info"
-            );
-          } else {
-            // Both attempts bad. Keep whichever has more content so
-            // saveLiveOutput can write a clear stub instead of a blank
-            // file. Mark the task with blockedReason context so the
-            // manager's replanner can route around it.
-            output = retry.text.length > output.length ? retry.text : output;
-            stopReason = retry.stopReason;
-            const retryKind = retryEmpty ? "empty" : "garbled";
-            deps.emitEvent(
-              project.id, agent.id, agent.name, `retry still ${retryKind}`,
-              `⚠️ Retry on ${retry.provider ?? "different provider"} ALSO ${retryKind} (${retry.text.trim().length} chars, stop=${retry.stopReason}) — saving stub and marking complete; manager may replan`,
-              "warning"
-            );
-          }
-        }
-
-        // Stage 5.x.23 — auto-chunk fallback for the final compile task.
-        // When a compile-style task hits max_tokens (output got truncated to
-        // empty or near-empty), the prior outputs are too large to summarise
-        // in one shot. Split the prior outputs in half, run the compile on
-        // each half independently, then concatenate. This is a SAFETY NET on
-        // top of the larger budget from Stage 5.x.17 — most compiles still
-        // fit in one call. We only attempt this once (no recursion) so a
-        // truly oversized job still surfaces a clear error.
-        const isCompileTask = (
-          /compile.*final|final.*compile|consolidate|consolidat.*final|technical.writer/i.test(task.title)
-          || plannerKey === "compile" || plannerKey === "final-compile" || plannerKey === "final"
-        );
-        const compileTruncated =
-          isCompileTask
-          && stopReason === "max_tokens"
-          && priorOutputs.length >= 2;
-        if (compileTruncated) {
-          deps.emitEvent(
-            project.id, agent.id, agent.name, "compile auto-chunk",
-            `⚠️ Compile hit max_tokens with ${priorOutputs.length} prior outputs — splitting in half and re-running`,
-            "warning"
-          );
-          try {
-            const mid = Math.ceil(priorOutputs.length / 2);
-            const halfA = priorOutputs.slice(0, mid);
-            const halfB = priorOutputs.slice(mid);
-            const partA = await runWorkerTask(project, task, agent, halfA, deps, signal, plannerKey);
-            const partB = await runWorkerTask(project, task, agent, halfB, deps, signal, plannerKey);
-            const merged =
-              `${partA.text.trim()}\n\n---\n\n${partB.text.trim()}\n\n` +
-              `<!-- Stage 5.x.23 auto-chunked compile: ${halfA.length}+${halfB.length} prior outputs merged due to max_tokens -->\n`;
-            if (merged.trim().length > output.trim().length) {
-              output = merged;
-              // Use the worse of the two stop reasons for visibility.
-              stopReason = (partA.stopReason === "max_tokens" || partB.stopReason === "max_tokens")
-                ? "max_tokens_chunked"
-                : (partA.stopReason || partB.stopReason || stopReason);
-              deps.emitEvent(
-                project.id, agent.id, agent.name, "compile chunked recovered",
-                `✓ Auto-chunked compile produced ${merged.length} chars (A=${partA.text.length}, B=${partB.text.length})`,
-                "info"
-              );
-            } else {
-              deps.emitEvent(
-                project.id, agent.id, agent.name, "compile chunked failed",
-                `⚠️ Auto-chunked compile didn't yield more content than original (A=${partA.text.length}, B=${partB.text.length}, original=${output.length}) — keeping original\n`,
-                "warning"
-              );
-            }
-          } catch (chunkErr) {
-            deps.emitEvent(
-              project.id, agent.id, agent.name, "compile chunked errored",
-              `⚠️ Auto-chunked compile threw: ${(chunkErr as Error)?.message ?? String(chunkErr)} — keeping original output`,
-              "warning"
-            );
-          }
-        }
+        // Stage 5.x.24: all post-completion guards (empty/garbled/compile
+        // chunk) live in runWorkerTaskWithGuards so the long-wait retry
+        // path and any future call sites get identical protection.
+        const guarded = await runWorkerTaskWithGuards(project, task, agent, priorOutputs, deps, signal, plannerKey);
+        let output = guarded.text;
+        let stopReason = guarded.stopReason;
 
         // Stage 5.x.5 — QA enforcement.
         // The 8-step QA self-review must be substantive and contain explicit
@@ -1587,9 +1644,16 @@ async function runWaveConcurrent(
                 `▶ Long-wait retry firing now after ${waitMin} min wait`,
                 "info"
               );
-              const retry = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
+              // Stage 5.x.24: route the long-wait retry through the unified
+              // guard so empty/garbled output gets a same-wave provider
+              // failover and oversized compiles auto-chunk — same protection
+              // every other task path enjoys.
+              const retry = await runWorkerTaskWithGuards(project, task, agent, priorOutputs, deps, signal, plannerKey);
               if (retry.text.trim().length === 0) {
                 throw new Error("long-wait retry returned empty output");
+              }
+              if (looksLikeLeakedToolCall(retry.text)) {
+                throw new Error("long-wait retry returned garbled tool-call leakage even after provider failover");
               }
               await saveLiveOutput(project.id, task, agent, retry.text, deps, retry.stopReason);
               storage.updateTask(task.id, { status: "done", blockedReason: null });
