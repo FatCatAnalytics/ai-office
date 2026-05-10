@@ -72,16 +72,89 @@ function hasKey(provider: Provider): boolean {
   return Boolean(storage.getSetting(settingKeyForProvider(provider)));
 }
 
+// Stage 5.x.26: walk every provider_balances row that is currently flagged
+// unusable (cap exhausted OR forceFailover set by the failover modal) and
+// collect their fallback chains, in row-update order. Each entry is a
+// canonical "provider:modelId" tag. Returns parsed { provider, modelId }
+// pairs filtered to the providers we know how to call. Used as Step 0 of
+// every routing call so the operator's substitute selection actually wins.
+function operatorChainCandidates(): Array<{ provider: Provider; modelId: string; sourceProvider: Provider }> {
+  const candidates: Array<{ provider: Provider; modelId: string; sourceProvider: Provider }> = [];
+  let rows;
+  try { rows = storage.getProviderBalances(); } catch { return candidates; }
+  for (const row of rows) {
+    const overCap = row.capUsd > 0 && row.usedUsd >= row.capUsd;
+    const forceFailover = Boolean(row.forceFailover);
+    if (!overCap && !forceFailover) continue;
+    let chain: string[] = [];
+    try {
+      const parsed = JSON.parse(row.fallbackChain);
+      if (Array.isArray(parsed)) chain = parsed.filter((x): x is string => typeof x === "string");
+    } catch { /* skip unparseable chain */ }
+    for (const tag of chain) {
+      const idx = tag.indexOf(":");
+      if (idx <= 0) continue;
+      const provider = tag.slice(0, idx) as Provider;
+      const modelId = tag.slice(idx + 1);
+      if (!modelId || modelId === "*") continue;
+      // Don't propose the same provider that's marked unusable — the chain
+      // exists exactly to escape it.
+      if (provider === row.provider) continue;
+      candidates.push({ provider, modelId, sourceProvider: row.provider as Provider });
+    }
+  }
+  return candidates;
+}
+
+// Stage 5.x.26: report whether a provider is currently unusable. Mirrors
+// providerBalances.isProviderOverCap but read directly from the row so the
+// router doesn't pull in the orchestrator's deps. Treat both overCap and
+// operator-set forceFailover as unusable.
+function isProviderUnusable(provider: Provider): boolean {
+  try {
+    const row = storage.getProviderBalance(`${provider}:*`);
+    if (!row) return false;
+    if (row.capUsd > 0 && row.usedUsd >= row.capUsd) return true;
+    if (row.forceFailover) return true;
+  } catch { /* row missing — treat as usable */ }
+  return false;
+}
+
 // Pick a model based on complexity. Resolution order:
+//   0. (Stage 5.x.26) Operator-set fallback chain on any unusable provider —
+//      so a substitute picked in the FailoverModal actually wins on the next
+//      worker pickup, instead of being silently overruled by the pinned
+//      default that's still pointing at the dead provider.
 //   1. Operator's pinned default for the tier (preferredFor === complexity).
 //   2. Any other pool member for the tier (operator-enabled multi-select).
 //   3. Hardcoded TIER_PREFERENCES fall-through (first provider with a key).
 //   4. The agent's own modelId.
+// Each step skips providers that are currently unusable (cap exhausted OR
+// forceFailover set by the modal). The agent default fallback at the end is
+// honoured even when unusable as a last-ditch "something is better than
+// nothing" — the orchestrator's per-call cap check catches that case and
+// re-routes via routeWithFailover before actually spending.
 export function routeForComplexity(complexity: Complexity, fallbackAgent: Agent): RoutedModel {
-  // 1. Operator-pinned DEFAULT for the tier.
+  // 0. Operator-set fallback chain (Stage 5.x.26). Walk every chain entry,
+  //    in declared order, and use the first one whose provider has a key
+  //    AND isn't itself unusable. This is the path that honours a substitute
+  //    picked in the FailoverModal.
+  for (const cand of operatorChainCandidates()) {
+    if (hasKey(cand.provider) && !isProviderUnusable(cand.provider)) {
+      return {
+        provider: cand.provider,
+        modelId: cand.modelId,
+        reason: `${complexity}-tier → operator failover substitute (${cand.modelId} via ${cand.sourceProvider} chain)`,
+      };
+    }
+  }
+
+  // 1. Operator-pinned DEFAULT for the tier — BUT only if its provider isn't
+  //    currently unusable. Without this skip, a pinned Anthropic default
+  //    would defeat the operator's substitute every time on the resume path.
   try {
     const pinned = storage.getPreferredModelForTier(complexity);
-    if (pinned && hasKey(pinned.provider as Provider)) {
+    if (pinned && hasKey(pinned.provider as Provider) && !isProviderUnusable(pinned.provider as Provider)) {
       return {
         provider: pinned.provider as Provider,
         modelId: pinned.modelId,
@@ -96,7 +169,7 @@ export function routeForComplexity(complexity: Complexity, fallbackAgent: Agent)
   try {
     const pool = storage.getPoolModelsForTier(complexity);
     for (const m of pool) {
-      if (hasKey(m.provider as Provider)) {
+      if (hasKey(m.provider as Provider) && !isProviderUnusable(m.provider as Provider)) {
         return {
           provider: m.provider as Provider,
           modelId: m.modelId,
@@ -106,17 +179,20 @@ export function routeForComplexity(complexity: Complexity, fallbackAgent: Agent)
     }
   } catch { /* migration race; fall through */ }
 
-  // 3. Hardcoded preference chain.
+  // 3. Hardcoded preference chain — also skip unusable providers.
   const prefs = TIER_PREFERENCES[complexity] ?? TIER_PREFERENCES.medium;
   for (const pick of prefs) {
-    if (hasKey(pick.provider)) return pick;
+    if (hasKey(pick.provider) && !isProviderUnusable(pick.provider)) return pick;
   }
 
-  // 3. Agent default.
+  // 4. Agent default — honoured even if unusable so the orchestrator's
+  //    cap-check path can detect the situation and surface the modal again.
+  //    Without a final answer here, callers would crash on null and we'd
+  //    lose the operator's chance to pick another substitute.
   return {
     provider: (fallbackAgent.provider as Provider) ?? "anthropic",
     modelId: fallbackAgent.modelId,
-    reason: `no preferred provider keys configured — using agent default ${fallbackAgent.modelId}`,
+    reason: `no usable provider keys configured — using agent default ${fallbackAgent.modelId}`,
   };
 }
 
@@ -146,10 +222,26 @@ export function routeWithFailover(
     if (excluded.has(`${provider}:${modelId}`)) return false;
     if (excluded.has(`${provider}:*`)) return false;
     try {
-      if (isProviderOverCap(provider).overCap) return false;
+      // Stage 5.x.26: routing-time "unusable" covers both monthly-cap
+      // exhaustion AND operator-set forceFailover from the modal.
+      if (isProviderOverCap(provider).unusable) return false;
     } catch { /* balance row not yet seeded — treat as not-over-cap */ }
     return true;
   };
+
+  // 0. Operator-set fallback chain (Stage 5.x.26). Same idea as in
+  //    routeForComplexity: a substitute picked in the modal must win.
+  //    `excluded` from the caller still applies (so the empty/garbled-output
+  //    retry can still hop off the chain target if it itself misbehaved).
+  for (const cand of operatorChainCandidates()) {
+    if (isUsable(cand.provider, cand.modelId)) {
+      return {
+        provider: cand.provider,
+        modelId: cand.modelId,
+        reason: `${complexity}-tier → operator failover substitute (${cand.modelId} via ${cand.sourceProvider} chain) (failover-aware)`,
+      };
+    }
+  }
 
   // 1. Operator-pinned default for the tier.
   try {

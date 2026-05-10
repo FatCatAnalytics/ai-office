@@ -100,6 +100,10 @@ export function FailoverModal() {
         provider: selected.provider,
         modelId: selected.modelId,
         mode: setMode,
+        // Stage 5.x.26: tell the route which provider to mark unusable.
+        // Without this the server can't tell the capped row from the
+        // substitute's row and writes the chain to the wrong place.
+        cappedProvider: event.provider,
       });
       close();
     } catch (e) {

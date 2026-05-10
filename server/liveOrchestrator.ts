@@ -1431,14 +1431,18 @@ async function runWorkerTask(
     }
   }
 
-  // Stage 5.x.12: cap-aware pre-call check. If the operator's chosen model
-  // has already burned its monthly cap, react based on the project's
-  // failoverMode. "auto" silently re-routes through routeWithFailover; "ask"
-  // surfaces a websocket event so the operator picks a substitute, then
-  // throws so the project pauses cleanly. "block" just throws.
+  // Stage 5.x.12 / 5.x.26: cap-aware + forceFailover pre-call check. If the
+  // operator's chosen model is currently unusable (cap burned through OR
+  // forceFailover bit set after a runtime credit-exhaust modal), react based
+  // on the project's failoverMode. "auto" silently re-routes through
+  // routeWithFailover; "ask" surfaces a websocket event so the operator picks
+  // a substitute, then throws so the project pauses cleanly. "block" just
+  // throws. After 5.x.26, routeForComplexity above ALREADY skipped unusable
+  // providers via Step 0/1 — so this check is now mostly a defence-in-depth
+  // against an upstream pin that hasn't been moved yet (e.g. agent default).
   const projectFailoverMode = (project.failoverMode as string) ?? "ask";
   const capCheck = isProviderOverCap(routed.provider);
-  if (capCheck.overCap) {
+  if (capCheck.unusable) {
     if (projectFailoverMode === "auto") {
       const switched = routeWithFailover(
         effectiveComplexity, agent,

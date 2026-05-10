@@ -1028,28 +1028,48 @@ export function registerRoutes(httpServer: Server, app: Express) {
     if (Number.isNaN(projectId)) return res.status(400).json({ error: "invalid project id" });
     const project = storage.getProject(projectId);
     if (!project) return res.status(404).json({ error: "project not found" });
-    const { provider, modelId, mode } = req.body ?? {};
+    const { provider, modelId, mode, cappedProvider } = req.body ?? {};
     if (mode && !["ask", "auto", "block"].includes(mode)) {
       return res.status(400).json({ error: "mode must be ask|auto|block" });
     }
     if (mode) {
       storage.updateProject(projectId, { failoverMode: mode });
     }
-    // If the operator picked a substitute model + provider, prepend it to
-    // the fallback chain of the *current* (capped) provider so the next
-    // routing call lands on it deterministically.
-    if (provider && modelId) {
-      const currentRow = storage.getProviderBalances().find((b) => b.provider === provider && b.usedUsd >= b.capUsd && b.capUsd > 0);
-      if (currentRow) {
-        let chain: string[] = [];
-        try {
-          const parsed = JSON.parse(currentRow.fallbackChain);
-          if (Array.isArray(parsed)) chain = parsed.filter((x): x is string => typeof x === "string");
-        } catch { /* default empty */ }
-        const tag = `${provider}:${modelId}`;
-        if (!chain.includes(tag)) chain = [tag, ...chain];
-        storage.setProviderBalanceFailover(currentRow.id, currentRow.failoverMode, chain);
+    // Stage 5.x.26: write fallbackChain to the *capped* provider's row (the
+    // one that actually failed), not the substitute's. The modal forwards
+    // `cappedProvider`; we look up its row, create one if missing (runtime
+    // credit-exhaust without a configured cap won't have one yet), prepend
+    // the operator's pick to fallbackChain, and flip forceFailover so the
+    // router treats this provider as unusable until the operator clears it.
+    if (provider && modelId && typeof cappedProvider === "string" && cappedProvider) {
+      // Provider-level row id matches the convention used in upsertProviderBalance
+      // (provider:* when no specific modelId is given). Find any existing row
+      // for this provider — we don't care which modelId it covers, the failover
+      // state lives at the provider level.
+      let cappedRow = storage.getProviderBalances().find((b) => b.provider === cappedProvider);
+      if (!cappedRow) {
+        cappedRow = storage.upsertProviderBalance({
+          id: `${cappedProvider}:*`,
+          provider: cappedProvider,
+          modelId: "*",
+          capUsd: 0,
+          balanceUsd: 0,
+          usedUsd: 0,
+          source: "manual",
+          failoverMode: "ask",
+          fallbackChain: "[]",
+          forceFailover: false,
+        });
       }
+      let chain: string[] = [];
+      try {
+        const parsed = JSON.parse(cappedRow.fallbackChain);
+        if (Array.isArray(parsed)) chain = parsed.filter((x): x is string => typeof x === "string");
+      } catch { /* default empty */ }
+      const tag = `${provider}:${modelId}`;
+      if (!chain.includes(tag)) chain = [tag, ...chain];
+      storage.setProviderBalanceFailover(cappedRow.id, cappedRow.failoverMode, chain);
+      storage.setProviderBalanceForceFailover(cappedRow.id, true);
     }
     // Resume the orchestrator if it's currently paused on this project. We
     // re-build the same deps the regular /resume endpoint uses so the

@@ -268,6 +268,14 @@ try {
   sqlite.exec(`ALTER TABLE projects ADD COLUMN failover_mode TEXT NOT NULL DEFAULT 'ask'`);
 } catch { /* column already exists */ }
 
+// Stage 5.x.26 safe migration: forceFailover bit on provider_balances. Set by
+// the failover modal when the operator picks a substitute after a runtime
+// credit-exhaust error — marks the provider as unusable until cleared so
+// the router consults the row's fallbackChain instead of routing back to it.
+try {
+  sqlite.exec(`ALTER TABLE provider_balances ADD COLUMN force_failover INTEGER NOT NULL DEFAULT 0`);
+} catch { /* column already exists */ }
+
 // Stage 4.5 safe migrations: existing rows with retired Anthropic model ids.
 // Older seeds used "claude-opus-4-5" / "claude-sonnet-4-5" / "claude-haiku-3-5",
 // none of which exist in the public Anthropic API. Map them forward to the
@@ -680,6 +688,7 @@ export interface IStorage {
   upsertProviderBalance(data: InsertProviderBalance): ProviderBalance;
   setProviderBalanceCap(id: string, capUsd: number): ProviderBalance | undefined;
   setProviderBalanceFailover(id: string, failoverMode: string, fallbackChain: string[]): ProviderBalance | undefined;
+  setProviderBalanceForceFailover(id: string, forceFailover: boolean): ProviderBalance | undefined;
   recordProviderBalanceFetch(id: string, balanceUsd: number, source: string, error?: string | null): ProviderBalance | undefined;
   deleteProviderBalance(id: string): void;
 
@@ -1280,6 +1289,10 @@ class SQLiteStorage implements IStorage {
         alertThreshold: data.alertThreshold ?? existing.alertThreshold,
         failoverMode: data.failoverMode ?? existing.failoverMode,
         fallbackChain: data.fallbackChain ?? existing.fallbackChain,
+        // Stage 5.x.26: preserve forceFailover across partial updates so a
+        // balance refresh doesn't accidentally clear an operator-set
+        // failover state.
+        forceFailover: data.forceFailover ?? existing.forceFailover,
         lastFetchedAt: data.lastFetchedAt ?? existing.lastFetchedAt,
         fetchError: data.fetchError ?? existing.fetchError,
         updatedAt: now,
@@ -1308,6 +1321,17 @@ class SQLiteStorage implements IStorage {
         fallbackChain: JSON.stringify(fallbackChain),
         updatedAt: Date.now(),
       })
+      .where(eq(schema.providerBalances.id, id))
+      .returning().get();
+  }
+
+  // Stage 5.x.26: toggle the forceFailover bit. Set to true by the failover
+  // modal when the operator picks a substitute after a runtime credit-exhaust
+  // error. Cleared when the operator manually unblocks the provider in the
+  // budget UI or after a successful balance refresh shows positive credit.
+  setProviderBalanceForceFailover(id: string, forceFailover: boolean): ProviderBalance | undefined {
+    return db.update(schema.providerBalances)
+      .set({ forceFailover, updatedAt: Date.now() })
       .where(eq(schema.providerBalances.id, id))
       .returning().get();
   }

@@ -194,24 +194,34 @@ export async function refreshProviderBalances(opts?: { signal?: AbortSignal }): 
 // spend on this provider. "Safe" === capUsd === 0 (no cap) OR usedUsd <
 // capUsd. This deliberately does NOT auto-refresh — the routes layer + the
 // scheduler handle that — so the hot path stays fast.
+//
+// Stage 5.x.26: also reports `forceFailover` (set by the failover modal after
+// a runtime credit-exhaust error). Routing should treat the provider as
+// unusable when EITHER overCap OR forceFailover is true.
 export function isProviderOverCap(provider: Provider): {
   overCap: boolean;
+  forceFailover: boolean;
+  unusable: boolean;
   capUsd: number;
   usedUsd: number;
   failoverMode: string;
   fallbackChain: string[];
 } {
   const row = storage.getProviderBalance(`${provider}:*`);
-  if (!row || row.capUsd <= 0) {
-    return { overCap: false, capUsd: 0, usedUsd: row?.usedUsd ?? 0, failoverMode: row?.failoverMode ?? "ask", fallbackChain: [] };
+  if (!row) {
+    return { overCap: false, forceFailover: false, unusable: false, capUsd: 0, usedUsd: 0, failoverMode: "ask", fallbackChain: [] };
   }
   let chain: string[] = [];
   try {
     const parsed = JSON.parse(row.fallbackChain);
     if (Array.isArray(parsed)) chain = parsed.filter((x): x is string => typeof x === "string");
   } catch { /* default to empty */ }
+  const overCap = row.capUsd > 0 && row.usedUsd >= row.capUsd;
+  const forceFailover = Boolean(row.forceFailover);
   return {
-    overCap: row.usedUsd >= row.capUsd,
+    overCap,
+    forceFailover,
+    unusable: overCap || forceFailover,
     capUsd: row.capUsd,
     usedUsd: row.usedUsd,
     failoverMode: row.failoverMode,

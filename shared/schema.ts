@@ -290,6 +290,15 @@ export const providerBalances = sqliteTable("provider_balances", {
   // the first chain entry whose provider key is configured AND has remaining
   // budget. Empty "[]" means "use the default tier chain".
   fallbackChain: text("fallback_chain").notNull().default("[]"),
+  // Stage 5.x.26: when 1, the router treats this provider as unusable
+  // regardless of cap state — set by the failover modal when the operator
+  // picks a substitute after a runtime credit-exhaust error (where the
+  // provider hasn't actually hit a configured monthly cap, so usedUsd >=
+  // capUsd is false but Anthropic/OpenAI/etc still rejected the call).
+  // The router consults fallbackChain on rows where forceFailover is set.
+  // Cleared by the operator in the budget UI or by a successful balance
+  // refresh that returns positive credit.
+  forceFailover: integer("force_failover", { mode: "boolean" }).notNull().default(false),
   lastFetchedAt: integer("last_fetched_at"),
   fetchError: text("fetch_error"),                      // last fetch error message, if any
   updatedAt: integer("updated_at").notNull().$defaultFn(() => Date.now()),
