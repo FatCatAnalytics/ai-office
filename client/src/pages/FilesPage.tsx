@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   FolderOpen, Download, Trash2, FileText, FileCode2, Database,
-  Sheet, File, RefreshCw, Clock, User, Search, ChevronDown,
+  Sheet, File, RefreshCw, Clock, User, Search, ChevronDown, Send,
 } from "lucide-react";
 import type { Project, ProjectFile } from "../types";
 
@@ -158,6 +158,8 @@ export default function FilesPage({ projects }: { projects: Project[] }) {
 
   const totalSize = filteredFiles.reduce((s, f) => s + f.sizeBytes, 0);
 
+  const issueFiles = files.filter(f => /^issue-.*\.md$/i.test(f.filename));
+
   return (
     <div className="flex flex-col h-full bg-slate-950 text-slate-100 overflow-hidden">
 
@@ -225,6 +227,24 @@ export default function FilesPage({ projects }: { projects: Project[] }) {
           </select>
         )}
       </div>
+
+      {/* Publishing hint: shown when an issue-*.md exists for this project */}
+      {issueFiles.length > 0 && (
+        <div
+          className="flex items-start gap-2 px-5 py-2 border-b border-slate-800 bg-cyan-500/5 flex-shrink-0"
+          data-testid="publishing-hint"
+        >
+          <Send size={12} className="text-cyan-400 mt-0.5 flex-shrink-0" />
+          <div className="text-xs text-slate-300 leading-relaxed">
+            <span className="font-semibold text-cyan-300">Publishing next step:</span>{" "}
+            download the chosen <span className="font-mono text-slate-200">issue-*.md</span> and paste it into Beehiiv manually.
+            {issueFiles.length > 1 && (
+              <span className="text-slate-500"> {issueFiles.length} issue drafts available — pick one.</span>
+            )}
+            <span className="text-slate-500"> Any <span className="font-mono">runner-up-*.md</span> is backup only.</span>
+          </div>
+        </div>
+      )}
 
       {/* File list */}
       <div className="flex-1 overflow-y-auto custom-scroll">

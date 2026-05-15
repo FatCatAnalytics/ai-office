@@ -1462,6 +1462,13 @@ async function runQaSignOff(
       `${verdict.recommendation} · ${coverageMet}/${verdict.coverage.length} coverage met · ${verdict.issues.length} issue${verdict.issues.length !== 1 ? "s" : ""} — ${verdict.summary.slice(0, 200)}`,
       "info"
     );
+    if (verdict.recommendation === "ship") {
+      deps.emitEvent(
+        projectId, "qa", qaAgent.name, "publishing next step",
+        "Download the chosen issue-*.md from Files and paste it into Beehiiv manually. Runner-up is backup only.",
+        "info"
+      );
+    }
     deps.setAgentStatus("qa", verdict.signedOff ? "done" : "idle", null);
     if (verdict.signedOff) {
       deps.emitEvent(projectId, "manager", manager.name, "project complete", "All deliverables signed off by QA ✓", "success");
