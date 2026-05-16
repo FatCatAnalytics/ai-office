@@ -7,3 +7,8 @@ data.db.bak*
 *.log
 .DS_Store
 projects/
+
+# Stage 6: analytics-service Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
