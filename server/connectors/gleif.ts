@@ -32,20 +32,27 @@ export const gleifConnector: Connector = {
     const url = `https://api.gleif.org/api/v1/lei-records?filter[entity.legalName]=${q}&page[size]=3`;
     const data = await safeFetchJson<GleifResponse>(url, { timeoutMs: ctx.timeoutMs ?? 10_000 });
     const items = data?.data ?? [];
-    return items.slice(0, 3).map((it) => {
+    return items.slice(0, 5).map((it) => {
       const lei = it.id;
       const name = it.attributes?.entity?.legalName?.name ?? ctx.companyName;
       const country = it.attributes?.entity?.legalAddress?.country;
       const status = it.attributes?.entity?.status;
+      const jurisdiction = it.attributes?.entity?.legalJurisdiction;
       return {
         title: `GLEIF — ${name} (LEI ${lei})`,
         url: `https://search.gleif.org/#/record/${lei}`,
         sourceType: "gleif" as const,
         publisher: "GLEIF",
         domain: "gleif.org",
-        extractedText: JSON.stringify({ lei, name, country, status }),
+        extractedText: JSON.stringify({ lei, name, country, status, jurisdiction }),
         reliabilityScore: 0.88,
-        metadata: { lei, country, status, jurisdiction: it.attributes?.entity?.legalJurisdiction },
+        metadata: {
+          lei,
+          legalName: name,
+          country,
+          status,
+          jurisdiction,
+        },
       };
     });
   },

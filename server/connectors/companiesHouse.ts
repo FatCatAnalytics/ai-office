@@ -33,33 +33,51 @@ async function fetchViaApi(ctx: ConnectorContext, key: string): Promise<Connecto
       headers: { authorization: `Basic ${Buffer.from(`${key}:`).toString("base64")}` },
     });
     if (!data) return [];
+    const legalName = (data.company_name as string | undefined) ?? ctx.companyName;
+    const status = data.company_status as string | undefined;
     return [{
-      title: `Companies House — ${data.company_name ?? ctx.companyName} (${number})`,
+      title: `Companies House — ${legalName} (${number})`,
       url: `https://find-and-update.company-information.service.gov.uk/company/${encodeURIComponent(number)}`,
       sourceType: "companies_house",
       publisher: "Companies House",
       domain: "find-and-update.company-information.service.gov.uk",
       extractedText: JSON.stringify(data),
       reliabilityScore: 0.88,
-      metadata: data,
+      metadata: {
+        ...data,
+        legalName,
+        companyNumber: number,
+        jurisdiction: (data.jurisdiction as string | undefined) ?? "gb",
+        status,
+      },
     }];
   }
   const q = encodeURIComponent(ctx.companyName);
   const data = await safeFetchJson<Record<string, unknown>>(
-    `https://api.company-information.service.gov.uk/search/companies?q=${q}&items_per_page=3`,
+    `https://api.company-information.service.gov.uk/search/companies?q=${q}&items_per_page=5`,
     { headers: { authorization: `Basic ${Buffer.from(`${key}:`).toString("base64")}` } },
   );
-  const items = ((data?.items as Array<Record<string, unknown>>) ?? []).slice(0, 3);
-  return items.map((it) => ({
-    title: `Companies House — ${it.title}`,
-    url: `https://find-and-update.company-information.service.gov.uk/company/${encodeURIComponent(String(it.company_number))}`,
-    sourceType: "companies_house" as const,
-    publisher: "Companies House",
-    domain: "find-and-update.company-information.service.gov.uk",
-    extractedText: JSON.stringify(it),
-    reliabilityScore: 0.85,
-    metadata: it,
-  }));
+  const items = ((data?.items as Array<Record<string, unknown>>) ?? []).slice(0, 5);
+  return items.map((it) => {
+    const legalName = (it.title as string | undefined) ?? "";
+    const num = String(it.company_number ?? "");
+    return {
+      title: `Companies House — ${legalName}`,
+      url: `https://find-and-update.company-information.service.gov.uk/company/${encodeURIComponent(num)}`,
+      sourceType: "companies_house" as const,
+      publisher: "Companies House",
+      domain: "find-and-update.company-information.service.gov.uk",
+      extractedText: JSON.stringify(it),
+      reliabilityScore: 0.85,
+      metadata: {
+        ...it,
+        legalName,
+        companyNumber: num,
+        jurisdiction: "gb",
+        status: it.company_status as string | undefined,
+      },
+    };
+  });
 }
 
 async function fetchViaPublicSearch(ctx: ConnectorContext): Promise<ConnectorResult[]> {
@@ -84,9 +102,14 @@ async function fetchViaPublicSearch(ctx: ConnectorContext): Promise<ConnectorRes
       publisher: "Companies House",
       domain: "find-and-update.company-information.service.gov.uk",
       reliabilityScore: 0.82,
-      metadata: { companyNumber: num, name: title },
+      metadata: {
+        companyNumber: num,
+        legalName: title,
+        name: title,
+        jurisdiction: "gb",
+      },
     });
-    if (results.length >= 3) break;
+    if (results.length >= 5) break;
   }
   return results;
 }
