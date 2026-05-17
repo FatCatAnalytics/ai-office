@@ -181,3 +181,148 @@ export function extractMetaDescription(html: string): string | undefined {
     || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']/i);
   return m ? m[1].trim() : undefined;
 }
+
+// Stage 6.3: structured text extraction for richer official-site evidence.
+//
+// extractReadable() strips chrome (nav/header/footer/aside/cookie banners),
+// then pulls the main readable content as a deterministic block of plain
+// text. Each section is separated by a newline so claim extraction can split
+// reliable sentences. We keep this rule-based — no DOM parser dependency.
+export interface ReadableExtraction {
+  title?: string;
+  description?: string;
+  h1: string[];
+  h2: string[];
+  paragraphs: string[];
+  listItems: string[];
+  language?: string;
+  canonicalUrl?: string;
+  hreflang: Array<{ lang: string; href: string }>;
+  text: string;             // composed plain-text body, capped
+}
+
+const READABLE_TEXT_CAP = 20_000;
+const READABLE_PARA_CAP = 60;
+const READABLE_LIST_CAP = 80;
+
+export function extractReadable(html: string, baseUrl?: string): ReadableExtraction {
+  if (!html) {
+    return { h1: [], h2: [], paragraphs: [], listItems: [], hreflang: [], text: "" };
+  }
+
+  const language = extractHtmlLang(html);
+  const canonicalUrl = extractCanonical(html, baseUrl);
+  const hreflang = extractHreflang(html, baseUrl);
+
+  // Strip chrome and noisy regions before tag extraction. We do this on the
+  // raw HTML so the per-tag regexes don't pick up nav links.
+  let cleaned = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<header[\s\S]*?<\/header>/gi, " ")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, " ")
+    .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
+    .replace(/<aside[\s\S]*?<\/aside>/gi, " ")
+    .replace(/<form[\s\S]*?<\/form>/gi, " ")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, " ")
+    // Common cookie banners and dialogs (id/class hints).
+    .replace(/<[^>]+(id|class)=["'][^"']*(cookie|consent|onetrust|gdpr|banner)[^"']*["'][\s\S]*?<\/[^>]+>/gi, " ");
+
+  const title = extractTitle(html);
+  const description = extractMetaDescription(html);
+
+  const h1 = collectTagText(cleaned, "h1", 6);
+  const h2 = collectTagText(cleaned, "h2", 12);
+  const paragraphs = collectTagText(cleaned, "p", READABLE_PARA_CAP)
+    .filter((s) => s.length >= 30);
+  const listItems = collectTagText(cleaned, "li", READABLE_LIST_CAP)
+    .filter((s) => s.length >= 12 && s.length <= 400);
+
+  const blocks: string[] = [];
+  if (description) blocks.push(description);
+  if (h1.length) blocks.push(h1.join("\n"));
+  if (h2.length) blocks.push(h2.join("\n"));
+  if (paragraphs.length) blocks.push(paragraphs.join("\n"));
+  if (listItems.length) blocks.push(listItems.map((s) => `• ${s}`).join("\n"));
+  const text = blocks.join("\n\n").slice(0, READABLE_TEXT_CAP);
+
+  return {
+    title,
+    description,
+    h1,
+    h2,
+    paragraphs,
+    listItems,
+    language,
+    canonicalUrl,
+    hreflang,
+    text,
+  };
+}
+
+function collectTagText(html: string, tag: string, max: number): string[] {
+  const re = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi");
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of Array.from(html.matchAll(re))) {
+    const text = stripHtml(m[1]).trim();
+    if (!text) continue;
+    if (seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function extractHtmlLang(html: string): string | undefined {
+  const m = html.match(/<html[^>]*\blang=["']([^"']+)["']/i);
+  return m ? m[1].trim().toLowerCase() : undefined;
+}
+
+function extractCanonical(html: string, baseUrl?: string): string | undefined {
+  const m = html.match(/<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i)
+    || html.match(/<link[^>]+href=["']([^"']+)["'][^>]*rel=["']canonical["']/i);
+  if (!m) return undefined;
+  try { return baseUrl ? new URL(m[1], baseUrl).toString() : m[1]; }
+  catch { return undefined; }
+}
+
+export function extractHreflang(html: string, baseUrl?: string): Array<{ lang: string; href: string }> {
+  const out: Array<{ lang: string; href: string }> = [];
+  const re = /<link[^>]+rel=["']alternate["'][^>]*>/gi;
+  for (const m of Array.from(html.matchAll(re))) {
+    const tag = m[0];
+    const lang = (tag.match(/\bhreflang=["']([^"']+)["']/i) || [])[1];
+    const href = (tag.match(/\bhref=["']([^"']+)["']/i) || [])[1];
+    if (!lang || !href) continue;
+    try {
+      const abs = baseUrl ? new URL(href, baseUrl).toString() : href;
+      out.push({ lang: lang.toLowerCase(), href: abs });
+    } catch { /* skip */ }
+  }
+  return out;
+}
+
+/**
+ * Extract all anchor hrefs from HTML, resolved against `baseUrl` when given.
+ * Returns absolute URLs; relative or javascript: / mailto: targets are dropped.
+ */
+export function extractAnchorHrefs(html: string, baseUrl?: string): Array<{ href: string; text: string }> {
+  const out: Array<{ href: string; text: string }> = [];
+  const re = /<a\b[^>]*\bhref=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  for (const m of Array.from(html.matchAll(re))) {
+    const raw = m[1].trim();
+    if (!raw || /^(javascript:|mailto:|tel:|#)/i.test(raw)) continue;
+    try {
+      const abs = baseUrl ? new URL(raw, baseUrl).toString() : raw;
+      if (!/^https?:/i.test(abs)) continue;
+      const text = stripHtml(m[2]).trim();
+      out.push({ href: abs, text });
+    } catch { /* skip */ }
+  }
+  return out;
+}
