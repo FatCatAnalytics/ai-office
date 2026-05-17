@@ -10,6 +10,7 @@ import { refreshAllProviders } from "./modelsRefresh";
 import { handleLogin, handleLogout, handleMe, isWsUpgradeAuthenticated } from "./auth";
 import { fireTemplate, recomputeNextRun, setSchedulerKickoff } from "./projectScheduler";
 import { describeCron, validateCron, nextRun } from "./cron";
+import { registerInvestmentRoutes } from "./investment/routes";
 
 // ─── WebSocket broadcast ───────────────────────────────────────────────────────
 const wsClients = new Set<WebSocket>();
@@ -1122,4 +1123,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
     if (projectId == null) return res.status(404).json({ error: "template not found or kickoff not ready" });
     res.status(201).json({ projectId });
   });
+
+  // Stage 6: Axl.ai Investment Intelligence routes
+  registerInvestmentRoutes(app);
 }

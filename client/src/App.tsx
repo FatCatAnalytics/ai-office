@@ -12,12 +12,22 @@ import BudgetPage from "./pages/BudgetPage";
 import FilesPage from "./pages/FilesPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import TemplatesPage from "./pages/TemplatesPage";
+import ResearchDashboard from "./pages/ResearchDashboard";
+import CompaniesPage from "./pages/CompaniesPage";
+import DiligenceRunsPage from "./pages/DiligenceRunsPage";
+import DiligenceRunDetail from "./pages/DiligenceRunDetail";
+import EvidenceGraphPage from "./pages/EvidenceGraphPage";
+import InvestmentMemosPage from "./pages/InvestmentMemosPage";
+import WatchlistsPage from "./pages/WatchlistsPage";
+import MarketSignalsPage from "./pages/MarketSignalsPage";
+import DataSourcesPage from "./pages/DataSourcesPage";
 import { useWebSocket } from "./hooks/useWebSocket";
 import {
   LayoutDashboard, Users, LayoutGrid, Settings, Send, DollarSign, FolderOpen,
   Wifi, WifiOff, Crown, Monitor, Server, Bug, Palette, Rocket,
   Database, BarChart3, Shield, Briefcase, Circle, ChevronRight, Folders,
-  LogOut, CalendarClock,
+  LogOut, CalendarClock, TrendingUp, Building2, ClipboardCheck, Network,
+  FileText, Eye, Activity, Plug,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import type { Agent, Project } from "./types";
@@ -42,15 +52,41 @@ function AppShell() {
     refetchInterval: 15000,
   });
 
-  const navItems = [
-    { href: "/", icon: LayoutDashboard, label: "Office Floor" },
-    { href: "/projects", icon: Folders, label: "Projects" },
-    { href: "/templates", icon: CalendarClock, label: "Templates" },
-    { href: "/board", icon: LayoutGrid, label: "Task Board" },
-    { href: "/agents", icon: Users, label: "Agents" },
-    { href: "/files", icon: FolderOpen, label: "Files" },
-    { href: "/budget", icon: DollarSign, label: "Budget" },
-    { href: "/settings", icon: Settings, label: "Settings" },
+  const navSections: Array<{
+    title: string;
+    items: Array<{ href: string; icon: React.ElementType; label: string }>;
+  }> = [
+    {
+      title: "AI Office",
+      items: [
+        { href: "/", icon: LayoutDashboard, label: "Office Dashboard" },
+        { href: "/projects", icon: Folders, label: "Projects" },
+        { href: "/templates", icon: CalendarClock, label: "Templates" },
+        { href: "/board", icon: LayoutGrid, label: "Task Board" },
+        { href: "/agents", icon: Users, label: "Agents" },
+        { href: "/files", icon: FolderOpen, label: "Files" },
+      ],
+    },
+    {
+      title: "Investment Intelligence",
+      items: [
+        { href: "/research", icon: TrendingUp, label: "Research Dashboard" },
+        { href: "/companies", icon: Building2, label: "Companies" },
+        { href: "/diligence", icon: ClipboardCheck, label: "Diligence Runs" },
+        { href: "/evidence", icon: Network, label: "Evidence Graph" },
+        { href: "/memos", icon: FileText, label: "Investment Memos" },
+        { href: "/watchlists", icon: Eye, label: "Watchlists" },
+        { href: "/signals", icon: Activity, label: "Market Signals" },
+        { href: "/sources", icon: Plug, label: "Data Sources" },
+      ],
+    },
+    {
+      title: "Platform",
+      items: [
+        { href: "/budget", icon: DollarSign, label: "Budget" },
+        { href: "/settings", icon: Settings, label: "Settings" },
+      ],
+    },
   ];
 
   const activeCount  = agents.filter(a => a.status !== "idle").length;
@@ -71,8 +107,8 @@ function AppShell() {
             </svg>
           </div>
           <div>
-            <div className="text-sm font-bold text-slate-100">AI Office</div>
-            <div className="text-xs text-slate-500">Virtual Workspace</div>
+            <div className="text-sm font-bold text-slate-100">Axl.ai</div>
+            <div className="text-xs text-slate-500">AI Office + Investment Intel</div>
           </div>
         </div>
 
@@ -95,22 +131,31 @@ function AppShell() {
         )}
 
         {/* Nav */}
-        <nav className="flex-1 px-3 py-3 space-y-1">
-          {navItems.map(item => {
-            const active = location === item.href || (item.href !== "/" && location.startsWith(item.href));
-            return (
-              <Link key={item.href} href={item.href}>
-                <div className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium cursor-pointer transition-colors ${
-                  active
-                    ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20"
-                    : "text-slate-500 hover:text-slate-300 hover:bg-slate-800"
-                }`} data-testid={`nav-${item.href.replace("/","") || "home"}`}>
-                  <item.icon size={14}/>
-                  {item.label}
-                </div>
-              </Link>
-            );
-          })}
+        <nav className="flex-1 px-3 py-3 space-y-3 overflow-y-auto custom-scroll" data-testid="nav-sidebar">
+          {navSections.map(section => (
+            <div key={section.title}>
+              <div className="px-2 mb-1 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
+                {section.title}
+              </div>
+              <div className="space-y-1">
+                {section.items.map(item => {
+                  const active = location === item.href || (item.href !== "/" && location.startsWith(item.href));
+                  return (
+                    <Link key={item.href} href={item.href}>
+                      <div className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium cursor-pointer transition-colors ${
+                        active
+                          ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20"
+                          : "text-slate-500 hover:text-slate-300 hover:bg-slate-800"
+                      }`} data-testid={`nav-${item.href.replace("/","") || "home"}`}>
+                        <item.icon size={14}/>
+                        {item.label}
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         {/* Agent list */}
@@ -180,6 +225,15 @@ function AppShell() {
           <Route path="/files">
             <FilesPage projects={allProjects} />
           </Route>
+          <Route path="/research" component={ResearchDashboard}/>
+          <Route path="/companies" component={CompaniesPage}/>
+          <Route path="/diligence" component={DiligenceRunsPage}/>
+          <Route path="/diligence/:id" component={DiligenceRunDetail}/>
+          <Route path="/evidence" component={EvidenceGraphPage}/>
+          <Route path="/memos" component={InvestmentMemosPage}/>
+          <Route path="/watchlists" component={WatchlistsPage}/>
+          <Route path="/signals" component={MarketSignalsPage}/>
+          <Route path="/sources" component={DataSourcesPage}/>
           <Route path="/budget" component={BudgetPage}/>
           <Route path="/settings" component={SettingsPage}/>
         </Switch>

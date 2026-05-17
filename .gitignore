@@ -4,6 +4,12 @@ data.db
 data.db.bak*
 .env
 .env.*
+!.env.example
 *.log
 .DS_Store
 projects/
+
+# Stage 6: analytics-service Python cache
+__pycache__/
+*.pyc
+.pytest_cache/

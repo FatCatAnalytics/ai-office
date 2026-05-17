@@ -251,3 +251,212 @@ export const insertProjectTemplateSchema = createInsertSchema(projectTemplates).
 });
 export type InsertProjectTemplate = z.infer<typeof insertProjectTemplateSchema>;
 export type ProjectTemplate = typeof projectTemplates.$inferSelect;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Stage 6: Axl.ai — Investment Intelligence
+// ═══════════════════════════════════════════════════════════════════════════
+// Public-data-first, evidence-grounded investment workflows. Companies are
+// the canonical entity. Sources, claims, calculations and contradictions
+// feed the diligence run; the run produces an investment memo.
+
+export const companies = sqliteTable("companies", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  legalName: text("legal_name"),
+  website: text("website"),
+  domain: text("domain"),                                  // example.com (derived)
+  kind: text("kind").notNull().default("startup"),         // startup | public | private | nonprofit
+  ticker: text("ticker"),                                  // e.g. AAPL
+  exchange: text("exchange"),                              // NYSE | NASDAQ | LSE | ...
+  cik: text("cik"),                                        // SEC EDGAR identifier
+  lei: text("lei"),                                        // GLEIF
+  companiesHouseNumber: text("companies_house_number"),    // UK CH number
+  country: text("country"),
+  sector: text("sector"),
+  industry: text("industry"),
+  foundedYear: integer("founded_year"),
+  description: text("description").notNull().default(""),
+  metadata: text("metadata").notNull().default("{}"),      // freeform JSON
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+  updatedAt: integer("updated_at").notNull().$defaultFn(() => Date.now()),
+});
+export const insertCompanySchema = createInsertSchema(companies).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCompany = z.infer<typeof insertCompanySchema>;
+export type Company = typeof companies.$inferSelect;
+
+// Every external piece of evidence we pulled in. URL + retrievedAt is the
+// audit trail; the raw text lets us re-extract without re-fetching.
+export const sources = sqliteTable("sources", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  companyId: integer("company_id"),
+  diligenceRunId: integer("diligence_run_id"),
+  title: text("title").notNull().default(""),
+  url: text("url").notNull(),
+  sourceType: text("source_type").notNull(),               // sec_filing | companies_house | gleif | gdelt | news_rss | openalex | arxiv | website | market_data | deck | other
+  publisher: text("publisher"),
+  domain: text("domain"),
+  publishedDate: integer("published_date"),                // unix ms if known
+  retrievedDate: integer("retrieved_date").notNull().$defaultFn(() => Date.now()),
+  rawText: text("raw_text").notNull().default(""),
+  extractedText: text("extracted_text").notNull().default(""),
+  reliabilityScore: real("reliability_score").notNull().default(0.5), // 0..1
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+});
+export const insertSourceSchema = createInsertSchema(sources).omit({ id: true, createdAt: true });
+export type InsertSource = z.infer<typeof insertSourceSchema>;
+export type Source = typeof sources.$inferSelect;
+
+// Atomic factual claim about a company. Linked to one source (where it was
+// extracted from) and optionally other supporting sources via supportingSourceIds.
+// status must be one of:
+//   verified | company_claimed | third_party_reported | calculated |
+//   inferred | unverified | contradicted | outdated
+export const claims = sqliteTable("claims", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  companyId: integer("company_id").notNull(),
+  diligenceRunId: integer("diligence_run_id"),
+  sourceId: integer("source_id"),                          // primary source
+  supportingSourceIds: text("supporting_source_ids").notNull().default("[]"), // JSON int[]
+  statement: text("statement").notNull(),                  // natural-language claim
+  subject: text("subject").notNull().default(""),          // optional: "revenue", "team-size", etc.
+  numericValue: real("numeric_value"),                     // if claim is numeric
+  unit: text("unit"),                                      // e.g. USD, %, headcount
+  status: text("status").notNull().default("company_claimed"),
+  confidence: real("confidence").notNull().default(0.5),   // 0..1
+  evidenceQuote: text("evidence_quote").notNull().default(""),
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+});
+export const insertClaimSchema = createInsertSchema(claims).omit({ id: true, createdAt: true });
+export type InsertClaim = z.infer<typeof insertClaimSchema>;
+export type Claim = typeof claims.$inferSelect;
+
+// A deterministic calculation performed against one or more claims. Done in
+// code (analytics-service or TS), never by the LLM. Storing inputs + formula
+// lets a reader audit-replay the math.
+export const calculations = sqliteTable("calculations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  companyId: integer("company_id").notNull(),
+  diligenceRunId: integer("diligence_run_id"),
+  name: text("name").notNull(),                            // e.g. "valuation_to_arr"
+  formula: text("formula").notNull().default(""),          // human-readable formula
+  inputs: text("inputs").notNull().default("{}"),          // JSON object of named inputs
+  inputClaimIds: text("input_claim_ids").notNull().default("[]"), // JSON int[]
+  resultValue: real("result_value"),
+  resultText: text("result_text").notNull().default(""),
+  unit: text("unit"),
+  explanation: text("explanation").notNull().default(""),
+  status: text("status").notNull().default("ok"),          // ok | error | warning
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+});
+export const insertCalculationSchema = createInsertSchema(calculations).omit({ id: true, createdAt: true });
+export type InsertCalculation = z.infer<typeof insertCalculationSchema>;
+export type Calculation = typeof calculations.$inferSelect;
+
+// Recorded when two claims (or a claim and a calculation) disagree.
+export const contradictions = sqliteTable("contradictions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  companyId: integer("company_id").notNull(),
+  diligenceRunId: integer("diligence_run_id"),
+  claimAId: integer("claim_a_id").notNull(),
+  claimBId: integer("claim_b_id"),                         // null when contradicted by a calculation
+  calculationId: integer("calculation_id"),
+  severity: text("severity").notNull().default("medium"),  // low | medium | high
+  description: text("description").notNull().default(""),
+  resolved: integer("resolved").notNull().default(0),
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+});
+export const insertContradictionSchema = createInsertSchema(contradictions).omit({ id: true, createdAt: true });
+export type InsertContradiction = z.infer<typeof insertContradictionSchema>;
+export type Contradiction = typeof contradictions.$inferSelect;
+
+// A diligence run ties a company to a workflow execution. Tracks lifecycle
+// for the UI and stores the final salience/confidence scores.
+export const diligenceRuns = sqliteTable("diligence_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  companyId: integer("company_id").notNull(),
+  kind: text("kind").notNull().default("startup"),         // startup | public_equity | thesis_review
+  status: text("status").notNull().default("queued"),      // queued | running | completed | failed | cancelled
+  summary: text("summary").notNull().default(""),
+  inputs: text("inputs").notNull().default("{}"),          // user-supplied: deck text, model link, etc.
+  salienceScore: real("salience_score"),
+  confidenceScore: real("confidence_score"),
+  scoreBreakdown: text("score_breakdown").notNull().default("{}"),
+  redFlags: text("red_flags").notNull().default("[]"),     // JSON string[]
+  openQuestions: text("open_questions").notNull().default("[]"),
+  startedAt: integer("started_at"),
+  completedAt: integer("completed_at"),
+  error: text("error"),
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+});
+export const insertDiligenceRunSchema = createInsertSchema(diligenceRuns).omit({ id: true, createdAt: true });
+export type InsertDiligenceRun = z.infer<typeof insertDiligenceRunSchema>;
+export type DiligenceRun = typeof diligenceRuns.$inferSelect;
+
+export const investmentMemos = sqliteTable("investment_memos", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  diligenceRunId: integer("diligence_run_id").notNull(),
+  companyId: integer("company_id").notNull(),
+  title: text("title").notNull(),
+  body: text("body").notNull().default(""),                 // markdown
+  recommendation: text("recommendation").notNull().default("watch"), // pursue | watch | pass | hold | buy | sell
+  thesisSummary: text("thesis_summary").notNull().default(""),
+  citedSourceIds: text("cited_source_ids").notNull().default("[]"),
+  citedClaimIds: text("cited_claim_ids").notNull().default("[]"),
+  disclaimer: text("disclaimer").notNull().default(""),
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+});
+export const insertInvestmentMemoSchema = createInsertSchema(investmentMemos).omit({ id: true, createdAt: true });
+export type InsertInvestmentMemo = z.infer<typeof insertInvestmentMemoSchema>;
+export type InvestmentMemo = typeof investmentMemos.$inferSelect;
+
+export const watchlists = sqliteTable("watchlists", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  thesis: text("thesis").notNull().default(""),
+  createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
+});
+export const insertWatchlistSchema = createInsertSchema(watchlists).omit({ id: true, createdAt: true });
+export type InsertWatchlist = z.infer<typeof insertWatchlistSchema>;
+export type Watchlist = typeof watchlists.$inferSelect;
+
+export const watchlistItems = sqliteTable("watchlist_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  watchlistId: integer("watchlist_id").notNull(),
+  companyId: integer("company_id").notNull(),
+  note: text("note").notNull().default(""),
+  addedAt: integer("added_at").notNull().$defaultFn(() => Date.now()),
+});
+export const insertWatchlistItemSchema = createInsertSchema(watchlistItems).omit({ id: true, addedAt: true });
+export type InsertWatchlistItem = z.infer<typeof insertWatchlistItemSchema>;
+export type WatchlistItem = typeof watchlistItems.$inferSelect;
+
+export const marketSignals = sqliteTable("market_signals", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  companyId: integer("company_id"),                        // optional — signal can be sector-wide
+  kind: text("kind").notNull(),                            // news | filing | price_move | volume_spike | sentiment | anomaly
+  title: text("title").notNull(),
+  detail: text("detail").notNull().default(""),
+  url: text("url"),
+  severity: text("severity").notNull().default("info"),    // info | low | medium | high
+  publishedAt: integer("published_at"),
+  capturedAt: integer("captured_at").notNull().$defaultFn(() => Date.now()),
+  metadata: text("metadata").notNull().default("{}"),
+});
+export const insertMarketSignalSchema = createInsertSchema(marketSignals).omit({ id: true, capturedAt: true });
+export type InsertMarketSignal = z.infer<typeof insertMarketSignalSchema>;
+export type MarketSignal = typeof marketSignals.$inferSelect;
+
+export const CLAIM_STATUSES = [
+  "verified",
+  "company_claimed",
+  "third_party_reported",
+  "calculated",
+  "inferred",
+  "unverified",
+  "contradicted",
+  "outdated",
+] as const;
+export type ClaimStatus = (typeof CLAIM_STATUSES)[number];
