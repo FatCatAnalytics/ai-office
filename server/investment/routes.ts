@@ -87,10 +87,19 @@ export function registerInvestmentRoutes(app: Express): void {
   // get their own run row, and the response never returns someone else's
   // newest row by accident.
   app.post("/api/investment/diligence/startup", async (req, res) => {
-    const { companyName, website, ticker, deckText, modelLink } = req.body ?? {};
+    const { companyName, website, ticker, deckText, modelLink, objective, workflowType } = req.body ?? {};
     if (!companyName || typeof companyName !== "string") {
       return res.status(400).json({ error: "companyName is required" });
     }
+
+    // Stage 6.4: only Startup Due Diligence is implemented; the form may
+    // submit a workflowType but anything other than startup_due_diligence
+    // is silently coerced (the UI marks them as "planned"). Persisting the
+    // requested value keeps the audit trail honest.
+    const requestedWorkflow = typeof workflowType === "string" ? workflowType : "startup_due_diligence";
+    const effectiveWorkflow = "startup_due_diligence";
+    const objectiveText =
+      typeof objective === "string" ? objective.trim().slice(0, 4_000) : "";
 
     if (website && typeof website === "string") {
       const verdict = await previewWebsiteUrl(website);
@@ -122,6 +131,9 @@ export function registerInvestmentRoutes(app: Express): void {
       website,
       ticker,
       modelLink,
+      objective: objectiveText,
+      workflowType: effectiveWorkflow,
+      requestedWorkflowType: requestedWorkflow,
       deckTextLength: typeof deckText === "string" ? deckText.length : 0,
       deckTextExcerpt: truncatedDeck ? truncatedDeck.slice(0, 4_000) : undefined,
       deckTextTruncated:
@@ -144,6 +156,7 @@ export function registerInvestmentRoutes(app: Express): void {
       ticker,
       deckText: truncatedDeck,
       modelLink,
+      objective: objectiveText || undefined,
       existingRunId: run.id,
       existingCompanyId: company.id,
     })

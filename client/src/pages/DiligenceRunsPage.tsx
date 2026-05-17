@@ -1,4 +1,6 @@
 // Stage 6: Diligence Runs — start a Startup Due Diligence MVP run + list runs.
+// Stage 6.4: surfaces research objective + workflow type as first-class form
+// fields so the user can see what shape of run they're starting.
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -7,6 +9,38 @@ import { ClipboardCheck, Play } from "lucide-react";
 import { getJson, postJson, fmtDate, fmtScore } from "@/lib/investment";
 import type { DiligenceRun, Company } from "@/lib/investment";
 import { StatusPill } from "./ResearchDashboard";
+
+const OBJECTIVE_PLACEHOLDER =
+  "Example: Assess Stripe as a late-stage fintech diligence candidate, focusing on " +
+  "valuation risk, growth, competition, regulation, and evidence gaps.";
+
+type WorkflowOption = {
+  value: "startup_due_diligence" | "public_equity" | "thesis_review";
+  label: string;
+  available: boolean;
+  note: string;
+};
+
+const WORKFLOW_OPTIONS: WorkflowOption[] = [
+  {
+    value: "startup_due_diligence",
+    label: "Startup Due Diligence",
+    available: true,
+    note: "MVP — gathers public evidence, extracts claims, runs deterministic calculators, drafts a memo.",
+  },
+  {
+    value: "public_equity",
+    label: "Public Equity Review (planned)",
+    available: false,
+    note: "Planned — SEC filings + price action + analyst signal. Not in this MVP.",
+  },
+  {
+    value: "thesis_review",
+    label: "Thesis Review (planned)",
+    available: false,
+    note: "Planned — score an existing investment thesis against current public evidence. Not in this MVP.",
+  },
+];
 
 export default function DiligenceRunsPage() {
   const qc = useQueryClient();
@@ -21,14 +55,18 @@ export default function DiligenceRunsPage() {
     refetchInterval: 30_000,
   });
 
+  const [workflowType, setWorkflowType] = useState<WorkflowOption["value"]>("startup_due_diligence");
   const [companyName, setCompanyName] = useState("");
   const [website, setWebsite] = useState("");
   const [ticker, setTicker] = useState("");
+  const [objective, setObjective] = useState("");
   const [deckText, setDeckText] = useState("");
   const [modelLink, setModelLink] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const selectedWorkflow = WORKFLOW_OPTIONS.find((w) => w.value === workflowType) ?? WORKFLOW_OPTIONS[0];
 
   const startRun = async () => {
     if (!companyName.trim()) return;
@@ -40,6 +78,8 @@ export default function DiligenceRunsPage() {
           companyName: companyName.trim(),
           website: website.trim() || undefined,
           ticker: ticker.trim() || undefined,
+          objective: objective.trim() || undefined,
+          workflowType,
           deckText: deckText.trim() || undefined,
           modelLink: modelLink.trim() || undefined,
         },
@@ -47,7 +87,7 @@ export default function DiligenceRunsPage() {
       setMessage(`Run queued for ${r.company?.name ?? companyName}. Refreshing list…`);
       qc.invalidateQueries({ queryKey: ["/api/investment/diligence"] });
       qc.invalidateQueries({ queryKey: ["/api/investment/companies"] });
-      setCompanyName(""); setWebsite(""); setTicker(""); setDeckText(""); setModelLink("");
+      setCompanyName(""); setWebsite(""); setTicker(""); setObjective(""); setDeckText(""); setModelLink("");
     } catch (e) {
       setError(String((e as Error).message));
     } finally {
@@ -62,20 +102,93 @@ export default function DiligenceRunsPage() {
       </h1>
 
       <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/50" data-testid="panel-new-run">
-        <div className="text-sm font-semibold text-slate-200 mb-3">Start a Startup Due Diligence run</div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-2">
-          <input className="px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200" placeholder="Company name *" value={companyName} onChange={(e) => setCompanyName(e.target.value)} data-testid="input-company-name"/>
-          <input className="px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200" placeholder="Website" value={website} onChange={(e) => setWebsite(e.target.value)} data-testid="input-website"/>
-          <input className="px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200" placeholder="Ticker (if public)" value={ticker} onChange={(e) => setTicker(e.target.value)} data-testid="input-ticker"/>
+        <div className="text-sm font-semibold text-slate-200 mb-3">Start a diligence run</div>
+
+        {/* Workflow type — first decision the user makes. Only Startup DD ships in the MVP. */}
+        <div className="mb-3" data-testid="field-workflow-type">
+          <label className="block text-xs font-semibold text-slate-300 mb-1">
+            Workflow type
+          </label>
+          <select
+            className="w-full px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200"
+            value={workflowType}
+            onChange={(e) => setWorkflowType(e.target.value as WorkflowOption["value"])}
+            data-testid="select-workflow-type">
+            {WORKFLOW_OPTIONS.map((w) => (
+              <option key={w.value} value={w.value} disabled={!w.available}>
+                {w.label}{!w.available ? " — planned" : ""}
+              </option>
+            ))}
+          </select>
+          <p className="text-[11px] text-slate-500 mt-1" data-testid="help-workflow-type">
+            {selectedWorkflow.note}
+            {selectedWorkflow.value !== "startup_due_diligence" && " This MVP currently runs Startup Due Diligence only."}
+          </p>
         </div>
-        <textarea
-          className="w-full px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200 mb-2"
-          placeholder="Paste deck text or summary (optional)"
-          rows={3}
-          value={deckText}
-          onChange={(e) => setDeckText(e.target.value)}
-          data-testid="input-deck-text"/>
-        <input className="w-full px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200 mb-2" placeholder="Model link (optional)" value={modelLink} onChange={(e) => setModelLink(e.target.value)} data-testid="input-model-link"/>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Company name *</label>
+            <input className="w-full px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200" placeholder="e.g. Stripe" value={companyName} onChange={(e) => setCompanyName(e.target.value)} data-testid="input-company-name"/>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Website</label>
+            <input className="w-full px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200" placeholder="https://example.com" value={website} onChange={(e) => setWebsite(e.target.value)} data-testid="input-website"/>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Ticker (if public)</label>
+            <input className="w-full px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200" placeholder="e.g. AAPL" value={ticker} onChange={(e) => setTicker(e.target.value)} data-testid="input-ticker"/>
+          </div>
+        </div>
+
+        {/* Research objective — required for grounded ranking; rendered as its own labelled block. */}
+        <div className="mb-3" data-testid="field-objective">
+          <label className="block text-xs font-semibold text-slate-300 mb-1">
+            Research objective / investment question
+          </label>
+          <textarea
+            className="w-full px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200"
+            placeholder={OBJECTIVE_PLACEHOLDER}
+            rows={3}
+            value={objective}
+            onChange={(e) => setObjective(e.target.value)}
+            data-testid="input-objective"/>
+          <p className="text-[11px] text-slate-500 mt-1" data-testid="help-objective">
+            Used to rank source relevance, red flags, questions, and memo focus. Leave blank for a general public-data diligence.
+          </p>
+        </div>
+
+        <div className="mb-3" data-testid="field-deck-text">
+          <label className="block text-xs font-semibold text-slate-300 mb-1">
+            Paste deck text or summary (optional)
+          </label>
+          <textarea
+            className="w-full px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200"
+            placeholder="Paste deck text or an executive summary the company has shared with you."
+            rows={3}
+            value={deckText}
+            onChange={(e) => setDeckText(e.target.value)}
+            data-testid="input-deck-text"/>
+          <p className="text-[11px] text-slate-500 mt-1" data-testid="help-deck-text">
+            Treated as <strong>company-supplied claims</strong>, not verified facts — every claim extracted from this text is tagged <code>company_claimed</code> until corroborated by an independent source.
+          </p>
+        </div>
+
+        <div className="mb-3" data-testid="field-model-link">
+          <label className="block text-xs font-semibold text-slate-300 mb-1">
+            Financial model link or assumptions (optional)
+          </label>
+          <input
+            className="w-full px-3 py-2 rounded-lg bg-slate-800 text-sm text-slate-200"
+            placeholder="https://… or paste key assumptions (ARR, burn, runway, valuation)"
+            value={modelLink}
+            onChange={(e) => setModelLink(e.target.value)}
+            data-testid="input-model-link"/>
+          <p className="text-[11px] text-slate-500 mt-1" data-testid="help-model-link">
+            Deterministic calculations (runway, growth, valuation multiples) only run when enough numeric inputs (ARR / burn / valuation / headcount) are present in the deck text, the model link, or the gathered public sources.
+          </p>
+        </div>
+
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-500">
             Public data only: SEC EDGAR, Companies House, GLEIF, news (RSS/GDELT), OpenAlex, website. No paid feeds.
