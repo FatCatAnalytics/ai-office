@@ -28,6 +28,7 @@ import {
   scoreSourceRelevance,
   shouldKeepSource,
   isScientificContext,
+  isAmbiguousRegistryCandidate,
   type RelevanceContext,
   type RelevanceVerdict,
 } from "../evidence/relevance";
@@ -153,18 +154,29 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
     const persistedSources: Source[] = [];
     const filteredSources: Array<{
       title: string; url: string; sourceType: string; connector: string;
-      score: number; reasons: string[];
+      score: number; reasons: string[]; ambiguousRegistry?: boolean;
     }> = [];
     let filteredByType: Record<string, number> = {};
+    const ambiguousRegistryCandidates: Array<{
+      title: string; url: string; sourceType: string; score: number; reasons: string[];
+    }> = [];
 
     for (const r of gathered.results) {
       const verdict: RelevanceVerdict = scoreSourceRelevance(r, relevanceCtx);
       if (!shouldKeepSource(verdict, r.sourceType)) {
+        const ambiguousRegistry = isAmbiguousRegistryCandidate(verdict, r.sourceType);
         filteredSources.push({
           title: r.title, url: r.url, sourceType: r.sourceType,
           connector: r.connector, score: verdict.score, reasons: verdict.reasons,
+          ambiguousRegistry,
         });
         filteredByType[r.sourceType] = (filteredByType[r.sourceType] ?? 0) + 1;
+        if (ambiguousRegistry) {
+          ambiguousRegistryCandidates.push({
+            title: r.title, url: r.url, sourceType: r.sourceType,
+            score: verdict.score, reasons: verdict.reasons,
+          });
+        }
         continue;
       }
       // Adjust reliability by relevance — high-reliability publishers that
@@ -330,6 +342,7 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
       openQuestions,
       filteredCount: filteredSources.length,
       filteredByType,
+      ambiguousRegistryCount: ambiguousRegistryCandidates.length,
     });
 
     investmentStorage.createMemo({
@@ -372,6 +385,10 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
           filteredByType,
           isScientific,
           examples: filteredSources.slice(0, 10),
+          ambiguousRegistry: {
+            count: ambiguousRegistryCandidates.length,
+            examples: ambiguousRegistryCandidates.slice(0, 10),
+          },
         },
       }),
       redFlags: JSON.stringify(redFlags),
@@ -517,6 +534,7 @@ function renderMemoBody(args: {
   openQuestions: string[];
   filteredCount?: number;
   filteredByType?: Record<string, number>;
+  ambiguousRegistryCount?: number;
 }): string {
   const { company } = args;
   const lines: string[] = [];
@@ -576,6 +594,9 @@ function renderMemoBody(args: {
     const parts = Object.entries(byType).map(([t, n]) => `${t}=${n}`).join(", ");
     lines.push("");
     lines.push(`_${args.filteredCount} low-relevance source candidates were filtered out before claim extraction${parts ? ` (${parts})` : ""}._`);
+  }
+  if ((args.ambiguousRegistryCount ?? 0) > 0) {
+    lines.push(`_${args.ambiguousRegistryCount} registry candidates (Companies House / GLEIF) were excluded as ambiguous or unconfirmed — they matched the company name as a substring but lacked an identifier (LEI / CH number), exact legal-name, or domain relationship to disambiguate._`);
   }
   lines.push("");
   lines.push("## Scoring breakdown");

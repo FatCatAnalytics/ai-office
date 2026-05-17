@@ -11,6 +11,7 @@ import {
   scoreSourceRelevance,
   shouldKeepSource,
   isScientificContext,
+  isAmbiguousRegistryCandidate,
 } from "../server/evidence/relevance";
 import { sanitizeForClaims, looksLikeJunk, cleanEvidenceQuote } from "../server/evidence/sanitize";
 import { extractClaims } from "../server/evidence/extractClaims";
@@ -126,6 +127,147 @@ truthy("multi-word company name news kept", shouldKeepSource(acmeVerdict, "news_
 // company it should be true.
 falsy("isScientific Stripe false", isScientificContext({ companyName: "Stripe", description: "Online payments for the internet" }));
 truthy("isScientific biotech true", isScientificContext({ companyName: "Foo Bio", description: "We develop oncology drugs and run clinical trials." }));
+
+// ── Stage 6.2: Registry entity resolution (Companies House / GLEIF) ────────
+
+// 1) Unrelated UK company that happens to contain "stripe" as a substring —
+//    "SBH TAMWORTH LIMITED" with no jurisdiction/identifier signals other
+//    than appearing in a substring search. Must NOT be kept.
+const chTamworth: ConnectorResult & { connector: string } = {
+  title: "Companies House — SBH TAMWORTH LIMITED (08123456)",
+  url: "https://find-and-update.company-information.service.gov.uk/company/08123456",
+  sourceType: "companies_house",
+  publisher: "Companies House",
+  domain: "find-and-update.company-information.service.gov.uk",
+  reliabilityScore: 0.82,
+  metadata: { legalName: "SBH TAMWORTH LIMITED", companyNumber: "08123456", jurisdiction: "gb" },
+  connector: "companies_house",
+};
+const chTamworthVerdict = scoreSourceRelevance(chTamworth, stripeCtx);
+falsy("CH SBH TAMWORTH not kept for Stripe", shouldKeepSource(chTamworthVerdict, "companies_house"));
+
+// 2) Generic "STRIPE LTD" — substring match on a common single-token name
+//    with no LEI / CH number / domain link. Should be filtered as ambiguous.
+const chStripeLtd: ConnectorResult & { connector: string } = {
+  title: "Companies House — STRIPE LTD (12345678)",
+  url: "https://find-and-update.company-information.service.gov.uk/company/12345678",
+  sourceType: "companies_house",
+  publisher: "Companies House",
+  domain: "find-and-update.company-information.service.gov.uk",
+  reliabilityScore: 0.82,
+  metadata: { legalName: "STRIPE LTD", companyNumber: "12345678", jurisdiction: "gb" },
+  connector: "companies_house",
+};
+const chStripeLtdVerdict = scoreSourceRelevance(chStripeLtd, stripeCtx);
+falsy("CH STRIPE LTD ambiguous → not kept for Stripe (no identifier)", shouldKeepSource(chStripeLtdVerdict, "companies_house"));
+truthy("CH STRIPE LTD flagged as ambiguous registry candidate", isAmbiguousRegistryCandidate(chStripeLtdVerdict, "companies_house"));
+
+// 3) Wholly-unrelated company on a substring match — "BEYOND AMAZING LIMITED"
+//    shouldn't even be in the result set, but if it appears it must drop.
+const chBeyond: ConnectorResult & { connector: string } = {
+  title: "Companies House — BEYOND AMAZING LIMITED (99887766)",
+  url: "https://find-and-update.company-information.service.gov.uk/company/99887766",
+  sourceType: "companies_house",
+  publisher: "Companies House",
+  domain: "find-and-update.company-information.service.gov.uk",
+  reliabilityScore: 0.82,
+  metadata: { legalName: "BEYOND AMAZING LIMITED", companyNumber: "99887766", jurisdiction: "gb" },
+  connector: "companies_house",
+};
+const chBeyondVerdict = scoreSourceRelevance(chBeyond, stripeCtx);
+falsy("CH BEYOND AMAZING LIMITED not kept for Stripe", shouldKeepSource(chBeyondVerdict, "companies_house"));
+
+// 4) GLEIF "Stripe 157" / "Stripe 158" — numbered entities with no
+//    identifier match must be rejected.
+const gleifNumbered: ConnectorResult & { connector: string } = {
+  title: "GLEIF — Stripe 157 (LEI 549300XXXXXXXXXXXXX1)",
+  url: "https://search.gleif.org/#/record/549300XXXXXXXXXXXXX1",
+  sourceType: "gleif",
+  publisher: "GLEIF",
+  domain: "gleif.org",
+  reliabilityScore: 0.88,
+  metadata: { lei: "549300XXXXXXXXXXXXX1", legalName: "Stripe 157", country: "KY", status: "ACTIVE" },
+  connector: "gleif",
+};
+const gleifNumberedVerdict = scoreSourceRelevance(gleifNumbered, stripeCtx);
+falsy("GLEIF 'Stripe 157' not kept for Stripe", shouldKeepSource(gleifNumberedVerdict, "gleif"));
+const gleifNumbered158: ConnectorResult & { connector: string } = {
+  ...gleifNumbered,
+  title: "GLEIF — Stripe 158 (LEI 549300XXXXXXXXXXXXX2)",
+  url: "https://search.gleif.org/#/record/549300XXXXXXXXXXXXX2",
+  metadata: { lei: "549300XXXXXXXXXXXXX2", legalName: "Stripe 158", country: "KY", status: "ACTIVE" },
+};
+const gleifNumbered158Verdict = scoreSourceRelevance(gleifNumbered158, stripeCtx);
+falsy("GLEIF 'Stripe 158' not kept for Stripe", shouldKeepSource(gleifNumbered158Verdict, "gleif"));
+
+// 5) GLEIF — legitimate "Stripe, Inc." record. Exact normalized legal-name
+//    match. Should be kept as primary/secondary.
+const gleifStripeInc: ConnectorResult & { connector: string } = {
+  title: "GLEIF — Stripe, Inc. (LEI 549300ABCDEFGHIJKL01)",
+  url: "https://search.gleif.org/#/record/549300ABCDEFGHIJKL01",
+  sourceType: "gleif",
+  publisher: "GLEIF",
+  domain: "gleif.org",
+  reliabilityScore: 0.88,
+  metadata: { lei: "549300ABCDEFGHIJKL01", legalName: "Stripe, Inc.", country: "US", status: "ACTIVE", jurisdiction: "US-DE" },
+  connector: "gleif",
+};
+const gleifStripeIncVerdict = scoreSourceRelevance(gleifStripeInc, stripeCtx);
+truthy("GLEIF 'Stripe, Inc.' kept for Stripe (exact legal-name)", shouldKeepSource(gleifStripeIncVerdict, "gleif"));
+
+// 6) Companies House with caller-provided CH number that exactly matches
+//    → always kept (identifier match).
+const ctxWithCh = { ...stripeCtx, companiesHouseNumber: "08400096" };
+const chWithIdentifier: ConnectorResult & { connector: string } = {
+  title: "Companies House — STRIPE PAYMENTS UK LTD (08400096)",
+  url: "https://find-and-update.company-information.service.gov.uk/company/08400096",
+  sourceType: "companies_house",
+  publisher: "Companies House",
+  domain: "find-and-update.company-information.service.gov.uk",
+  reliabilityScore: 0.85,
+  metadata: { legalName: "STRIPE PAYMENTS UK LTD", companyNumber: "08400096", jurisdiction: "gb", status: "active" },
+  connector: "companies_house",
+};
+const chWithIdentifierVerdict = scoreSourceRelevance(chWithIdentifier, ctxWithCh);
+eq("CH identifier-match → primary", chWithIdentifierVerdict.category, "primary");
+truthy("CH identifier-match kept", shouldKeepSource(chWithIdentifierVerdict, "companies_house"));
+
+// 7) stripe.com website always kept (domain-match secondary route).
+const websiteVerdict2 = scoreSourceRelevance(website, stripeCtx);
+truthy("stripe.com website still kept (Stage 6.2 didn't regress website path)",
+  shouldKeepSource(websiteVerdict2, "website"));
+
+// 8) Ambiguous single-token "Block" → unrelated CH entries must drop.
+const blockCtx = { companyName: "Block", website: "https://block.xyz", domain: "block.xyz" };
+const chBlockNoise: ConnectorResult & { connector: string } = {
+  title: "Companies House — BLOCK BUILDERS LTD (10000001)",
+  url: "https://find-and-update.company-information.service.gov.uk/company/10000001",
+  sourceType: "companies_house",
+  publisher: "Companies House",
+  domain: "find-and-update.company-information.service.gov.uk",
+  reliabilityScore: 0.82,
+  metadata: { legalName: "BLOCK BUILDERS LTD", companyNumber: "10000001", jurisdiction: "gb" },
+  connector: "companies_house",
+};
+const chBlockNoiseVerdict = scoreSourceRelevance(chBlockNoise, blockCtx);
+falsy("CH 'BLOCK BUILDERS LTD' not kept for Block (substring noise)",
+  shouldKeepSource(chBlockNoiseVerdict, "companies_house"));
+
+// 9) Multi-word company name — exact registry match still works.
+const acmeRegCtx = { companyName: "Acme Robotics", website: "https://acme.example", domain: "acme.example" };
+const acmeRegistry: ConnectorResult & { connector: string } = {
+  title: "Companies House — ACME ROBOTICS LTD (11111111)",
+  url: "https://find-and-update.company-information.service.gov.uk/company/11111111",
+  sourceType: "companies_house",
+  publisher: "Companies House",
+  domain: "find-and-update.company-information.service.gov.uk",
+  reliabilityScore: 0.85,
+  metadata: { legalName: "ACME ROBOTICS LTD", companyNumber: "11111111", jurisdiction: "gb", status: "active" },
+  connector: "companies_house",
+};
+const acmeRegistryVerdict = scoreSourceRelevance(acmeRegistry, acmeRegCtx);
+truthy("CH 'ACME ROBOTICS LTD' kept for Acme Robotics (brand+suffix)",
+  shouldKeepSource(acmeRegistryVerdict, "companies_house"));
 
 // ── Sanitization: HTML/CSS/redirect blobs ──────────────────────────────────
 
