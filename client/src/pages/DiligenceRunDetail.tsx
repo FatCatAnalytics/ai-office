@@ -47,6 +47,8 @@ export default function DiligenceRunDetail() {
   const redFlags = safeParse<string[]>(run.redFlags, []);
   const openQuestions = safeParse<string[]>(run.openQuestions, []);
   const breakdown = safeParse<Record<string, unknown>>(run.scoreBreakdown, {});
+  const inputs = safeParse<{ objective?: string; workflowType?: string; requestedWorkflowType?: string }>(run.inputs, {});
+  const objective = (inputs.objective ?? "").trim();
 
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-6" data-testid="page-diligence-detail">
@@ -71,6 +73,18 @@ export default function DiligenceRunDetail() {
           Error: {run.error}
         </div>
       )}
+
+      <Panel title="Research objective" testid="panel-objective">
+        <div className="text-sm text-slate-200" data-testid="run-objective">
+          {objective || <span className="text-slate-500 italic">General public-data diligence.</span>}
+        </div>
+        <div className="text-[11px] text-slate-500 mt-2" data-testid="run-workflow-type">
+          Workflow: <span className="font-mono">{inputs.workflowType ?? "startup_due_diligence"}</span>
+          {inputs.requestedWorkflowType && inputs.requestedWorkflowType !== inputs.workflowType && (
+            <> · requested <span className="font-mono">{inputs.requestedWorkflowType}</span> (coerced to startup_due_diligence — only workflow available in this MVP)</>
+          )}
+        </div>
+      </Panel>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Panel title="Claims" testid="panel-claims">

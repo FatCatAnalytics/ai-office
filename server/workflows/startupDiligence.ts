@@ -51,6 +51,8 @@ export interface StartStartupDiligenceInput {
   ticker?: string;
   deckText?: string;
   modelLink?: string;
+  /** Stage 6.4: user-supplied research objective / investment question. */
+  objective?: string;
   /** When the caller has already created the run row (recommended). */
   existingRunId?: number;
   /** When the caller has already resolved the company row. */
@@ -68,11 +70,14 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
     input.deckText && input.deckText.length > MAX_INLINE_DECK_BYTES
       ? input.deckText.slice(0, MAX_INLINE_DECK_BYTES)
       : input.deckText;
+  const objectiveText = (input.objective ?? "").trim().slice(0, 4_000);
   const inputsForStorage = {
     companyName: input.companyName,
     website: input.website,
     ticker: input.ticker,
     modelLink: input.modelLink,
+    objective: objectiveText,
+    workflowType: "startup_due_diligence" as const,
     deckTextLength: input.deckText?.length ?? 0,
     deckTextExcerpt: truncatedDeck ? truncatedDeck.slice(0, 4_000) : undefined,
     deckTextTruncated:
@@ -126,7 +131,11 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
     // return papers/articles that only contain the company name in a
     // generic context — the gate keeps the source set explainable and
     // prevents irrelevant claims from leaking downstream.
+    // Stage 6.4: prefer the user-supplied objective when present; fall back to
+    // company description + deck excerpt so older runs (no objective) keep
+    // their current relevance signal.
     const objectiveText = [
+      inputsForStorage.objective,
       company.description,
       company.sector,
       company.industry,
@@ -334,6 +343,7 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
     // ── Phase 7: memo body (deterministic, evidence-quoted) ────────────────
     const memoBody = renderMemoBody({
       company,
+      objective: inputsForStorage.objective,
       sources: persistedSources,
       claims: allClaims,
       calcs: finalCalcs,
@@ -524,8 +534,11 @@ function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
 
-function renderMemoBody(args: {
+// Exported for the Stage 6.4 smoke test (`script/test-diligence-form.ts`).
+// Pure function, no I/O — safe to call from tests.
+export function renderMemoBody(args: {
   company: Company;
+  objective?: string;
   sources: Source[];
   claims: Claim[];
   calcs: Array<{ name: string; formula: string; resultValue?: number | null; resultText?: string; unit?: string | null; explanation: string; status: string }>;
@@ -548,6 +561,10 @@ function renderMemoBody(args: {
   lines.push(`- **Company:** ${company.name}`);
   if (company.website) lines.push(`- **Website:** ${company.website}`);
   if (company.ticker) lines.push(`- **Ticker:** ${company.ticker}`);
+  // Stage 6.4: surface the user-supplied research objective in Snapshot so
+  // readers can judge whether the memo answered the actual question.
+  lines.push(`- **Research objective:** ${args.objective?.trim() ? args.objective.trim() : "General public-data diligence."}`);
+  lines.push(`- **Workflow:** Startup Due Diligence`);
   lines.push(`- **Confidence score:** ${(args.confidence.score * 100).toFixed(0)}%`);
   lines.push(`- **Salience score:** ${(args.salience.score * 100).toFixed(0)}%`);
   lines.push("");
