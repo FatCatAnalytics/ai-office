@@ -248,8 +248,16 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
       const status = statusForSource(src.sourceType);
       const claims = extractClaims(text, {
         officialSite: src.sourceType === "website",
+        subjectCompany: company.name,
       });
       for (const c of claims) {
+        const claimMeta: Record<string, unknown> = {};
+        if (c.contextNote) claimMeta.contextNote = c.contextNote;
+        if (c.customerContext) claimMeta.customerContext = c.customerContext;
+        // Stage 6.5: lower confidence for unclassified monetary mentions
+        // and customer-story figures so they don't drive subject-company
+        // calculations / scoring.
+        const mult = c.confidenceMultiplier ?? 1;
         const claim = investmentStorage.createClaim({
           companyId: company.id,
           diligenceRunId: run.id,
@@ -260,9 +268,9 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
           numericValue: c.numericValue,
           unit: c.unit,
           status,
-          confidence: src.reliabilityScore,
+          confidence: clamp01(src.reliabilityScore * mult),
           evidenceQuote: c.evidenceQuote.slice(0, 600),
-          metadata: "{}",
+          metadata: JSON.stringify(claimMeta),
         });
         persistedClaims.push(claim);
       }
@@ -282,7 +290,8 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
       valuation: numericByKey.valuation,
       headcount: numericByKey.headcount,
       customers: numericByKey.customers,
-      tam: numericByKey.tam,
+      // Stage 6.5: TAM/market_size renamed; keep `tam` for back-compat.
+      tam: numericByKey.market_size ?? numericByKey.tam,
       cac: undefined,
       ltv: undefined,
       paybackMonths: undefined,
@@ -454,6 +463,15 @@ function pickLatestNumeric(claims: Claim[]): Record<string, number | undefined> 
   const out: Record<string, number | undefined> = {};
   for (const c of claims) {
     if (c.numericValue == null) continue;
+    // Stage 6.5: skip claims tagged as customer case-study figures or as
+    // unclassified monetary mentions — they shouldn't drive deterministic
+    // subject-company calculators (valuation/ARR/etc.). The metadata is a
+    // JSON string on Claim; we parse defensively.
+    try {
+      const m = JSON.parse(c.metadata ?? "{}");
+      if (m && typeof m === "object" && (m as Record<string, unknown>).customerContext) continue;
+    } catch { /* ignore — old rows have no metadata */ }
+    if (c.subject === "monetary_claim" || c.subject === "customer_metric") continue;
     if (!(c.subject in out)) out[c.subject] = c.numericValue;
   }
   return out;
@@ -524,8 +542,9 @@ function summariseThesis(company: Company, claims: Claim[]): string {
   const drivers: string[] = [];
   if (subs.has("arr") || subs.has("revenue") || subs.has("mrr")) drivers.push("revenue traction");
   if (subs.has("growth_yoy")) drivers.push("growth claims");
-  if (subs.has("tam")) drivers.push("stated TAM");
+  if (subs.has("tam") || subs.has("market_size")) drivers.push("stated TAM");
   if (subs.has("valuation")) drivers.push("valuation context");
+  if (subs.has("payment_volume")) drivers.push("payment/processing volume");
   return `Initial diligence on ${company.name} grounded in public evidence — drivers reviewed: ${drivers.join(", ") || "qualitative public data only"}.`;
 }
 
@@ -574,7 +593,8 @@ export function renderMemoBody(args: {
   } else {
     for (const c of args.claims.slice(0, 15)) {
       const val = c.numericValue != null ? ` — ${c.numericValue} ${c.unit ?? ""}` : "";
-      lines.push(`- **[${c.status}]** ${c.subject}${val}: ${c.statement}`);
+      const label = stageSixFiveClaimLabel(c);
+      lines.push(`- **[${c.status}]** ${label}${val}: ${c.statement}`);
       if (c.evidenceQuote) lines.push(`  > ${c.evidenceQuote.slice(0, 280)}`);
     }
   }
@@ -629,4 +649,37 @@ function extractRelevance(metadataJson: string): number | null {
     const m = JSON.parse(metadataJson ?? "{}");
     return typeof m?.relevanceScore === "number" ? m.relevanceScore : null;
   } catch { return null; }
+}
+
+// Stage 6.5: render a clearer memo label for monetary claims. Payment
+// volume is no longer surfaced as a generic "monetary_claim", valuation
+// is distinguishable from revenue, and customer-story figures clearly
+// say so. Falls back to the bare subject for non-monetary claims.
+function stageSixFiveClaimLabel(c: { subject: string; metadata?: string | null }): string {
+  let customer = "";
+  let note = "";
+  try {
+    const m = JSON.parse(c.metadata ?? "{}");
+    if (typeof m?.customerContext === "string") customer = m.customerContext;
+    if (typeof m?.contextNote === "string") note = m.contextNote;
+  } catch { /* old rows had {} */ }
+  switch (c.subject) {
+    case "payment_volume": return "payment / processing volume";
+    case "valuation": return "valuation";
+    case "funding_amount": return "funding raised";
+    case "revenue": return "revenue";
+    case "arr": return "ARR";
+    case "mrr": return "MRR";
+    case "market_size": return "market size / TAM";
+    case "burn": return "cash burn";
+    case "cash": return "cash position";
+    case "runway": return "runway";
+    case "pricing_flat": return "pricing (flat)";
+    case "pricing_pct": return "pricing (%)";
+    case "customer_metric":
+      return customer ? `customer context — ${customer}` : "customer context";
+    case "monetary_claim":
+      return note ? `monetary claim (${note})` : "monetary claim (unclassified)";
+    default: return c.subject;
+  }
 }
