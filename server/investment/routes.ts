@@ -12,6 +12,9 @@ import type { Express } from "express";
 import { investmentStorage } from "./storage";
 import { runStartupDiligence } from "../workflows/startupDiligence";
 import { gatherPublicEvidence, CONNECTORS } from "../connectors";
+import { previewWebsiteUrl } from "../connectors/website";
+
+const MAX_INLINE_DECK_BYTES = 32_768;
 
 export function registerInvestmentRoutes(app: Express): void {
   // ── Companies ────────────────────────────────────────────────────────────
@@ -76,29 +79,89 @@ export function registerInvestmentRoutes(app: Express): void {
     res.json({ run, company, sources, claims, calculations, contradictions, memos });
   });
 
-  // Kick off a startup diligence run. Returns the queued run immediately and
-  // does the work in the background.
-  app.post("/api/investment/diligence/startup", (req, res) => {
+  // Kick off a startup diligence run.
+  //
+  // Stage 6.x.1: create company + run row synchronously, return the run id
+  // deterministically, then run heavy work in the background using that
+  // existing run id. Concurrent submissions for the same company now each
+  // get their own run row, and the response never returns someone else's
+  // newest row by accident.
+  app.post("/api/investment/diligence/startup", async (req, res) => {
     const { companyName, website, ticker, deckText, modelLink } = req.body ?? {};
-    if (!companyName) return res.status(400).json({ error: "companyName is required" });
-    // Run async — don't await. The UI polls /api/investment/diligence/:id.
-    runStartupDiligence({ companyName, website, ticker, deckText, modelLink })
-      .then((run) => {
-        // Log a soft success — real notification is via polling.
-        console.log(`[axl] diligence run #${run.id} finished with status=${run.status}`);
+    if (!companyName || typeof companyName !== "string") {
+      return res.status(400).json({ error: "companyName is required" });
+    }
+
+    if (website && typeof website === "string") {
+      const verdict = await previewWebsiteUrl(website);
+      if (!verdict.ok) {
+        return res.status(400).json({
+          error: "website URL rejected by safety check",
+          detail: verdict.reason,
+        });
+      }
+    }
+
+    const company =
+      investmentStorage.findCompanyByName(companyName) ??
+      investmentStorage.createCompany({
+        name: companyName,
+        website: typeof website === "string" ? website : undefined,
+        kind: "startup",
+        ticker: typeof ticker === "string" ? ticker : undefined,
+        description: "",
+        metadata: "{}",
+      });
+
+    const truncatedDeck =
+      typeof deckText === "string" && deckText.length > MAX_INLINE_DECK_BYTES
+        ? deckText.slice(0, MAX_INLINE_DECK_BYTES)
+        : (typeof deckText === "string" ? deckText : undefined);
+    const inputsSnapshot = {
+      companyName,
+      website,
+      ticker,
+      modelLink,
+      deckTextLength: typeof deckText === "string" ? deckText.length : 0,
+      deckTextExcerpt: truncatedDeck ? truncatedDeck.slice(0, 4_000) : undefined,
+      deckTextTruncated:
+        typeof deckText === "string" && deckText.length > MAX_INLINE_DECK_BYTES,
+    };
+
+    const run = investmentStorage.createDiligenceRun({
+      companyId: company.id,
+      kind: "startup",
+      status: "queued",
+      summary: "Queued — gathering public evidence will begin shortly.",
+      inputs: JSON.stringify(inputsSnapshot),
+      startedAt: Date.now(),
+    });
+
+    // Hand off to the workflow with the run row we just created.
+    void runStartupDiligence({
+      companyName,
+      website,
+      ticker,
+      deckText: truncatedDeck,
+      modelLink,
+      existingRunId: run.id,
+      existingCompanyId: company.id,
+    })
+      .then((finished) => {
+        console.log(`[axl] diligence run #${finished.id} finished with status=${finished.status}`);
       })
       .catch((e) => {
-        console.error("[axl] diligence run failed:", e);
+        const msg = String((e as Error)?.message ?? e).slice(0, 600);
+        console.error("[axl] diligence run failed:", msg);
+        investmentStorage.updateDiligenceRun(run.id, {
+          status: "failed",
+          completedAt: Date.now(),
+          summary: "Background processing failed — see error field.",
+          error: msg,
+        });
       });
-    // The workflow has already created the run row by the time it yields the
-    // first await, but to avoid a race we look it up by latest-for-company.
-    setTimeout(() => {
-      const company = investmentStorage.findCompanyByName(companyName);
-      if (!company) return res.status(202).json({ status: "queued", companyName });
-      const runs = investmentStorage.listDiligenceRuns({ companyId: company.id });
-      const newest = runs[0];
-      res.status(202).json({ status: "queued", run: newest, company });
-    }, 50);
+
+    return res.status(202).json({ status: "queued", run, company });
   });
 
   // ── Sources / claims / calculations / contradictions / memos ─────────────
@@ -180,6 +243,15 @@ export function registerInvestmentRoutes(app: Express): void {
   app.post("/api/investment/data-sources/probe", async (req, res) => {
     const { companyName, connector, website, ticker } = req.body ?? {};
     if (!companyName) return res.status(400).json({ error: "companyName is required" });
+    if (website && typeof website === "string") {
+      const verdict = await previewWebsiteUrl(website);
+      if (!verdict.ok) {
+        return res.status(400).json({
+          error: "website URL rejected by safety check",
+          detail: verdict.reason,
+        });
+      }
+    }
     const outcome = await gatherPublicEvidence(
       { companyName, website, ticker },
       connector ? [connector] : undefined,

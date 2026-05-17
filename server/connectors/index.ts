@@ -32,6 +32,14 @@ export interface GatherOutcome {
   durationsMs: Record<string, number>;
 }
 
+// Stage 6.x.1: ceiling per connector so one slow/hung source cannot stall a
+// diligence run. The per-connector network calls already have their own
+// AbortController timeouts; this is the outer wall-clock guard.
+const CONNECTOR_WALL_CLOCK_MS = parseInt(
+  process.env.AXL_CONNECTOR_WALL_CLOCK_MS || "20000",
+  10,
+);
+
 export async function gatherPublicEvidence(
   ctx: ConnectorContext,
   selected?: string[],
@@ -43,7 +51,7 @@ export async function gatherPublicEvidence(
   await Promise.all(targets.map(async (c) => {
     const t0 = Date.now();
     try {
-      const items = await c.fetch(ctx);
+      const items = await withWallClock(c.name, c.fetch(ctx), CONNECTOR_WALL_CLOCK_MS);
       for (const r of items) outcome.results.push({ ...r, connector: c.name });
     } catch (e) {
       outcome.errors.push({ connector: c.name, error: String((e as Error)?.message ?? e) });
@@ -52,6 +60,16 @@ export async function gatherPublicEvidence(
     }
   }));
   return outcome;
+}
+
+function withWallClock<T>(name: string, p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${name} exceeded ${ms}ms wall-clock`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
 }
 
 export type { Connector, ConnectorContext, ConnectorResult };

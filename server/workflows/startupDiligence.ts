@@ -43,18 +43,64 @@ export interface StartStartupDiligenceInput {
   ticker?: string;
   deckText?: string;
   modelLink?: string;
+  /** When the caller has already created the run row (recommended). */
+  existingRunId?: number;
+  /** When the caller has already resolved the company row. */
+  existingCompanyId?: number;
 }
 
+const MAX_INLINE_DECK_BYTES = 32_768;
+
 export async function runStartupDiligence(input: StartStartupDiligenceInput): Promise<DiligenceRun> {
-  const company = resolveCompany(input);
-  const run = investmentStorage.createDiligenceRun({
-    companyId: company.id,
-    kind: "startup",
-    status: "running",
-    summary: "Collecting public evidence…",
-    inputs: JSON.stringify(input),
-    startedAt: Date.now(),
-  });
+  const company = input.existingCompanyId
+    ? investmentStorage.getCompany(input.existingCompanyId) ?? resolveCompany(input)
+    : resolveCompany(input);
+
+  const truncatedDeck =
+    input.deckText && input.deckText.length > MAX_INLINE_DECK_BYTES
+      ? input.deckText.slice(0, MAX_INLINE_DECK_BYTES)
+      : input.deckText;
+  const inputsForStorage = {
+    companyName: input.companyName,
+    website: input.website,
+    ticker: input.ticker,
+    modelLink: input.modelLink,
+    deckTextLength: input.deckText?.length ?? 0,
+    deckTextExcerpt: truncatedDeck ? truncatedDeck.slice(0, 4_000) : undefined,
+    deckTextTruncated:
+      input.deckText != null && input.deckText.length > MAX_INLINE_DECK_BYTES,
+  };
+
+  let run: DiligenceRun;
+  if (input.existingRunId) {
+    const existing = investmentStorage.getDiligenceRun(input.existingRunId);
+    if (existing) {
+      run = investmentStorage.updateDiligenceRun(existing.id, {
+        status: "running",
+        summary: "Collecting public evidence…",
+        inputs: JSON.stringify(inputsForStorage),
+        startedAt: existing.startedAt ?? Date.now(),
+      }) ?? existing;
+    } else {
+      run = investmentStorage.createDiligenceRun({
+        companyId: company.id,
+        kind: "startup",
+        status: "running",
+        summary: "Collecting public evidence…",
+        inputs: JSON.stringify(inputsForStorage),
+        startedAt: Date.now(),
+      });
+    }
+  } else {
+    run = investmentStorage.createDiligenceRun({
+      companyId: company.id,
+      kind: "startup",
+      status: "running",
+      summary: "Collecting public evidence…",
+      inputs: JSON.stringify(inputsForStorage),
+      startedAt: Date.now(),
+    });
+  }
 
   try {
     // ── Phase 1: gather evidence ────────────────────────────────────────────
@@ -89,7 +135,9 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
 
     // Stage 6: include the user-supplied deck text as a `deck` source so it
     // joins the claim-extraction pass on equal footing with web evidence.
-    if (input.deckText && input.deckText.trim().length > 30) {
+    // Stage 6.x.1: cap raw deck text to keep diligenceRuns.inputs small;
+    // the deck source itself stores up to MAX_INLINE_DECK_BYTES.
+    if (truncatedDeck && truncatedDeck.trim().length > 30) {
       const deckSource = investmentStorage.createSource({
         companyId: company.id,
         diligenceRunId: run.id,
@@ -99,10 +147,10 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
         publisher: company.name,
         domain: company.domain ?? undefined,
         retrievedDate: Date.now(),
-        rawText: input.deckText,
-        extractedText: input.deckText.slice(0, 20_000),
+        rawText: truncatedDeck,
+        extractedText: truncatedDeck.slice(0, 20_000),
         reliabilityScore: 0.5,
-        metadata: JSON.stringify({ origin: "user_upload" }),
+        metadata: JSON.stringify({ origin: "user_upload", truncated: inputsForStorage.deckTextTruncated }),
       });
       persistedSources.push(deckSource);
     }

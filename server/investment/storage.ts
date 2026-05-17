@@ -5,7 +5,7 @@
 // drizzle schema, but groups all investment-domain CRUD here so the AI
 // Office storage stays untouched.
 
-import { eq, desc, and, isNull } from "drizzle-orm";
+import { eq, desc, and, isNull, sql } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import type {
   Company, InsertCompany,
@@ -147,8 +147,14 @@ export const investmentStorage = {
     return db.insert(schema.watchlists).values(data).returning().get()!;
   },
   deleteWatchlist(id: number): void {
-    db.delete(schema.watchlists).where(eq(schema.watchlists.id, id)).run();
-    db.delete(schema.watchlistItems).where(eq(schema.watchlistItems.watchlistId, id)).run();
+    // Delete child rows before the parent so there is never a transient
+    // window with orphaned watchlist_items rows pointing at a missing
+    // watchlist. Wrapped in a single SQLite transaction so the operation
+    // either fully succeeds or fully rolls back.
+    db.transaction((tx) => {
+      tx.delete(schema.watchlistItems).where(eq(schema.watchlistItems.watchlistId, id)).run();
+      tx.delete(schema.watchlists).where(eq(schema.watchlists.id, id)).run();
+    });
   },
   listWatchlistItems(watchlistId: number): WatchlistItem[] {
     return db.select().from(schema.watchlistItems).where(eq(schema.watchlistItems.watchlistId, watchlistId)).all();

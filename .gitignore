@@ -4,6 +4,7 @@ data.db
 data.db.bak*
 .env
 .env.*
+!.env.example
 *.log
 .DS_Store
 projects/

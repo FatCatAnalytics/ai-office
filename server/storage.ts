@@ -369,6 +369,49 @@ sqlite.exec(`
   );
 `);
 
+// Stage 6.x.1 — indexes for investment-intelligence tables. Idempotent (IF NOT
+// EXISTS), so safe to run on every boot. Cover the lookup paths used by
+// investmentStorage and the routes layer: companyId / diligenceRunId filters,
+// recency ordering, status/claim_status, and lookup-by-ticker / name.
+try {
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS idx_companies_ticker        ON companies(ticker);
+    CREATE INDEX IF NOT EXISTS idx_companies_name          ON companies(name);
+    CREATE INDEX IF NOT EXISTS idx_companies_domain        ON companies(domain);
+
+    CREATE INDEX IF NOT EXISTS idx_sources_company         ON sources(company_id);
+    CREATE INDEX IF NOT EXISTS idx_sources_diligence_run   ON sources(diligence_run_id);
+    CREATE INDEX IF NOT EXISTS idx_sources_created_at      ON sources(created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_claims_company          ON claims(company_id);
+    CREATE INDEX IF NOT EXISTS idx_claims_diligence_run    ON claims(diligence_run_id);
+    CREATE INDEX IF NOT EXISTS idx_claims_source           ON claims(source_id);
+    CREATE INDEX IF NOT EXISTS idx_claims_status           ON claims(status);
+    CREATE INDEX IF NOT EXISTS idx_claims_created_at       ON claims(created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_calc_company            ON calculations(company_id);
+    CREATE INDEX IF NOT EXISTS idx_calc_diligence_run      ON calculations(diligence_run_id);
+
+    CREATE INDEX IF NOT EXISTS idx_contra_company          ON contradictions(company_id);
+    CREATE INDEX IF NOT EXISTS idx_contra_diligence_run    ON contradictions(diligence_run_id);
+
+    CREATE INDEX IF NOT EXISTS idx_diligence_company       ON diligence_runs(company_id);
+    CREATE INDEX IF NOT EXISTS idx_diligence_status        ON diligence_runs(status);
+    CREATE INDEX IF NOT EXISTS idx_diligence_created_at    ON diligence_runs(created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_memos_company           ON investment_memos(company_id);
+    CREATE INDEX IF NOT EXISTS idx_memos_diligence_run     ON investment_memos(diligence_run_id);
+
+    CREATE INDEX IF NOT EXISTS idx_watchlist_items_list    ON watchlist_items(watchlist_id);
+    CREATE INDEX IF NOT EXISTS idx_watchlist_items_company ON watchlist_items(company_id);
+
+    CREATE INDEX IF NOT EXISTS idx_signals_company         ON market_signals(company_id);
+    CREATE INDEX IF NOT EXISTS idx_signals_captured_at     ON market_signals(captured_at);
+  `);
+} catch (e) {
+  console.warn("[migration] failed to create stage-6 indexes:", e);
+}
+
 // Stage 5.1 safe migration: link projects back to the template that spawned
 // them. NULL for every pre-5.1 project (the existing 100% case before this
 // stage); the scheduler stamps it on every newly-spawned row.
