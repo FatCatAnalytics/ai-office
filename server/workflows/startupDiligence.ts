@@ -24,6 +24,13 @@
 import { gatherPublicEvidence } from "../connectors";
 import { extractClaims } from "../evidence/extractClaims";
 import { detectContradictions } from "../evidence/contradictions";
+import {
+  scoreSourceRelevance,
+  shouldKeepSource,
+  isScientificContext,
+  type RelevanceContext,
+  type RelevanceVerdict,
+} from "../evidence/relevance";
 import { deriveScoreInputs, salienceScore, confidenceScore } from "../scoring";
 import { investmentStorage } from "../investment/storage";
 import { storage } from "../storage";
@@ -113,8 +120,58 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
       companiesHouseNumber: company.companiesHouseNumber ?? undefined,
     };
     const gathered = await gatherPublicEvidence(ctx);
+    // Stage 6.1: gate every connector hit through the relevance scorer
+    // before storing. Discovery feeds (OpenAlex, GDELT, news_rss) routinely
+    // return papers/articles that only contain the company name in a
+    // generic context — the gate keeps the source set explainable and
+    // prevents irrelevant claims from leaking downstream.
+    const objectiveText = [
+      company.description,
+      company.sector,
+      company.industry,
+      inputsForStorage.deckTextExcerpt,
+    ].filter(Boolean).join(" ");
+    const isScientific = isScientificContext({
+      companyName: company.name,
+      objective: objectiveText,
+      description: company.description,
+      sector: company.sector ?? undefined,
+      industry: company.industry ?? undefined,
+    });
+    const relevanceCtx: RelevanceContext = {
+      companyName: company.name,
+      website: company.website ?? input.website,
+      domain: company.domain ?? undefined,
+      ticker: company.ticker ?? input.ticker,
+      cik: company.cik ?? undefined,
+      lei: company.lei ?? undefined,
+      companiesHouseNumber: company.companiesHouseNumber ?? undefined,
+      objective: objectiveText,
+      isScientific,
+    };
+
     const persistedSources: Source[] = [];
+    const filteredSources: Array<{
+      title: string; url: string; sourceType: string; connector: string;
+      score: number; reasons: string[];
+    }> = [];
+    let filteredByType: Record<string, number> = {};
+
     for (const r of gathered.results) {
+      const verdict: RelevanceVerdict = scoreSourceRelevance(r, relevanceCtx);
+      if (!shouldKeepSource(verdict, r.sourceType)) {
+        filteredSources.push({
+          title: r.title, url: r.url, sourceType: r.sourceType,
+          connector: r.connector, score: verdict.score, reasons: verdict.reasons,
+        });
+        filteredByType[r.sourceType] = (filteredByType[r.sourceType] ?? 0) + 1;
+        continue;
+      }
+      // Adjust reliability by relevance — high-reliability publishers that
+      // are off-topic should not contribute as much confidence.
+      const blendedReliability = clamp01(
+        r.reliabilityScore * (0.4 + 0.6 * verdict.score),
+      );
       const s = investmentStorage.createSource({
         companyId: company.id,
         diligenceRunId: run.id,
@@ -127,8 +184,15 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
         retrievedDate: Date.now(),
         rawText: r.rawText ?? "",
         extractedText: r.extractedText ?? "",
-        reliabilityScore: r.reliabilityScore,
-        metadata: JSON.stringify({ ...r.metadata, connector: r.connector }),
+        reliabilityScore: blendedReliability,
+        metadata: JSON.stringify({
+          ...r.metadata,
+          connector: r.connector,
+          relevanceScore: verdict.score,
+          relevanceCategory: verdict.category,
+          relevanceReasons: verdict.reasons,
+          baselineReliability: r.reliabilityScore,
+        }),
       });
       persistedSources.push(s);
     }
@@ -264,6 +328,8 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
       confidence: conf,
       redFlags,
       openQuestions,
+      filteredCount: filteredSources.length,
+      filteredByType,
     });
 
     investmentStorage.createMemo({
@@ -292,10 +358,22 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
     const finalised = investmentStorage.updateDiligenceRun(run.id, {
       status: "completed",
       completedAt: Date.now(),
-      summary: `Gathered ${persistedSources.length} sources, ${allClaims.length} claims, ${finalCalcs.length} calcs, ${allContras.length} contradictions.`,
+      summary: `Gathered ${persistedSources.length} sources, ${allClaims.length} claims, ${finalCalcs.length} calcs, ${allContras.length} contradictions. Filtered ${filteredSources.length} low-relevance candidates.`,
       salienceScore: sal.score,
       confidenceScore: conf.score,
-      scoreBreakdown: JSON.stringify({ salience: sal, confidence: conf, connectorTimings: gathered.durationsMs, connectorErrors: gathered.errors }),
+      scoreBreakdown: JSON.stringify({
+        salience: sal,
+        confidence: conf,
+        connectorTimings: gathered.durationsMs,
+        connectorErrors: gathered.errors,
+        relevance: {
+          kept: persistedSources.length,
+          filtered: filteredSources.length,
+          filteredByType,
+          isScientific,
+          examples: filteredSources.slice(0, 10),
+        },
+      }),
       redFlags: JSON.stringify(redFlags),
       openQuestions: JSON.stringify(openQuestions),
     });
@@ -422,6 +500,11 @@ function summariseThesis(company: Company, claims: Claim[]): string {
   return `Initial diligence on ${company.name} grounded in public evidence — drivers reviewed: ${drivers.join(", ") || "qualitative public data only"}.`;
 }
 
+function clamp01(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(1, n));
+}
+
 function renderMemoBody(args: {
   company: Company;
   sources: Source[];
@@ -432,6 +515,8 @@ function renderMemoBody(args: {
   confidence: { score: number; explanation: string };
   redFlags: string[];
   openQuestions: string[];
+  filteredCount?: number;
+  filteredByType?: Record<string, number>;
 }): string {
   const { company } = args;
   const lines: string[] = [];
@@ -482,11 +567,26 @@ function renderMemoBody(args: {
   lines.push("## Evidence / sources");
   for (const s of args.sources) {
     const date = s.publishedDate ? new Date(s.publishedDate).toISOString().slice(0, 10) : "n/d";
-    lines.push(`- [${s.sourceType}] ${s.title} — ${s.publisher ?? s.domain ?? "unknown"} (${date}) · reliability ${s.reliabilityScore.toFixed(2)} — <${s.url}>`);
+    const relevance = extractRelevance(s.metadata);
+    const relSuffix = relevance != null ? ` · relevance ${relevance.toFixed(2)}` : "";
+    lines.push(`- [${s.sourceType}] ${s.title} — ${s.publisher ?? s.domain ?? "unknown"} (${date}) · reliability ${s.reliabilityScore.toFixed(2)}${relSuffix} — <${s.url}>`);
+  }
+  if ((args.filteredCount ?? 0) > 0) {
+    const byType = args.filteredByType ?? {};
+    const parts = Object.entries(byType).map(([t, n]) => `${t}=${n}`).join(", ");
+    lines.push("");
+    lines.push(`_${args.filteredCount} low-relevance source candidates were filtered out before claim extraction${parts ? ` (${parts})` : ""}._`);
   }
   lines.push("");
   lines.push("## Scoring breakdown");
   lines.push(`- Salience: ${args.salience.explanation}`);
   lines.push(`- Confidence: ${args.confidence.explanation}`);
   return lines.join("\n");
+}
+
+function extractRelevance(metadataJson: string): number | null {
+  try {
+    const m = JSON.parse(metadataJson ?? "{}");
+    return typeof m?.relevanceScore === "number" ? m.relevanceScore : null;
+  } catch { return null; }
 }

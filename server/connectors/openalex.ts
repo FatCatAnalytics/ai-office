@@ -27,7 +27,12 @@ export const openAlexConnector: Connector = {
   reliabilityBaseline: 0.75,
 
   async fetch(ctx: ConnectorContext): Promise<ConnectorResult[]> {
-    const q = encodeURIComponent(ctx.companyName);
+    // Stage 6.1: phrase-quote the company name so we don't get works that
+    // only contain one of the tokens. Still permissive — the workflow
+    // applies a relevance gate to drop unrelated academic hits before
+    // persisting them as sources.
+    const phrased = `"${ctx.companyName.replace(/"/g, '')}"`;
+    const q = encodeURIComponent(phrased);
     const url = `https://api.openalex.org/works?search=${q}&per_page=5&sort=publication_date:desc`;
     const data = await safeFetchJson<OpenAlexResponse>(url, { timeoutMs: ctx.timeoutMs ?? 10_000 });
     const items = data?.results ?? [];

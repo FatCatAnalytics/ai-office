@@ -13,6 +13,14 @@
 //
 // The status field is left to the caller — the workflow assigns
 // "company_claimed" for website sources, "third_party_reported" for news, etc.
+//
+// Stage 6.1: sanitize source text before sentence-splitting and reject
+// junk-looking sentences (raw HTML/CSS, Google redirect URL blobs,
+// base64-ish chunks). The Stripe smoke test was producing "claims" that
+// were literally Google News redirect URLs and pasted markdown link
+// snippets — the sanitisation layer kills that class of bug.
+
+import { sanitizeForClaims, looksLikeJunk, cleanEvidenceQuote } from "./sanitize";
 
 export interface ExtractedClaim {
   subject: string;
@@ -33,7 +41,9 @@ const MARKET_SIZE_RE = /\b(?:TAM|total addressable market|market size)\s*(?:of)?
 export function extractClaims(text: string, opts: { maxClaims?: number } = {}): ExtractedClaim[] {
   const max = opts.maxClaims ?? 25;
   const claims: ExtractedClaim[] = [];
-  const sentences = splitSentences(text);
+  const cleaned = sanitizeForClaims(text);
+  if (!cleaned) return claims;
+  const sentences = splitSentences(cleaned).filter((s) => !looksLikeJunk(s));
 
   for (const sentence of sentences) {
     if (claims.length >= max) break;
@@ -46,7 +56,7 @@ export function extractClaims(text: string, opts: { maxClaims?: number } = {}): 
         statement: `Reported ${guessMoneySubject(sentence)} of ${m[0].trim()} (per source text).`,
         numericValue: value,
         unit: currencyFromSymbol(m[1]),
-        evidenceQuote: sentence,
+        evidenceQuote: cleanEvidenceQuote(sentence),
       });
       if (claims.length >= max) break;
     }
@@ -58,7 +68,7 @@ export function extractClaims(text: string, opts: { maxClaims?: number } = {}): 
         statement: `Headcount: ${n} per source text.`,
         numericValue: n,
         unit: "people",
-        evidenceQuote: sentence,
+        evidenceQuote: cleanEvidenceQuote(sentence),
       });
       if (claims.length >= max) break;
     }
@@ -70,7 +80,7 @@ export function extractClaims(text: string, opts: { maxClaims?: number } = {}): 
         statement: `Customer count: ${n} per source text.`,
         numericValue: n,
         unit: "customers",
-        evidenceQuote: sentence,
+        evidenceQuote: cleanEvidenceQuote(sentence),
       });
       if (claims.length >= max) break;
     }
@@ -81,7 +91,7 @@ export function extractClaims(text: string, opts: { maxClaims?: number } = {}): 
         statement: `Founded in ${m[1]} per source text.`,
         numericValue: parseInt(m[1], 10),
         unit: "year",
-        evidenceQuote: sentence,
+        evidenceQuote: cleanEvidenceQuote(sentence),
       });
       if (claims.length >= max) break;
     }
@@ -93,7 +103,7 @@ export function extractClaims(text: string, opts: { maxClaims?: number } = {}): 
         statement: `Claimed growth ${v}% YoY (per source text).`,
         numericValue: v,
         unit: "%",
-        evidenceQuote: sentence,
+        evidenceQuote: cleanEvidenceQuote(sentence),
       });
       if (claims.length >= max) break;
     }
@@ -106,7 +116,7 @@ export function extractClaims(text: string, opts: { maxClaims?: number } = {}): 
         statement: `Claimed TAM/market size: ${m[0].trim()}`,
         numericValue: v,
         unit: currencyFromSymbol(m[1]),
-        evidenceQuote: sentence,
+        evidenceQuote: cleanEvidenceQuote(sentence),
       });
       if (claims.length >= max) break;
     }
