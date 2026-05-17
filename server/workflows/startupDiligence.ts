@@ -237,7 +237,9 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
       const text = src.extractedText || src.rawText;
       if (!text || text.length < 50) continue;
       const status = statusForSource(src.sourceType);
-      const claims = extractClaims(text);
+      const claims = extractClaims(text, {
+        officialSite: src.sourceType === "website",
+      });
       for (const c of claims) {
         const claim = investmentStorage.createClaim({
           companyId: company.id,
