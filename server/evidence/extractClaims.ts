@@ -27,6 +27,18 @@
 // that contradiction detection can compare apples to apples instead of
 // flagging payment-processing volume against company valuation as a
 // "contradiction".
+//
+// Stage 6.6: monetary claims also carry an optional scope + period when
+// detectable from the surrounding sentence. Scope buckets:
+//   - annual / yearly_aggregate  (e.g. "in 2025", "annual", "fiscal 2024")
+//   - event_window               (e.g. "Black Friday through Cyber Monday")
+//   - monthly                    (e.g. "in November", "per month")
+//   - quarterly                  (e.g. "in Q3 2025")
+//   - cumulative                 (e.g. "all-time", "since inception")
+// Periods are normalised labels: "2025", "BFCM 2025", "Q3 2025", etc.
+// Contradiction detection compares only claims whose (scope, period)
+// pairs are compatible, so an annual aggregate and an event-window
+// figure never contradict.
 
 import { sanitizeForClaims, looksLikeJunk, cleanEvidenceQuote } from "./sanitize";
 
@@ -46,6 +58,19 @@ export interface ExtractedClaim {
   customerContext?: string;
   /** 0..1 — caller blends with source reliability; defaults to 1 if unset. */
   confidenceMultiplier?: number;
+  /**
+   * Stage 6.6: scope bucket for monetary metrics. One of
+   *   "annual" | "event_window" | "monthly" | "quarterly" | "cumulative"
+   * when detectable; omitted when scope is unknown so contradiction
+   * detection can stay conservative.
+   */
+  scope?: string;
+  /**
+   * Stage 6.6: normalised period label paired with the scope, e.g.
+   *   "2025", "BFCM 2025", "Q3 2025", "November 2025", "all-time".
+   * Different periods within the same scope are not contradictions.
+   */
+  period?: string;
 }
 
 // Stage 6.5: money regex now accepts an optional `US` (or `U.S.` / `CA` /
@@ -120,6 +145,8 @@ export function extractClaims(text: string, opts: ExtractClaimsOpts = {}): Extra
         contextNote: classified.contextNote,
         customerContext: classified.customerContext,
         confidenceMultiplier: classified.confidenceMultiplier,
+        scope: classified.scope,
+        period: classified.period,
       });
       if (claims.length >= max) break;
     }
@@ -318,6 +345,10 @@ interface MonetaryClassification {
   contextNote?: string;
   customerContext?: string;
   confidenceMultiplier?: number;
+  /** Stage 6.6 — see ExtractedClaim.scope. */
+  scope?: string;
+  /** Stage 6.6 — see ExtractedClaim.period. */
+  period?: string;
 }
 
 /**
@@ -337,6 +368,7 @@ interface MonetaryClassification {
  */
 function classifyMonetary(sentence: string, subjectCompany?: string): MonetaryClassification {
   const s = sentence.toLowerCase();
+  const scoping = detectScopeAndPeriod(sentence);
 
   // 1) Customer case-study detection has to come before everything else,
   //    because "ElevenLabs grows to a US$3bn valuation on Stripe" matches
@@ -349,6 +381,8 @@ function classifyMonetary(sentence: string, subjectCompany?: string): MonetaryCl
       contextNote: customer.kind ? `customer ${customer.kind}` : "customer story",
       // Customer-story numbers shouldn't drive subject-company calcs.
       confidenceMultiplier: 0.4,
+      scope: scoping.scope,
+      period: scoping.period,
     };
   }
 
@@ -361,35 +395,35 @@ function classifyMonetary(sentence: string, subjectCompany?: string): MonetaryCl
     /\bcyber\s+monday\b/i.test(sentence) ||
     /\bgenerated\s+(?:more than |over |about )?(?:us\$|\$|£|€)/i.test(sentence)
   ) {
-    return { subject: "payment_volume" };
+    return { subject: "payment_volume", scope: scoping.scope, period: scoping.period };
   }
 
   // 3) Specific revenue subtypes first, before generic "revenue".
-  if (/\barr\b|annual recurring revenue/.test(s)) return { subject: "arr" };
-  if (/\bmrr\b|monthly recurring revenue/.test(s)) return { subject: "mrr" };
+  if (/\barr\b|annual recurring revenue/.test(s)) return { subject: "arr", scope: scoping.scope, period: scoping.period };
+  if (/\bmrr\b|monthly recurring revenue/.test(s)) return { subject: "mrr", scope: scoping.scope, period: scoping.period };
 
   // 4) Valuation context.
   if (/\bvaluation\b|\bvalued at\b|\bpost-?money\b|\bpre-?money\b|\bworth (?:approximately |about |around )?(?:us\$|\$|£|€)/i.test(sentence)) {
-    return { subject: "valuation" };
+    return { subject: "valuation", scope: scoping.scope, period: scoping.period };
   }
 
   // 5) Funding / fundraising.
   if (/\braised\b|\bseries\s+[a-k]\b|\bseed\s+round\b|\bfunding\s+round\b|\bclosed\s+(?:a\s+)?(?:us\$|\$|£|€)/i.test(sentence) ||
       /\bin\s+funding\b/i.test(sentence)) {
-    return { subject: "funding_amount" };
+    return { subject: "funding_amount", scope: scoping.scope, period: scoping.period };
   }
 
   // 6) Revenue (after ARR/MRR).
   if (/\brevenue\b|\btop[- ]?line\b|\bnet sales\b/i.test(sentence)) {
-    return { subject: "revenue" };
+    return { subject: "revenue", scope: scoping.scope, period: scoping.period };
   }
 
   // 7) Burn / cash / runway.
   if (/\bcash\s+burn\b|\bmonthly\s+burn\b|\bnet\s+burn\b/i.test(sentence)) {
-    return { subject: "burn" };
+    return { subject: "burn", scope: scoping.scope, period: scoping.period };
   }
   if (/\bcash\s+on\s+hand\b|\bcash\s+balance\b|\bcash\s+position\b/i.test(sentence)) {
-    return { subject: "cash" };
+    return { subject: "cash", scope: scoping.scope, period: scoping.period };
   }
   if (/\brunway\b/i.test(sentence)) {
     return { subject: "runway" };
@@ -398,7 +432,7 @@ function classifyMonetary(sentence: string, subjectCompany?: string): MonetaryCl
   // 8) Market size / TAM (the MARKET_SIZE_RE handles the canonical form,
   //    but plain "$1.5 trillion market" gets caught here).
   if (/\b(?:tam|sam|som|addressable market|market opportunity|market size)\b/i.test(sentence)) {
-    return { subject: "market_size" };
+    return { subject: "market_size", scope: scoping.scope, period: scoping.period };
   }
 
   // 9) Pricing context (e.g. "starts at $99/month") — when paired with
@@ -413,7 +447,7 @@ function classifyMonetary(sentence: string, subjectCompany?: string): MonetaryCl
   //     payments-flavoured words are present.
   if (/\bpayments?\b|\bcheckout\b|\bcharges\b|\btransactions?\b/i.test(sentence) &&
       /\bgenerated\b|\bprocessed\b|\bhandled\b/i.test(sentence)) {
-    return { subject: "payment_volume" };
+    return { subject: "payment_volume", scope: scoping.scope, period: scoping.period };
   }
 
   // Fallback — unclassified monetary figure. We mark it with a lower
@@ -425,6 +459,114 @@ function classifyMonetary(sentence: string, subjectCompany?: string): MonetaryCl
     contextNote: "unclassified — generic monetary mention",
     confidenceMultiplier: 0.6,
   };
+}
+
+interface ScopeAndPeriod { scope?: string; period?: string }
+
+/**
+ * Stage 6.6: detect scope (annual, event_window, monthly, quarterly,
+ * cumulative) and a normalised period label from a sentence.
+ *
+ * Detection is intentionally conservative: when the sentence has no
+ * temporal anchor we leave both undefined, and the contradiction
+ * detector treats unknown-scope claims as not-safe-to-compare against
+ * scoped claims.
+ *
+ * Detection precedence (first match wins):
+ *   1. Event-window phrases (Black Friday, Cyber Monday, BFCM, holiday
+ *      weekend) → event_window + e.g. "BFCM 2025".
+ *   2. Explicit cumulative wording ("all-time", "since inception",
+ *      "cumulative", "to date", "lifetime") → cumulative.
+ *   3. Quarterly markers ("Q1 2025", "first quarter of 2025",
+ *      "this quarter") → quarterly.
+ *   4. Monthly markers ("in November 2025", "per month") → monthly.
+ *   5. Annual markers ("in 2025", "fiscal 2024", "annual", "yearly",
+ *      bare 4-digit year that looks like a financial year) → annual.
+ */
+function detectScopeAndPeriod(sentence: string): ScopeAndPeriod {
+  const s = sentence;
+  // 1) Event window: Black Friday / Cyber Monday / BFCM / holiday
+  //    weekend / boxing day / prime day / singles day. Anchored to
+  //    avoid false positives on unrelated weekend mentions.
+  const bfcm = /\b(?:black\s+friday(?:\s+(?:through|to|–|-)\s+cyber\s+monday)?|cyber\s+monday|bfcm|cyber\s+week)\b/i.test(s);
+  const otherEvent = /\b(?:boxing\s+day|prime\s+day|singles[''']?\s+day|holiday\s+weekend|holiday\s+shopping\s+(?:season|weekend))\b/i.test(s);
+  if (bfcm || otherEvent) {
+    const year = extractYear(s);
+    const label = bfcm
+      ? `BFCM${year ? ` ${year}` : ""}`
+      : otherEvent
+        ? `event${year ? ` ${year}` : ""}`
+        : undefined;
+    return { scope: "event_window", period: label };
+  }
+
+  // 2) Cumulative / lifetime / all-time.
+  if (/\b(?:all[- ]time|since\s+inception|cumulative(?:ly)?|to\s+date|lifetime|inception\s+to\s+date)\b/i.test(s)) {
+    return { scope: "cumulative", period: "all-time" };
+  }
+
+  // 3) Quarterly markers.
+  const qMatch = s.match(/\bQ([1-4])\s*(\d{4})\b/i)
+    || s.match(/\b(?:first|second|third|fourth)\s+quarter(?:\s+of)?\s+(\d{4})\b/i);
+  if (qMatch) {
+    // Normalise.
+    const m1 = qMatch[1];
+    const m2 = qMatch[2];
+    if (m2 && /^\d$/.test(m1)) {
+      return { scope: "quarterly", period: `Q${m1} ${m2}` };
+    }
+    const ord = s.match(/\b(first|second|third|fourth)\s+quarter(?:\s+of)?\s+(\d{4})\b/i);
+    if (ord) {
+      const map: Record<string, string> = { first: "Q1", second: "Q2", third: "Q3", fourth: "Q4" };
+      return { scope: "quarterly", period: `${map[ord[1].toLowerCase()]} ${ord[2]}` };
+    }
+  }
+  if (/\b(?:this|last|previous|past)\s+quarter\b/i.test(s)) {
+    return { scope: "quarterly" };
+  }
+
+  // 4) Monthly markers — explicit named month + year, or "per month",
+  //    "monthly", "MRR" already handled upstream so don't re-tag here.
+  const monthMatch = s.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December)\b(?:\s+(\d{4}))?/i);
+  const perMonth = /\bper\s+month\b|\b(?:monthly|each\s+month|every\s+month)\b/i.test(s);
+  if (monthMatch || perMonth) {
+    // Make sure the month wasn't part of a larger annual phrase like
+    // "fiscal year ending December 2025" — too rare to be worth special-
+    // casing, fall through normally.
+    if (monthMatch) {
+      const yr = monthMatch[2] || extractYear(s) || "";
+      return { scope: "monthly", period: `${capitalize(monthMatch[1].toLowerCase())}${yr ? ` ${yr}` : ""}`.trim() };
+    }
+    return { scope: "monthly" };
+  }
+
+  // 5) Annual / yearly aggregate.
+  const annualPhrase = /\b(?:annual(?:ly)?|yearly|per\s+year|each\s+year|every\s+year|fiscal\s+year|fy\s*\d{2,4}|fiscal\s+\d{4})\b/i.test(s);
+  const inYear = extractYear(s);
+  if (annualPhrase || inYear) {
+    return { scope: "annual", period: inYear ?? undefined };
+  }
+
+  return {};
+}
+
+function extractYear(sentence: string): string | undefined {
+  // Prefer "in YYYY" / "for YYYY" / "fiscal YYYY" / "FY YYYY" anchors.
+  const explicit = sentence.match(/\b(?:in|for|fiscal|fy)\s*(\d{4})\b/i);
+  if (explicit) {
+    const y = parseInt(explicit[1], 10);
+    if (y >= 1990 && y <= 2100) return explicit[1];
+  }
+  // Otherwise pick a bare 4-digit year that looks plausible (2000-2100)
+  // and is not part of a larger number. Avoid years that immediately
+  // follow a $/£/€ to dodge collisions with money amounts.
+  const m = sentence.match(/(?<![\$£€\d,.])\b(20\d{2}|19\d{2})\b/);
+  if (m) return m[1];
+  return undefined;
+}
+
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
 }
 
 interface CustomerContext { name: string; kind?: string }
@@ -523,27 +665,40 @@ function escapeRe(s: string): string {
 
 function buildMonetaryStatement(c: MonetaryClassification, raw: string, value: number): string {
   const pretty = formatMoneyValue(value);
+  const scopeTail = scopeLabel(c);
   if (c.customerContext) {
     const kind = c.contextNote ? c.contextNote.replace(/^customer\s+/i, "") : "metric";
-    return `Customer story: ${c.customerContext} ${kind} ${raw} (≈ ${pretty}) — not a subject-company metric.`;
+    return `Customer story: ${c.customerContext} ${kind} ${raw} (≈ ${pretty})${scopeTail} — not a subject-company metric.`;
   }
   switch (c.subject) {
-    case "payment_volume":
-      return `Reported payment/processing volume of ${raw} (≈ ${pretty}).`;
+    case "payment_volume": {
+      const noun = c.scope === "event_window"
+        ? "event-window processing volume"
+        : c.scope === "annual"
+          ? "annual payment volume"
+          : c.scope === "monthly"
+            ? "monthly payment volume"
+            : c.scope === "quarterly"
+              ? "quarterly payment volume"
+              : c.scope === "cumulative"
+                ? "cumulative payment volume"
+                : "payment/processing volume";
+      return `Reported ${noun} of ${raw} (≈ ${pretty})${scopeTail}.`;
+    }
     case "valuation":
-      return `Reported valuation of ${raw} (≈ ${pretty}).`;
+      return `Reported valuation of ${raw} (≈ ${pretty})${scopeTail}.`;
     case "funding_amount":
-      return `Reported funding amount of ${raw} (≈ ${pretty}).`;
+      return `Reported funding amount of ${raw} (≈ ${pretty})${scopeTail}.`;
     case "revenue":
-      return `Reported revenue of ${raw} (≈ ${pretty}).`;
+      return `Reported revenue of ${raw} (≈ ${pretty})${scopeTail}.`;
     case "arr":
-      return `Reported ARR of ${raw} (≈ ${pretty}).`;
+      return `Reported ARR of ${raw} (≈ ${pretty})${scopeTail}.`;
     case "mrr":
-      return `Reported MRR of ${raw} (≈ ${pretty}).`;
+      return `Reported MRR of ${raw} (≈ ${pretty})${scopeTail}.`;
     case "market_size":
       return `Reported market size / TAM of ${raw} (≈ ${pretty}).`;
     case "burn":
-      return `Reported cash burn of ${raw} (≈ ${pretty}).`;
+      return `Reported cash burn of ${raw} (≈ ${pretty})${scopeTail}.`;
     case "cash":
       return `Reported cash position of ${raw} (≈ ${pretty}).`;
     case "runway":
@@ -553,6 +708,13 @@ function buildMonetaryStatement(c: MonetaryClassification, raw: string, value: n
     default:
       return `Unclassified monetary figure of ${raw} (≈ ${pretty}) — context did not pin a specific metric.`;
   }
+}
+
+function scopeLabel(c: MonetaryClassification): string {
+  if (c.period && c.scope) return ` [${c.scope} · ${c.period}]`;
+  if (c.period) return ` [${c.period}]`;
+  if (c.scope) return ` [${c.scope}]`;
+  return "";
 }
 
 function formatMoneyValue(v: number): string {
@@ -569,7 +731,7 @@ function dedupe(items: ExtractedClaim[]): ExtractedClaim[] {
   const out: ExtractedClaim[] = [];
   for (const c of items) {
     const stmtKey = c.numericValue == null ? c.statement.toLowerCase().slice(0, 80) : "";
-    const k = `${c.subject}|${c.numericValue ?? ""}|${c.unit ?? ""}|${c.customerContext ?? ""}|${stmtKey}`;
+    const k = `${c.subject}|${c.numericValue ?? ""}|${c.unit ?? ""}|${c.customerContext ?? ""}|${c.scope ?? ""}|${c.period ?? ""}|${stmtKey}`;
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(c);

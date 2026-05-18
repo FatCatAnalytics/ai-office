@@ -17,6 +17,17 @@
 // against itself or against any classified metric. This kills the false
 // "Reported $1.9tn in 2025" vs "valuation $70b" red flag that the Stripe
 // live smoke surfaced in Stage 6.4.
+//
+// Stage 6.6: scope-aware comparison. When both claims declare a scope
+// (annual / event_window / monthly / quarterly / cumulative), they only
+// contradict if the scopes match. When *one* side declares a scope and
+// the other doesn't, we stay conservative and skip the comparison
+// instead of flagging — an unknown-scope payment-volume figure can be
+// either annual or event-window, so we'd rather miss a contradiction
+// than fabricate one. This eliminates the live-smoke false positive of
+// US$1.9tn annual 2025 payment_volume vs US$40bn BFCM 2025 event
+// payment_volume, while still catching two real annual-2025 numbers
+// that genuinely disagree.
 
 import type { Claim } from "@shared/schema";
 
@@ -31,6 +42,8 @@ interface ClaimMeta {
   customerContext?: string;
   contextNote?: string;
   period?: string;
+  /** Stage 6.6 — scope bucket (annual / event_window / monthly / quarterly / cumulative). */
+  scope?: string;
 }
 
 function readMeta(c: Claim): ClaimMeta {
@@ -40,11 +53,29 @@ function readMeta(c: Claim): ClaimMeta {
       customerContext: typeof m?.customerContext === "string" ? m.customerContext : undefined,
       contextNote: typeof m?.contextNote === "string" ? m.contextNote : undefined,
       period: typeof m?.period === "string" ? m.period : undefined,
+      scope: typeof m?.scope === "string" ? m.scope : undefined,
     };
   } catch {
     return {};
   }
 }
+
+/**
+ * Stage 6.6: metric subjects where scope mismatch is meaningful enough
+ * that we should refuse to compare unknown-scope vs scoped claims. For
+ * `payment_volume`, an unknown-scope figure could be annual OR event-
+ * window, so we don't know what to compare against — better to miss a
+ * contradiction than flag one. For metrics like `valuation` or
+ * `funding_amount`, scope is mostly point-in-time and unknown-scope is
+ * still safe to compare with another unknown-scope figure.
+ */
+const SCOPE_SENSITIVE_SUBJECTS = new Set<string>([
+  "payment_volume",
+  "revenue",
+  "arr",
+  "mrr",
+  "burn",
+]);
 
 /**
  * Stage 6.5: subjects we never compare for contradictions, even when they
@@ -106,6 +137,21 @@ export function detectContradictions(claims: Claim[]): ContradictionFinding[] {
       // shouldn't suddenly stop being compared).
       if (metaA.period && metaB.period && metaA.period !== metaB.period) continue;
 
+      // Stage 6.6: scope compatibility.
+      //  - If both sides declare a scope and they differ → not a
+      //    contradiction (annual vs event-window are incomparable).
+      //  - If one side has a scope and the other doesn't, and the
+      //    metric is scope-sensitive (payment_volume, revenue, ARR,
+      //    MRR, burn), refuse to compare — the unknown-scope figure
+      //    could be from a different aggregation window.
+      if (metaA.scope && metaB.scope && metaA.scope !== metaB.scope) continue;
+      if (
+        SCOPE_SENSITIVE_SUBJECTS.has(a.subject) &&
+        Boolean(metaA.scope) !== Boolean(metaB.scope)
+      ) {
+        continue;
+      }
+
       const av = a.numericValue!;
       const bv = b.numericValue!;
       if (av === 0 && bv === 0) continue;
@@ -113,11 +159,14 @@ export function detectContradictions(claims: Claim[]): ContradictionFinding[] {
       const delta = Math.abs(av - bv) / denom;
       if (delta < 0.25) continue;
       const sev: "low" | "medium" | "high" = delta > 0.6 ? "high" : delta > 0.4 ? "medium" : "low";
+      const scopeNote = metaA.scope || metaB.scope
+        ? ` [${metaA.scope ?? metaB.scope}${(metaA.period ?? metaB.period) ? ` · ${metaA.period ?? metaB.period}` : ""}]`
+        : "";
       findings.push({
         claimAId: a.id,
         claimBId: b.id,
         severity: sev,
-        description: `Two claims on "${a.subject}" diverge by ${(delta * 100).toFixed(0)}% (${av} ${a.unit ?? ""} vs ${bv} ${b.unit ?? ""}).`,
+        description: `Two claims on "${a.subject}"${scopeNote} diverge by ${(delta * 100).toFixed(0)}% (${av} ${a.unit ?? ""} vs ${bv} ${b.unit ?? ""}).`,
       });
     }
   }
