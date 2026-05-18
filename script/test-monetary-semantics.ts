@@ -290,6 +290,170 @@ const misclassified = e2eClaims.filter(
 eq("e2e: live-smoke figures no longer dumped into monetary_claim",
   misclassified.length, 0);
 
+// ── 6) Stage 6.6: scope + period semantics ─────────────────────────────────
+//
+// Live Stripe smoke after Stage 6.5: US$1.9tn annual 2025 payment_volume
+// and US$40bn BFCM 2025 event-window payment_volume were both flagged
+// as contradictory because they shared metric + unit + entity context.
+// Stage 6.6 introduces scope detection so they no longer collide.
+
+// Scope/period extraction.
+const annualClaim = extractClaims(
+  "Businesses on Stripe generated US$1.9tn in 2025.",
+  { subjectCompany: "Stripe" },
+).find((c) => c.subject === "payment_volume");
+truthy("6.6 annual scope detected for US$1.9tn in 2025", annualClaim?.scope === "annual");
+eq("6.6 annual period 2025", annualClaim?.period, "2025");
+
+const bfcmClaim = extractClaims(
+  "Stripe processed more than US$40bn from Black Friday through Cyber Monday 2025.",
+  { subjectCompany: "Stripe" },
+).find((c) => c.subject === "payment_volume");
+truthy("6.6 event_window scope detected for BFCM", bfcmClaim?.scope === "event_window");
+eq("6.6 event period BFCM 2025", bfcmClaim?.period, "BFCM 2025");
+
+const cyberAlone = extractClaims(
+  "Cyber Monday 2024 saw $9bn in processing volume on the platform.",
+).find((c) => c.subject === "payment_volume");
+truthy("6.6 Cyber Monday alone is event_window", cyberAlone?.scope === "event_window");
+
+const qScope = extractClaims(
+  "Stripe reported $1.2bn in revenue in Q3 2025.",
+).find((c) => c.subject === "revenue");
+eq("6.6 Q3 2025 → quarterly", qScope?.scope, "quarterly");
+eq("6.6 Q3 2025 period", qScope?.period, "Q3 2025");
+
+const cumulative = extractClaims(
+  "Stripe has processed over $5 trillion all-time across the platform.",
+).find((c) => c.subject === "payment_volume");
+eq("6.6 all-time → cumulative", cumulative?.scope, "cumulative");
+
+const noScopeClaim = extractClaims(
+  "Stripe processed more than US$40bn in a recent record window.",
+).find((c) => c.subject === "payment_volume");
+falsy("6.6 unknown scope stays undefined", noScopeClaim?.scope);
+
+// Memo label statement reflects scope.
+truthy(
+  "6.6 annual payment volume label in statement",
+  /annual payment volume/i.test(annualClaim?.statement ?? ""),
+);
+truthy(
+  "6.6 event-window processing volume label in statement",
+  /event-window processing volume/i.test(bfcmClaim?.statement ?? ""),
+);
+
+// Contradiction logic — the live-smoke false positive must be gone.
+const stripeStage66: Claim[] = [
+  makeClaim({ id: 1, subject: "payment_volume", numericValue: 1.9e12, unit: "USD" }),
+  makeClaim({ id: 2, subject: "payment_volume", numericValue: 40e9, unit: "USD" }),
+];
+// Inject scope metadata directly so the test mirrors what
+// startupDiligence.ts now persists.
+stripeStage66[0].metadata = JSON.stringify({ scope: "annual", period: "2025" });
+stripeStage66[1].metadata = JSON.stringify({ scope: "event_window", period: "BFCM 2025" });
+eq(
+  "6.6 annual 1.9tn vs BFCM 40bn → zero contradictions",
+  detectContradictions(stripeStage66).length,
+  0,
+);
+
+// Same scope, materially different values → still flagged.
+const sameScopeDuel: Claim[] = [
+  makeClaim({ id: 1, subject: "payment_volume", numericValue: 1.9e12, unit: "USD" }),
+  makeClaim({ id: 2, subject: "payment_volume", numericValue: 1.2e12, unit: "USD" }),
+];
+sameScopeDuel[0].metadata = JSON.stringify({ scope: "annual", period: "2025" });
+sameScopeDuel[1].metadata = JSON.stringify({ scope: "annual", period: "2025" });
+eq(
+  "6.6 two annual 2025 payment_volume figures with material gap → contradiction",
+  detectContradictions(sameScopeDuel).length,
+  1,
+);
+
+// Same scope but different period → not a contradiction.
+const samescopeDiffYear: Claim[] = [
+  makeClaim({ id: 1, subject: "payment_volume", numericValue: 1.9e12, unit: "USD" }),
+  makeClaim({ id: 2, subject: "payment_volume", numericValue: 1.4e12, unit: "USD" }),
+];
+samescopeDiffYear[0].metadata = JSON.stringify({ scope: "annual", period: "2025" });
+samescopeDiffYear[1].metadata = JSON.stringify({ scope: "annual", period: "2024" });
+eq(
+  "6.6 annual 2025 vs annual 2024 → no contradiction",
+  detectContradictions(samescopeDiffYear).length,
+  0,
+);
+
+// BFCM 2025 vs BFCM 2025 materially different → still flagged.
+const bfcmDuel: Claim[] = [
+  makeClaim({ id: 1, subject: "payment_volume", numericValue: 40e9, unit: "USD" }),
+  makeClaim({ id: 2, subject: "payment_volume", numericValue: 70e9, unit: "USD" }),
+];
+bfcmDuel[0].metadata = JSON.stringify({ scope: "event_window", period: "BFCM 2025" });
+bfcmDuel[1].metadata = JSON.stringify({ scope: "event_window", period: "BFCM 2025" });
+eq(
+  "6.6 two BFCM 2025 figures with material gap → contradiction",
+  detectContradictions(bfcmDuel).length,
+  1,
+);
+
+// Unknown-scope payment_volume vs annual payment_volume → conservative
+// (no contradiction emitted).
+const unknownVsScoped: Claim[] = [
+  makeClaim({ id: 1, subject: "payment_volume", numericValue: 1.9e12, unit: "USD" }),
+  makeClaim({ id: 2, subject: "payment_volume", numericValue: 40e9, unit: "USD" }),
+];
+unknownVsScoped[0].metadata = JSON.stringify({ scope: "annual", period: "2025" });
+unknownVsScoped[1].metadata = JSON.stringify({}); // unknown scope
+eq(
+  "6.6 unknown-scope payment_volume vs scoped → no contradiction (conservative)",
+  detectContradictions(unknownVsScoped).length,
+  0,
+);
+
+// End-to-end Stripe paragraph extract → still zero contradictions.
+const stripeStage66Paragraph = `
+Stripe is a financial infrastructure platform for businesses. Millions of
+companies use Stripe to accept payments and grow their revenue.
+Businesses on Stripe generated US$1.9tn in 2025, across all geographies and
+payment methods.
+ElevenLabs grows into a US$3bn AI audio leader with Stripe — see the case
+study for the full story.
+Stripe processed more than US$40bn from Black Friday through Cyber Monday
+2025, a record for the platform.
+Stripe was valued at $70 billion in a recent tender offer.
+`;
+const e2e66Claims = extractClaims(stripeStage66Paragraph, {
+  officialSite: true,
+  subjectCompany: "Stripe",
+}).map((c, i) => {
+  // Mirror what startupDiligence.ts does — serialise scope/period to
+  // metadata so the contradiction detector picks them up.
+  return makeClaim({
+    id: i + 1,
+    subject: c.subject,
+    numericValue: c.numericValue ?? 0,
+    unit: c.unit ?? "",
+    customerContext: c.customerContext,
+    period: c.period,
+  });
+}).map((claim, i, all) => {
+  // Re-write metadata with scope (makeClaim only carries period).
+  const src = extractClaims(stripeStage66Paragraph, {
+    officialSite: true,
+    subjectCompany: "Stripe",
+  })[i];
+  claim.metadata = JSON.stringify({
+    customerContext: src?.customerContext,
+    contextNote: src?.contextNote,
+    scope: src?.scope,
+    period: src?.period,
+  });
+  return claim;
+});
+const e2e66Contras = detectContradictions(e2e66Claims);
+eq("6.6 e2e Stripe paragraph → zero contradictions", e2e66Contras.length, 0);
+
 // ── Report ─────────────────────────────────────────────────────────────────
 let failed = 0;
 for (const c of cases) {

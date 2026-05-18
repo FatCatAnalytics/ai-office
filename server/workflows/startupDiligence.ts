@@ -254,6 +254,10 @@ export async function runStartupDiligence(input: StartStartupDiligenceInput): Pr
         const claimMeta: Record<string, unknown> = {};
         if (c.contextNote) claimMeta.contextNote = c.contextNote;
         if (c.customerContext) claimMeta.customerContext = c.customerContext;
+        // Stage 6.6: persist scope + period so contradiction detection
+        // can compare apples to apples (annual vs event-window).
+        if (c.scope) claimMeta.scope = c.scope;
+        if (c.period) claimMeta.period = c.period;
         // Stage 6.5: lower confidence for unclassified monetary mentions
         // and customer-story figures so they don't drive subject-company
         // calculations / scoring.
@@ -658,13 +662,27 @@ function extractRelevance(metadataJson: string): number | null {
 function stageSixFiveClaimLabel(c: { subject: string; metadata?: string | null }): string {
   let customer = "";
   let note = "";
+  let scope = "";
+  let period = "";
   try {
     const m = JSON.parse(c.metadata ?? "{}");
     if (typeof m?.customerContext === "string") customer = m.customerContext;
     if (typeof m?.contextNote === "string") note = m.contextNote;
+    if (typeof m?.scope === "string") scope = m.scope;
+    if (typeof m?.period === "string") period = m.period;
   } catch { /* old rows had {} */ }
+  // Stage 6.6: scope-aware payment volume label so users can tell
+  // annual payment volume apart from event-window processing volume.
+  const periodTail = period ? ` (${period})` : "";
   switch (c.subject) {
-    case "payment_volume": return "payment / processing volume";
+    case "payment_volume": {
+      if (scope === "event_window") return `event-window processing volume${periodTail}`;
+      if (scope === "annual") return `annual payment volume${periodTail}`;
+      if (scope === "monthly") return `monthly payment volume${periodTail}`;
+      if (scope === "quarterly") return `quarterly payment volume${periodTail}`;
+      if (scope === "cumulative") return `cumulative payment volume${periodTail}`;
+      return "payment / processing volume";
+    }
     case "valuation": return "valuation";
     case "funding_amount": return "funding raised";
     case "revenue": return "revenue";
