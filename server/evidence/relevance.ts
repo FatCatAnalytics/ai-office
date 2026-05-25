@@ -83,6 +83,11 @@ const SECONDARY_SOURCE_TYPES = new Set<string>([
  */
 const NOISY_SOURCE_TYPES = new Set<string>([
   "openalex", "arxiv", "gdelt", "news_rss",
+  // Stage 6.8: Perplexity citations are themselves search-derived web pages,
+  // so they get the same false-positive treatment as GDELT / news_rss. The
+  // gate ensures off-topic citations (the failure mode the relevance scorer
+  // was built for) don't leak into the evidence store.
+  "perplexity",
 ]);
 
 const STOPWORDS = new Set<string>([

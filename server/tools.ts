@@ -17,6 +17,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { storage } from "./storage";
+import { runResearch as runPerplexityResearch, isConfigured as perplexityConfigured } from "./research/perplexity";
 
 export interface ToolDefinition {
   name: string;
@@ -90,9 +91,49 @@ export const TAVILY_EXTRACT_TOOL: ToolDefinition = {
   },
 };
 
+// Stage 6.8: Perplexity research tool. The Perplexity API combines web search
+// + LLM synthesis in a single call and returns inline citations, which makes
+// it well-suited for source-discovery and claim-verification turns. The tool
+// is in addition to Tavily — agents pick whichever fits the sub-task (Tavily
+// for breadth + per-URL extraction, Perplexity for synthesised answers with
+// citations). When PERPLEXITY_API_KEY is unset the tool is omitted entirely
+// from the agent's resolved tool set.
+export const PERPLEXITY_RESEARCH_TOOL: ToolDefinition = {
+  name: "perplexity_research",
+  description:
+    "Ask Perplexity a focused research question. Returns a concise synthesised answer with a numbered list of source URLs (citations). Use this for: (a) up-to-date public-web facts about companies/people/products, (b) discovering authoritative sources for a topic, (c) cross-checking a claim against multiple independent outlets. Prefer concrete, one-sentence questions over broad keywords. The answer comes back grounded in citations — quote the URLs directly when you reuse a fact.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "The research question, in natural language. Keep it under 500 characters.",
+      },
+      search_domain_filter: {
+        type: "array",
+        description: "Optional list of up to 8 domains to restrict the search to (e.g. ['sec.gov','companieshouse.gov.uk']). Use sparingly — overconstraining yields empty results.",
+        items: { type: "string" },
+      },
+      search_recency_filter: {
+        type: "string",
+        description: "Optional recency window for the search. Use only when the question is time-sensitive.",
+        enum: ["hour", "day", "week", "month"],
+      },
+      max_tokens: {
+        type: "integer",
+        description: "Maximum length of Perplexity's answer in tokens (default 1024).",
+        minimum: 128,
+        maximum: 4096,
+      },
+    },
+    required: ["query"],
+  },
+};
+
 export const ALL_TOOLS: Record<string, ToolDefinition> = {
   tavily_search: TAVILY_SEARCH_TOOL,
   tavily_extract: TAVILY_EXTRACT_TOOL,
+  perplexity_research: PERPLEXITY_RESEARCH_TOOL,
 };
 
 // Resolve the Tavily key — try the storage setting first (Office Floor → Settings),
@@ -248,6 +289,63 @@ export async function execTavilyExtract(
   return clipPayload(lines.join("\n"));
 }
 
+// ─── tool: perplexity_research ──────────────────────────────────────────────
+// Stage 6.8: agent-facing entry point for the shared Perplexity client.
+// Output is shaped for an LLM consumer: the synthesised answer first, then a
+// numbered citation list. We clip the answer to PER_RESULT_CHAR_CAP × 2 so
+// long syntheses don't blow the tool-response budget, and trim total citations
+// to a sane upper bound. Errors come back as `Error: …` strings rather than
+// thrown exceptions so the tool-loop in llm.ts can feed them back to the
+// model unchanged.
+export async function execPerplexityResearch(
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<string> {
+  const query = typeof args.query === "string" ? args.query.trim() : "";
+  if (!query) return "Error: perplexity_research requires a non-empty 'query' argument.";
+
+  const searchDomainFilter = Array.isArray(args.search_domain_filter)
+    ? (args.search_domain_filter as unknown[])
+        .filter((d): d is string => typeof d === "string" && d.length > 0)
+    : undefined;
+  const searchRecencyFilter = typeof args.search_recency_filter === "string"
+    ? args.search_recency_filter
+    : undefined;
+  const maxTokens = typeof args.max_tokens === "number" ? Math.min(4096, Math.max(128, args.max_tokens)) : undefined;
+
+  const outcome = await runPerplexityResearch({
+    query,
+    searchDomainFilter,
+    searchRecencyFilter,
+    maxTokens,
+    signal,
+  });
+
+  if (!outcome.ok) {
+    return `Error: ${outcome.message}`;
+  }
+
+  const lines: string[] = [];
+  lines.push(`Answer (model: ${outcome.model}):`);
+  lines.push(clipContent(outcome.content, PER_RESULT_CHAR_CAP * 2));
+  if (outcome.citations.length > 0) {
+    lines.push("\nCitations:");
+    outcome.citations.forEach((c, i) => {
+      const title = c.title ? ` ${c.title}` : "";
+      lines.push(`[${i + 1}] ${c.url}${title}`);
+    });
+  } else {
+    lines.push("\nNo citations were returned for this query.");
+  }
+  return clipPayload(lines.join("\n"));
+}
+
+// ─── Configuration helper ───────────────────────────────────────────────────
+// Stage 6.8: same shape as tavilyConfigured() so the live orchestrator can
+// emit a single warning event when the key is absent instead of hitting a 401
+// per call.
+export { perplexityConfigured };
+
 // ─── Dispatch ──────────────────────────────────────────────────────────────
 // Look up the tool implementation by name and invoke it. Always returns a
 // string (errors are stringified) — the LLM tool-call loop expects a single
@@ -264,9 +362,10 @@ export async function executeTool(
     args = rawArgs ?? {};
   }
   switch (name) {
-    case "tavily_search":  return execTavilySearch(args, signal);
-    case "tavily_extract": return execTavilyExtract(args, signal);
-    default:               return `Error: unknown tool "${name}"`;
+    case "tavily_search":        return execTavilySearch(args, signal);
+    case "tavily_extract":       return execTavilyExtract(args, signal);
+    case "perplexity_research":  return execPerplexityResearch(args, signal);
+    default:                     return `Error: unknown tool "${name}"`;
   }
 }
 

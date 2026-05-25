@@ -898,14 +898,19 @@ const REMOVED_AGENT_IDS = ["pm", "harvester", "news-specialist", "company-search
 // so they retrieve live evidence rather than hallucinating from training data.
 // Non-research agents (frontend, backend, devops, etc.) keep their existing
 // non-tool path — they don't need search.
+// Stage 6.8: perplexity_research is offered to the research / source-discovery /
+// validation agents alongside Tavily. The two are complementary — Tavily is
+// best for breadth + per-URL extraction, Perplexity for synthesised answers
+// with inline citations. Web-scraper deliberately keeps Tavily only because
+// its job is targeted per-URL extraction, not synthesis.
 export const AGENT_TOOLS: Record<string, string[]> = {
-  "deep-search":           ["tavily_search", "tavily_extract"],
-  "source-discovery":      ["tavily_search", "tavily_extract"],
-  "annual-reports-search": ["tavily_search", "tavily_extract"],
-  "industry-research":     ["tavily_search", "tavily_extract"],
+  "deep-search":           ["tavily_search", "tavily_extract", "perplexity_research"],
+  "source-discovery":      ["tavily_search", "tavily_extract", "perplexity_research"],
+  "annual-reports-search": ["tavily_search", "tavily_extract", "perplexity_research"],
+  "industry-research":     ["tavily_search", "tavily_extract", "perplexity_research"],
   "web-scraper":           ["tavily_search", "tavily_extract"],
-  "doc-specialist":        ["tavily_search", "tavily_extract"],
-  "data-val-specialist":   ["tavily_search", "tavily_extract"],
+  "doc-specialist":        ["tavily_search", "tavily_extract", "perplexity_research"],
+  "data-val-specialist":   ["tavily_search", "tavily_extract", "perplexity_research"],
 };
 
 // Stage 4.15: research agents must emit a structured DeliverableManifest
@@ -915,9 +920,26 @@ export const AGENT_TOOLS: Record<string, string[]> = {
 // We append MANIFEST_INSTRUCTIONS to each research agent's systemPrompt at
 // module load — DEFAULT_AGENTS is the source of truth used both for fresh
 // inserts and for the migration that rewrites existing rows.
+// Stage 6.8: appended once for every research agent that has the new
+// perplexity_research tool resolved. We keep it short — the per-agent prompts
+// already explain how to handle citations + grounding; this only nudges the
+// model to pick the right tool for the sub-task. Adding the snippet at module
+// load means it ships through the same per-stage migration path as
+// MANIFEST_INSTRUCTIONS, so existing DBs pick it up on next boot.
+const PERPLEXITY_TOOL_GUIDANCE =
+  "TOOL CHOICE (Stage 6.8): you also have `perplexity_research(query, …)` available alongside the Tavily tools. " +
+  "Use perplexity_research when you need a synthesised answer-with-citations for a focused factual question, " +
+  "for source discovery on an unfamiliar topic, or to cross-check a claim against multiple independent sources. " +
+  "Prefer tavily_search when you need many ranked hits to scan, and tavily_extract when you already have a target URL. " +
+  "Perplexity returns its own inline citations — when you reuse a Perplexity answer in your deliverable, copy each cited URL into your bibliography (do not paraphrase a citation away). Never invent URLs. If perplexity_research returns an `Error: not configured` line, fall back to the Tavily tools without flagging it as a hard failure.";
+
 for (const agent of DEFAULT_AGENTS) {
   if (AGENT_TOOLS[agent.id]) {
-    agent.systemPrompt = `${agent.systemPrompt}\n\n${MANIFEST_INSTRUCTIONS}`;
+    let prompt = `${agent.systemPrompt}\n\n${MANIFEST_INSTRUCTIONS}`;
+    if (AGENT_TOOLS[agent.id].includes("perplexity_research")) {
+      prompt = `${prompt}\n\n${PERPLEXITY_TOOL_GUIDANCE}`;
+    }
+    agent.systemPrompt = prompt;
   }
 }
 
@@ -1040,6 +1062,7 @@ class SQLiteStorage implements IStorage {
     // a prompt rewrite. Setting this on fresh installs prevents the no-op
     // migration block below from running unnecessarily.
     const STAGE_420_KEY = "stage_4_20_deepseek_provider_added_at";
+    const STAGE_68_KEY = "stage_6_8_perplexity_prompts_migrated_at";
     const alreadyMigrated = this.getSetting(STAGE_410_KEY);
 
     if (!alreadyMigrated) {
@@ -1075,6 +1098,7 @@ class SQLiteStorage implements IStorage {
       this.setSetting(STAGE_417_KEY, String(Date.now())); // 4.10 ran fresh → 4.17 scraper + tables-first prompts already in
       this.setSetting(STAGE_419_KEY, String(Date.now())); // 4.10 ran fresh → 4.19 completeness/verification semantics already in
       this.setSetting(STAGE_420_KEY, String(Date.now())); // 4.10 ran fresh → 4.20 DeepSeek provider already wired in
+      this.setSetting(STAGE_68_KEY, String(Date.now()));   // 4.10 ran fresh → 6.8 Perplexity tool guidance already in
       return;
     }
 
@@ -1180,6 +1204,27 @@ class SQLiteStorage implements IStorage {
     const alreadyMigrated420 = this.getSetting(STAGE_420_KEY);
     if (!alreadyMigrated420) {
       this.setSetting(STAGE_420_KEY, String(Date.now()));
+    }
+
+    // Stage 6.8 one-shot migration: research agents now have the
+    // perplexity_research tool available alongside Tavily, and DEFAULT_AGENTS
+    // has the PERPLEXITY_TOOL_GUIDANCE block appended at module load. Push
+    // the updated systemPrompt to existing rows so live DBs pick up the
+    // guidance without an operator rebooting from scratch.
+    const alreadyMigrated68 = this.getSetting(STAGE_68_KEY);
+    if (!alreadyMigrated68) {
+      const researchIds = Object.keys(AGENT_TOOLS);
+      for (const agent of DEFAULT_AGENTS) {
+        if (!researchIds.includes(agent.id)) continue;
+        const existing = db.select().from(schema.agents).where(eq(schema.agents.id, agent.id)).get();
+        if (existing) {
+          db.update(schema.agents)
+            .set({ systemPrompt: agent.systemPrompt })
+            .where(eq(schema.agents.id, agent.id))
+            .run();
+        }
+      }
+      this.setSetting(STAGE_68_KEY, String(Date.now()));
     }
 
     // Steady-state boot: only insert genuinely new defaults; never overwrite.

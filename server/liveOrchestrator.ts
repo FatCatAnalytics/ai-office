@@ -24,7 +24,7 @@ import { renderPdf, renderXlsx, renderPdfFromManifest, renderXlsxFromManifest, t
 import { extractManifest, manifestToMarkdown, manifestToCsv, manifestToJson, type DeliverableManifest } from "./manifest";
 import { routeForComplexity, routeForCriticalCall, normaliseComplexity, type Complexity } from "./modelRouter";
 import { reviewProjectQA } from "./qaReviewer";
-import { resolveTools, tavilyConfigured } from "./tools";
+import { resolveTools, tavilyConfigured, perplexityConfigured } from "./tools";
 import {
   extractIssueSignature,
   findAllTooSimilar,
@@ -1160,18 +1160,33 @@ async function runWorkerTask(
     },
   ];
 
-  // ── Stage 4.13 tool wiring ──
-  // Research agents get Tavily web tools. We resolve them here so a missing
-  // TAVILY_API_KEY surfaces as a single warning event instead of a per-call
-  // 401 cascade.
-  const toolNames = toolsForAgent(agent.id);
-  const tools = toolNames.length > 0 && tavilyConfigured()
-    ? resolveTools(toolNames)
-    : [];
-  if (toolNames.length > 0 && tools.length === 0) {
+  // ── Stage 4.13 tool wiring (extended Stage 6.8 for Perplexity) ──
+  // Research agents get web research tools. We resolve them here so a missing
+  // provider key surfaces as a single warning event instead of a per-call
+  // 401 cascade. Tavily and Perplexity are independently optional: when only
+  // one provider has a key we keep that provider's tools and quietly drop
+  // the other. Only when BOTH are unset do we disable web tools entirely.
+  const requestedToolNames = toolsForAgent(agent.id);
+  const tavilyOn = tavilyConfigured();
+  const perplexityOn = perplexityConfigured();
+  const availableToolNames = requestedToolNames.filter((n) => {
+    if (n.startsWith("tavily_")) return tavilyOn;
+    if (n === "perplexity_research") return perplexityOn;
+    return true;
+  });
+  const tools = availableToolNames.length > 0 ? resolveTools(availableToolNames) : [];
+  if (requestedToolNames.length > 0 && tools.length === 0) {
     deps.emitEvent(
       project.id, agent.id, agent.name, "tools disabled",
-      "TAVILY_API_KEY not set — agent will run without web tools and may produce empty results", "warning"
+      "No web research provider configured (set TAVILY_API_KEY and/or PERPLEXITY_API_KEY) — agent will run without web tools and may produce empty results",
+      "warning",
+    );
+  } else if (requestedToolNames.length > 0 && availableToolNames.length < requestedToolNames.length) {
+    const missing = requestedToolNames.filter((n) => !availableToolNames.includes(n));
+    deps.emitEvent(
+      project.id, agent.id, agent.name, "partial tools",
+      `Some research tools unavailable (missing provider key): ${missing.join(", ")}. Agent will run with the remaining tools.`,
+      "info",
     );
   }
 

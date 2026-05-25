@@ -20,6 +20,7 @@ export type SourceType =
   | "website"
   | "market_data"
   | "deck"
+  | "perplexity"
   | "other";
 
 export interface ConnectorResult {
