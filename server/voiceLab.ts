@@ -838,6 +838,19 @@ export const WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN = JSON.stringify([
       "swings the other way — BUT only if the angle is genuinely strong. " +
       "Never pick a weak SME story over a strong bank story just for " +
       "rotation. The strongest angle always wins; rotation is a tiebreak.\n\n" +
+      "ANTI-REPEAT GUARD (Stage 6.7 — HARD RULE). If a 'RECENT ISSUES (do " +
+      "not repeat these themes)' block has been appended to the bottom of " +
+      "this brief, scan it before finalising your pick. Do NOT choose a " +
+      "candidate that materially overlaps with any title or summary in that " +
+      "list — same primary subject, same regulator/event focus, same angle " +
+      "shape. If the strongest candidate overlaps with a recent issue, pick " +
+      "the NEXT strongest candidate that is materially distinct. Same-sector " +
+      "stories are fine as long as the angle/lens is genuinely different " +
+      "(e.g. last week's NIM compression piece does NOT prevent this week's " +
+      "Pillar 2 capital piece). A near-repeat is the single fastest way to " +
+      "lose subscribers — the orchestrator will flag this after publication " +
+      "and the operator will have to re-run the week, which costs more " +
+      "tokens than picking a different angle here.\n\n" +
       "OUTPUT FORMAT — a short markdown note with these exact headings, in " +
       "order:\n\n" +
       "  ## Chosen story\n" +
@@ -1026,6 +1039,16 @@ export const WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN = JSON.stringify([
       "three previous tasks. Apply EVERY FAIL item from the QA review and " +
       "EVERY non-VERIFIED row from the fact-check table (DROP, " +
       "REPLACE_NUMBER, or REPLACE_SOURCE as instructed).\n\n" +
+      "ANTI-REPEAT GUARD (Stage 6.7 — HARD RULE for the RUNNER-UP). If a " +
+      "'RECENT ISSUES (do not repeat these themes)' block has been appended " +
+      "to the bottom of this brief, the runner-up paragraph you write MUST " +
+      "be a materially distinct angle from (a) the issue you are about to " +
+      "publish above it AND (b) every entry in that recent-issues list. " +
+      "Don't propose a runner-up that's just a tighter re-skin of this " +
+      "week's chosen angle, and don't propose one that revives last week's " +
+      "topic. If your strongest backup overlaps, write a one-line note " +
+      "saying so and propose a different runner-up angle instead. The " +
+      "orchestrator will flag a near-duplicate runner-up after save.\n\n" +
       "DELIBERATE-RISK MOMENT (mandatory). Before emitting the file " +
       "blocks, identify ONE place in the article to take a small genuine " +
       "risk — a sharp opinion, an admission of personal failure, a " +

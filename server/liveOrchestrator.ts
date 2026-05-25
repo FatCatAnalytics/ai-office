@@ -25,6 +25,20 @@ import { extractManifest, manifestToMarkdown, manifestToCsv, manifestToJson, typ
 import { routeForComplexity, routeForCriticalCall, normaliseComplexity, type Complexity } from "./modelRouter";
 import { reviewProjectQA } from "./qaReviewer";
 import { resolveTools, tavilyConfigured } from "./tools";
+import {
+  extractIssueSignature,
+  findAllTooSimilar,
+  findTooSimilar,
+  formatNoveltyMatch,
+  isAnalyticalBankerTemplate,
+  isIssueFilename,
+  isRunnerUpFilename,
+  similarityScore,
+  summariseRecentTopics,
+  SIMILARITY_THRESHOLD,
+  type RecentIssue,
+} from "./editorial/novelty";
+import { loadRecentIssuesForTemplate } from "./editorial/recentIssues";
 import type { Agent, Task, Project } from "@shared/schema";
 
 export interface LiveOrchestratorDeps {
@@ -299,6 +313,182 @@ function loadReferencePlanForProject(
   return plan;
 }
 
+// ── Stage 6.7 — Analytical Banker novelty guard ─────────────────────────────
+// In-place augments the planned task descriptions for the Analytical Banker
+// weekly newsletter so the angle-selection and final apply-fixes tasks see
+// a "RECENT ISSUES (do not repeat these themes)" block listing the last
+// ~8 published issues. No-op on every other template.
+//
+// The injection sits at the END of each target task's description, after
+// the existing brief. Keeping it at the bottom means the bulk of the
+// instructions stay verbatim and the recent-topics list reads as an
+// addendum the model can scan quickly.
+//
+// We target two planner keys:
+//   - "angle"  — so the editorial-lead picks a materially distinct story
+//                during selection, BEFORE any drafting cost is spent.
+//   - "final"  — so the apply-fixes pass also has the recent-topics list
+//                when assembling the file blocks. The runner-up paragraph
+//                is generated here too, and the brief explicitly tells the
+//                model the runner-up must be distinct from this list.
+//
+// The novelty check itself runs again AFTER the final task saves files
+// (see runNoveltyCheckOnSavedFiles) — that's the deterministic guardrail
+// that fires whether or not the prompt-side hint succeeded.
+function augmentPlanWithRecentTopics(
+  project: Project,
+  plan: PlannedTask[],
+  deps: LiveOrchestratorDeps,
+): void {
+  if (project.templateId == null) return;
+  const template = storage.getProjectTemplate(project.templateId);
+  if (!isAnalyticalBankerTemplate(template)) return;
+
+  let recents: RecentIssue[] = [];
+  try {
+    recents = loadRecentIssuesForTemplate(project.templateId, {
+      excludeProjectId: project.id,
+      include: "issues",
+    });
+  } catch (e) {
+    // Don't fail the run if the novelty load throws — fall back to the
+    // unaugmented plan (same behaviour as before Stage 6.7).
+    deps.emitEvent(
+      project.id, "manager", "Manager", "novelty load failed",
+      `Could not load recent issues for novelty check: ${(e as Error).message ?? e}`,
+      "warning",
+    );
+    return;
+  }
+
+  if (recents.length === 0) {
+    // First-ever run for this template — nothing to compare against, so
+    // skip the augmentation silently rather than injecting an empty block.
+    return;
+  }
+
+  const block = summariseRecentTopics(recents);
+  if (!block) return;
+
+  let augmented = 0;
+  for (const t of plan) {
+    if (t.key === "angle" || t.key === "final") {
+      t.description = `${t.description}\n\n── NOVELTY GUARD (Stage 6.7) ──\n${block}`;
+      augmented++;
+    }
+  }
+
+  if (augmented > 0) {
+    deps.emitEvent(
+      project.id, "manager", "Manager", "novelty hint injected",
+      `Surfaced ${recents.length} recent issue${recents.length === 1 ? "" : "s"} to the angle + final tasks so the model picks a materially distinct story`,
+      "info",
+    );
+  }
+}
+
+// Runs after the editorial-lead's `final` task saves the issue + runner-up
+// file blocks. Compares each saved file against the recent-issues window
+// and emits a "rejected as too similar" warning event when the similarity
+// crosses SIMILARITY_THRESHOLD. Also cross-checks the runner-up against
+// the main issue from this week's run — a runner-up that's essentially
+// the same article as the main pick is useless as a backup.
+//
+// This is intentionally observational (emits events) rather than destructive
+// (doesn't delete the file or fail the task). Re-running the apply-fixes
+// step here would burn another expensive Sonnet/Opus call AND lose the
+// fact-check work; the operator gets a clear warning in the activity feed
+// and can decide whether to re-run manually. The events use the
+// "warning" status so they stand out in the UI.
+function runNoveltyCheckOnSavedFiles(
+  project: Project,
+  task: Task,
+  agent: Agent,
+  savedFiles: { filename: string; content: string }[],
+  deps: LiveOrchestratorDeps,
+): void {
+  if (project.templateId == null) return;
+  const template = storage.getProjectTemplate(project.templateId);
+  if (!isAnalyticalBankerTemplate(template)) return;
+
+  const issueFiles = savedFiles.filter(f => isIssueFilename(f.filename));
+  const runnerUpFiles = savedFiles.filter(f => isRunnerUpFilename(f.filename));
+  if (issueFiles.length === 0 && runnerUpFiles.length === 0) return;
+
+  // Load recent issues (and recent runner-ups, since a candidate that
+  // revives last week's runner-up wholesale is also a repeat).
+  let recents: RecentIssue[] = [];
+  try {
+    recents = loadRecentIssuesForTemplate(project.templateId, {
+      excludeProjectId: project.id,
+      include: "both",
+    });
+  } catch (e) {
+    deps.emitEvent(
+      project.id, agent.id, agent.name, "novelty check failed",
+      `Could not load recent issues for post-save check: ${(e as Error).message ?? e}`,
+      "warning",
+    );
+    return;
+  }
+
+  // 1. Each issue-*.md vs. recent issues — the user's primary complaint.
+  for (const f of issueFiles) {
+    const sig = extractIssueSignature(f.content, f.filename);
+    const matches = findAllTooSimilar(sig, recents);
+    if (matches.length > 0) {
+      const top = matches[0];
+      deps.emitEvent(
+        project.id, agent.id, agent.name, "article too similar to recent issue",
+        `⚠️ ${f.filename}: ${formatNoveltyMatch(top)}` +
+          (matches.length > 1
+            ? ` (+${matches.length - 1} other recent issue${matches.length - 1 === 1 ? "" : "s"} above threshold)`
+            : ""),
+        "warning",
+      );
+    } else if (recents.length > 0) {
+      deps.emitEvent(
+        project.id, agent.id, agent.name, "novelty check passed",
+        `✓ ${f.filename} is materially distinct from the last ${recents.length} issue${recents.length === 1 ? "" : "s"} (max similarity below ${(SIMILARITY_THRESHOLD * 100).toFixed(0)}%)`,
+        "success",
+      );
+    }
+  }
+
+  // 2. Runner-up vs. recent issues.
+  for (const f of runnerUpFiles) {
+    const sig = extractIssueSignature(f.content, f.filename);
+    const match = findTooSimilar(sig, recents);
+    if (match) {
+      deps.emitEvent(
+        project.id, agent.id, agent.name, "runner-up too similar to recent issue",
+        `⚠️ ${f.filename}: ${formatNoveltyMatch(match)}`,
+        "warning",
+      );
+    }
+  }
+
+  // 3. Runner-up vs. the main issue from THIS week — a backup needs to
+  //    be a genuine alternative, not a tighter retitling of the chosen
+  //    angle. We use the same threshold (0.40) since the user wants
+  //    materially distinct content end-to-end.
+  if (issueFiles.length > 0 && runnerUpFiles.length > 0) {
+    const issueSig = extractIssueSignature(issueFiles[0].content, issueFiles[0].filename);
+    for (const r of runnerUpFiles) {
+      const runnerSig = extractIssueSignature(r.content, r.filename);
+      const score = similarityScore(issueSig, runnerSig);
+      if (score >= SIMILARITY_THRESHOLD) {
+        const pct = (score * 100).toFixed(0);
+        deps.emitEvent(
+          project.id, agent.id, agent.name, "runner-up too similar to main issue",
+          `⚠️ ${r.filename} is ${pct}% similar to ${issueFiles[0].filename} — runner-up is meant to be a materially different backup angle, not a re-skin`,
+          "warning",
+        );
+      }
+    }
+  }
+}
+
 export function parseFileBlocks(raw: string): ParsedFileBlock[] {
   // Stage 5.x.5: tolerant scanner. The previous regex required a closing
   // </file> tag, so when the model's output token cap hit mid-runner-up
@@ -486,6 +676,11 @@ async function saveLiveOutput(
   const fileBlocks = parseFileBlocks(rawOutput);
   if (fileBlocks.length > 0) {
     let saved = 0;
+    // Stage 6.7: collect successfully-saved markdown blocks so the
+    // novelty guard (below) can run on them in-memory after the loop.
+    // Reading them back off disk would also work but adds I/O for no
+    // reason — we still have the block content right here.
+    const savedMarkdown: { filename: string; content: string }[] = [];
     for (const block of fileBlocks) {
       try {
         // Infer mime/format from extension. Defaults to markdown.
@@ -520,12 +715,30 @@ async function saveLiveOutput(
             "warning"
           );
         }
+        if (fmtForExt === "markdown") {
+          savedMarkdown.push({ filename: persisted.filename, content: block.content });
+        }
         saved++;
       } catch (e) {
         console.error(`[live] file-block save error:`, e);
         deps.emitEvent(
           projectId, agent.id, agent.name, "save failed",
           `${block.filename}: ${(e as Error).message ?? e}`, "warning"
+        );
+      }
+    }
+    // Stage 6.7 — post-save novelty guard for The Analytical Banker.
+    // No-op for every other template. Runs once per call, after every
+    // file block has been persisted, so the issue and runner-up are
+    // both visible to the cross-check.
+    if (savedMarkdown.length > 0) {
+      try {
+        runNoveltyCheckOnSavedFiles(project, task, agent, savedMarkdown, deps);
+      } catch (e) {
+        // Never let the novelty guard break the run — it's observational.
+        deps.emitEvent(
+          projectId, agent.id, agent.name, "novelty check error",
+          `Skipped novelty check: ${(e as Error).message ?? e}`, "warning",
         );
       }
     }
@@ -1204,6 +1417,13 @@ async function runLiveOrchestrationInner(
   const referencePlan = loadReferencePlanForProject(project, agents, deps);
   if (referencePlan) {
     plan = referencePlan;
+    // Stage 6.7 — Analytical Banker novelty guard.
+    // For weekly newsletter runs, surface the last ~8 issues to the angle
+    // and final tasks so the model is told up-front "do not repeat these
+    // themes — pick a materially distinct angle." The post-save check
+    // (see runNoveltyCheckOnFinalTask) is the belt-and-braces second
+    // line of defence if the LLM still picks a near-duplicate.
+    augmentPlanWithRecentTopics(project, plan, deps);
     deps.emitEvent(
       projectId, "manager", manager.name, "using reference plan",
       `Skipping manager LLM — inserting ${plan.length} predefined tasks from template`,

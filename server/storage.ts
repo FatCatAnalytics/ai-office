@@ -1740,6 +1740,48 @@ try {
   console.warn("[seed] Stage 5.x.6 QA-complexity bump failed:", e);
 }
 
+// Stage 6.7: upgrade the Weekly reference plan + prompt so the angle and
+// final tasks carry the ANTI-REPEAT GUARD instructions. Older rows (any
+// row whose angle or final task description does NOT contain
+// "ANTI-REPEAT GUARD") are upgraded in place. Hand-customised plans that
+// already mention the guard are left alone — idempotent across boots.
+// The orchestrator's post-save novelty check runs regardless of whether
+// this migration succeeded, so this is purely about getting the
+// LLM-side hint in front of the editorial-lead earlier.
+try {
+  const existingWeekly = storage
+    .getProjectTemplates()
+    .find((t) => t.name === WEEKLY_TEMPLATE_NAME);
+  if (existingWeekly && existingWeekly.referencePlan) {
+    let parsed: Array<Record<string, unknown>> | null = null;
+    try {
+      const p = JSON.parse(existingWeekly.referencePlan);
+      if (Array.isArray(p)) parsed = p as Array<Record<string, unknown>>;
+    } catch {
+      parsed = null;
+    }
+    if (parsed) {
+      const angle = parsed.find((t) => t && t.key === "angle");
+      const final = parsed.find((t) => t && t.key === "final");
+      const needsUpgrade =
+        (typeof angle?.description === "string" && !angle.description.includes("ANTI-REPEAT GUARD")) ||
+        (typeof final?.description === "string" && !final.description.includes("ANTI-REPEAT GUARD"));
+      if (needsUpgrade) {
+        storage.updateProjectTemplate(existingWeekly.id, {
+          referencePlan: WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN,
+          prompt: WEEKLY_ANALYTICAL_BANKER_PROMPT,
+          updatedAt: Date.now(),
+        });
+        console.log(
+          `[seed] Stage 6.7: refreshed Weekly template (id=${existingWeekly.id}) with ANTI-REPEAT GUARD on angle + final tasks`,
+        );
+      }
+    }
+  }
+} catch (e) {
+  console.warn("[seed] Stage 6.7 anti-repeat guard upgrade failed:", e);
+}
+
 // Heartbeat smoke-test seed kept for fresh databases only — useful for
 // confirming the cron loop is alive before flipping the real template on.
 // Skipped on databases that already have other templates so the production
