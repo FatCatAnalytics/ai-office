@@ -11,6 +11,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import type { Agent, Project } from "../types";
 import { useAgentMovement, type AgentPose, type AgentPoseMap } from "../hooks/useAgentMovement";
+import AgentWalker from "./AgentWalker";
 
 import managerImg       from "@assets/sprite_manager.png";
 import frontendImg      from "@assets/sprite_frontend.png";
@@ -906,6 +907,11 @@ function AgentSprite({ agent, zoom, deskMap, poses }: {
   const isWalking = pose?.state === "walking";
   const isMingling = pose?.state === "mingling";
   const facing    = pose?.facing ?? 1;
+  // Stage 6.7.2: idle agents render as a full-body walker SVG; active/blocked/
+  // done agents keep the seated PNG so the desk artwork still reads as
+  // "sitting at the desk". The pose state from useAgentMovement is the source
+  // of truth — if the agent isn't sitting, draw the walker.
+  const showWalker = pose ? pose.state !== "sit" : false;
 
   const labelSz = Math.round(clamp(12/zoom, 9, 15));
   const img = SPRITE_MAP[agent.spriteType] ?? SPRITE_MAP["manager"];
@@ -986,28 +992,39 @@ function AgentSprite({ agent, zoom, deskMap, poses }: {
         </div>
       )}
 
-      {/* Sprite (wrapper handles facing flip + standing offset; inner img
-          handles bob/sway). When walking/mingling we lift the sprite a few
-          px so it no longer reads as "sitting in a chair". */}
+      {/* Sprite layer. Stage 6.7.2:
+            - showWalker  → full-body chibi SVG (idle/wander/walk).
+            - otherwise  → seated PNG art (working/thinking/blocked/done).
+          The walker is drawn so its feet land at the same anchor the PNG's
+          feet would — keeps comm arcs + minimap dots in the right place. */}
       <div style={{
         width:"100%",
         transform: `${facing === -1 ? "scaleX(-1) " : ""}translateY(${
-          isWalking ? -6 : isMingling ? -4 : 0
+          showWalker ? -2 : 0
         }px)`,
         transformOrigin: "50% 90%",
         transition: "transform 0.25s ease",
       }}>
-        <img src={img} alt={agent.name}
-          style={{
-            width:"100%",display:"block",userSelect:"none",
-            animation: isWalking
-              ? "agentWalk 0.42s ease-in-out infinite"
-              : isMingling
-              ? "agentMingle 2.4s ease-in-out infinite"
-              : undefined,
-            transformOrigin: "50% 90%",
-          }}
-          draggable={false}/>
+        {showWalker ? (
+          <div style={{
+            width:"100%", display:"flex", justifyContent:"center",
+            alignItems:"flex-end", height:SPRITE_PX,
+          }}>
+            <AgentWalker
+              color={color}
+              state={isWalking ? "walking" : "mingling"}
+              size={SPRITE_PX * 0.62}
+              spriteType={agent.spriteType}
+            />
+          </div>
+        ) : (
+          <img src={img} alt={agent.name}
+            style={{
+              width:"100%",display:"block",userSelect:"none",
+              transformOrigin: "50% 90%",
+            }}
+            draggable={false}/>
+        )}
       </div>
 
       {/* Name label — faded for idle wanderers so movement reads clearly;
@@ -1209,12 +1226,21 @@ export default function IsometricOffice({ agents, project }: Props) {
         @keyframes bounce{from{transform:translateY(0)}to{transform:translateY(-7px)}}
         @keyframes dashFlow{to{stroke-dashoffset:-40}}
         @keyframes fadeOut{from{opacity:1}to{opacity:0}}
-        @keyframes agentWalk{0%,100%{transform:translateY(0) rotate(-2deg)}25%{transform:translateY(-5px) rotate(0deg)}50%{transform:translateY(0) rotate(2deg)}75%{transform:translateY(-5px) rotate(0deg)}}
-        @keyframes agentMingle{0%,100%{transform:translateY(0) rotate(-0.8deg)}50%{transform:translateY(-2px) rotate(0.8deg)}}
-        @keyframes agentBob{0%,100%{transform:translateY(0) rotate(-1deg)}50%{transform:translateY(-3px) rotate(1deg)}}
-        @keyframes agentSway{0%,100%{transform:translateY(0) rotate(-0.6deg)}50%{transform:translateY(-1px) rotate(0.6deg)}}
+        /* Walker animations — body bob + limb swing. */
+        @keyframes awBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+        @keyframes awSway{0%,100%{transform:translateY(0) rotate(-0.6deg)}50%{transform:translateY(-1px) rotate(0.6deg)}}
+        @keyframes awLegL{0%,100%{transform:translate(0,0) rotate(-22deg)}50%{transform:translate(0,0) rotate(22deg)}}
+        @keyframes awLegR{0%,100%{transform:translate(0,0) rotate(22deg)}50%{transform:translate(0,0) rotate(-22deg)}}
+        @keyframes awArmL{0%,100%{transform:translate(0,0) rotate(28deg)}50%{transform:translate(0,0) rotate(-28deg)}}
+        @keyframes awArmR{0%,100%{transform:translate(0,0) rotate(-28deg)}50%{transform:translate(0,0) rotate(28deg)}}
+        .aw-walk{animation:awBob 0.46s ease-in-out infinite;transform-origin:50% 92%}
+        .aw-mingle{animation:awSway 2.6s ease-in-out infinite;transform-origin:50% 92%}
+        .aw-leg-l{animation:awLegL 0.46s ease-in-out infinite;transform-origin:46% 92px;transform-box:fill-box}
+        .aw-leg-r{animation:awLegR 0.46s ease-in-out infinite;transform-origin:54% 92px;transform-box:fill-box}
+        .aw-arm-l{animation:awArmL 0.46s ease-in-out infinite;transform-origin:30% 62px;transform-box:fill-box}
+        .aw-arm-r{animation:awArmR 0.46s ease-in-out infinite;transform-origin:70% 62px;transform-box:fill-box}
         @media (prefers-reduced-motion: reduce){
-          [data-movement-state] img{animation:none !important}
+          .aw-walk,.aw-mingle,.aw-leg-l,.aw-leg-r,.aw-arm-l,.aw-arm-r{animation:none !important}
         }
       `}</style>
 
