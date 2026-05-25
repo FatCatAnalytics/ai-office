@@ -8,6 +8,8 @@
 // Why a dedicated module:
 //   • storage.ts is already 1.2k lines — adding ~12 KB of voice samples and
 //     prompt scaffolding inline would bury it.
+
+import { renderQaChecklistDescription } from "./editorial/qaChecklist";
 //   • These constants are read by both `storage.ts` (agent seeding + template
 //     seeding) and could be re-read by a future Stage 5.3 "regenerate" path
 //     without round-tripping through the database.
@@ -916,73 +918,14 @@ export const WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN = JSON.stringify([
     // the apply-fixes task needs to act on.
     complexity: "high",
     dependsOn: ["draft"],
-    description:
-      "Self-review the draft from the previous task against the 8-step " +
-      "editorial checklist. For EACH step, write a heading like '### Step " +
-      "N — <name>' and then a PASS / FAIL / N/A verdict with a one-line " +
-      "note. If FAIL, list specifically what the apply-fixes task must " +
-      "change — quote the offending sentence and propose the rewrite.\n\n" +
-      "STEP 1 — READ-ALOUD TEST. Read every sentence as if speaking it " +
-      "aloud. Flag any sentence that (a) breaks rhythm, (b) sounds " +
-      "overconfident or falsely authoritative, (c) you wouldn't choose to " +
-      "listen to. Quote the sentence and propose a rewrite.\n\n" +
-      "STEP 2 — CONTRABAND LIST. Search the draft for these AI-tell " +
-      "words and rewrite or delete every match: leverage, unlock, robust, " +
-      "seamless, holistic, navigate (metaphorical), delve, meticulous, " +
-      "meticulously, crucial, paramount, intricate, moreover, furthermore, " +
-      "in conclusion, it's worth noting that, at the end of the day, that " +
-      "being said. And these phrases: 'In today's fast-paced', 'In an " +
-      "ever-evolving landscape', 'the [X] landscape', 'cutting-edge', " +
-      "'empower', 'deep dive', 'learnings', 'actionable insights'. If a " +
-      "sentence contains two or more, the whole sentence must be rewritten. " +
-      "List EVERY hit by line.\n\n" +
-      "STEP 3 — HUMAN TICS. Confirm the draft contains AT LEAST THREE of: " +
-      "(a) a genuine admission of personal limitation, (b) a specific " +
-      "number with a real source, (c) a short single-sentence paragraph " +
-      "for rhythm, (d) self-aware dry humour, (e) a parenthetical aside in " +
-      "em-dashes. Quote the three (or more) instances. If fewer than " +
-      "three, FAIL and tell the apply-fixes task which to add.\n\n" +
-      "STEP 4 — OPENING TEST. Read ONLY the first three sentences. Does " +
-      "it (a) make you curious, (b) sound like a human typed it on a " +
-      "Tuesday, NOT like a McKinsey deck intro? If it opens with 'In " +
-      "recent years', 'The financial services industry', or any thesis " +
-      "sentence — FAIL and propose a scene-based opener.\n\n" +
-      "STEP 5 — TAKEAWAY TEST. Read ONLY the final 'The takeaway' " +
-      "section. Is the action concrete enough that the reader could " +
-      "actually do it this week? Is it specific to THIS issue's argument, " +
-      "or could it be the takeaway from any issue? If generic, FAIL.\n\n" +
-      "STEP 6 — OLD-BOSS TEST. Imagine the most credibility-conscious " +
-      "senior person in Aksel's network reading this — the kind of person " +
-      "whose respect he actually wants. Would Aksel be comfortable " +
-      "forwarding this directly to them? If you'd be slightly embarrassed, " +
-      "FAIL and name the specific lines that would embarrass him.\n\n" +
-      "STEP 7 — FACT CHECK PRELIMINARY. List every numeric claim, every " +
-      "date, every named source in the draft. For each, note whether the " +
-      "draft includes a working inline markdown link to a real URL. " +
-      "Anything without a verifiable inline source = FAIL (the next " +
-      "task is a dedicated fact-check, but flag obvious problems here).\n\n" +
-      "STEP 8 — LENGTH + AUDIENCE TAG PASS. Word count must be between " +
-      "900 and 1,100. If 1,100+, identify the 10–15% to cut. Confirm the " +
-      "standard footer is intact and unchanged. Confirm sign-off is " +
-      "'— Aksel' on its own line. Confirm headers are sentence case, not " +
-      "Title Case.\n\n" +
-      "AUDIENCE TAG (Stage 5.x.4). Read the angle task's output and find " +
-      "the 'Audience' classification (bank | sme | universal). Then check " +
-      "the draft's first line after the H1. It MUST be one of:\n" +
-      "  • '*For finance leaders*' if Audience=bank\n" +
-      "  • '*For growing businesses*' if Audience=sme\n" +
-      "  • (no sub-line, body text starts directly) if Audience=universal\n" +
-      "Any other sub-line text — a different italic phrase, quotes, bold, " +
-      "a blockquote wrapper, or a mismatch between classification and " +
-      "sub-line — is a FAIL. Quote the offending line and tell apply-fixes " +
-      "the exact replacement.\n\n" +
-      "REGISTER CHECK (Stage 5.x.4). If Audience=sme, scan the draft for " +
-      "bank-only jargon: 'BoE', 'MREL', 'GLEIF', 'LEI', 'Pillar 2', " +
-      "'capital ratio', 'CRR', 'liquidity coverage'. Any hit in an SME " +
-      "issue is a FAIL — the SME reader will bounce. Propose a plain " +
-      "replacement.\n\n" +
-      "Output is a plain markdown review note with all 8 step headings. " +
-      "NO <file> blocks at this stage.",
+    // Stage 6.8: the per-step rules now live in
+    // server/editorial/qaChecklist.ts so the reference plan, the prompt,
+    // the migration, the orchestrator guard, and the tests all read from
+    // one source. Verdict tokens are PASS / FIX / WARN (not the older
+    // PASS / FAIL / N/A) and the reviewer must close with a structured
+    // `## Final recommendation` block whose value drives downstream
+    // behaviour.
+    description: renderQaChecklistDescription(),
   },
   {
     key: "factcheck",
