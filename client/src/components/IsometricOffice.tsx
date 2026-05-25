@@ -10,6 +10,7 @@
  */
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import type { Agent, Project } from "../types";
+import { useAgentMovement, type AgentPose, type AgentPoseMap } from "../hooks/useAgentMovement";
 
 import managerImg       from "@assets/sprite_manager.png";
 import frontendImg      from "@assets/sprite_frontend.png";
@@ -255,6 +256,21 @@ function buildDeskAssignments(agents: Agent[]): DeskAssignmentMap {
 
 function getAgentDeskPos(agent: Agent, deskMap: DeskAssignmentMap): [number, number] | null {
   return deskMap.get(agent.id) ?? null;
+}
+
+// Stage 6.7: the live display position blends the desk anchor with any
+// active wander pose. Sprites that are working/thinking sit at the desk;
+// idle sprites wander to waypoints (see useAgentMovement).
+function getAgentDisplayPos(
+  agent: Agent,
+  deskMap: DeskAssignmentMap,
+  poses: AgentPoseMap,
+): { pos: [number, number]; pose: AgentPose | null } | null {
+  const pose = poses.get(agent.id);
+  if (pose) return { pos: [pose.x, pose.y], pose };
+  const desk = getAgentDeskPos(agent, deskMap);
+  if (!desk) return null;
+  return { pos: desk, pose: null };
 }
 
 // ─── SVG floor tile ───────────────────────────────────────────────────────────
@@ -791,11 +807,14 @@ function OfficeRoom() {
 }
 
 // ─── Delegation / communication arcs ─────────────────────────────────────────
-function CommArcs({ agents, deskMap }: { agents: Agent[]; deskMap: DeskAssignmentMap }) {
+function CommArcs({ agents, deskMap, poses }: {
+  agents: Agent[]; deskMap: DeskAssignmentMap; poses: AgentPoseMap;
+}) {
   const mgr = agents.find(a => a.spriteType === "manager");
   if (!mgr) return null;
-  const mPos = getAgentDeskPos(mgr, deskMap);
-  if (!mPos) return null;
+  const mDisp = getAgentDisplayPos(mgr, deskMap, poses);
+  if (!mDisp) return null;
+  const mPos = mDisp.pos;
 
   const active = agents.filter(a =>
     a.spriteType !== "manager" &&
@@ -806,8 +825,9 @@ function CommArcs({ agents, deskMap }: { agents: Agent[]; deskMap: DeskAssignmen
     <svg style={{ position:"absolute", top:0, left:0, width:WORLD_W, height:WORLD_H,
       pointerEvents:"none", zIndex:10 }} overflow="visible">
       {active.map(a => {
-        const aPos = getAgentDeskPos(a, deskMap);
-        if (!aPos) return null;
+        const aDisp = getAgentDisplayPos(a, deskMap, poses);
+        if (!aDisp) return null;
+        const aPos = aDisp.pos;
         const [mx, my] = mPos, [ax, ay] = aPos;
         const cy = (my + ay) / 2 - 80;
         return (
@@ -826,8 +846,8 @@ function CommArcs({ agents, deskMap }: { agents: Agent[]; deskMap: DeskAssignmen
 }
 
 // ─── Minimap ──────────────────────────────────────────────────────────────────
-function MiniMap({ pan, zoom, vpW, vpH, agents, deskMap }: {
-  pan:[number,number]; zoom:number; vpW:number; vpH:number; agents:Agent[]; deskMap:DeskAssignmentMap;
+function MiniMap({ pan, zoom, vpW, vpH, agents, deskMap, poses }: {
+  pan:[number,number]; zoom:number; vpW:number; vpH:number; agents:Agent[]; deskMap:DeskAssignmentMap; poses:AgentPoseMap;
 }) {
   const W=130, H=100;
   const sx = W/WORLD_W, sy = H/WORLD_H;
@@ -850,8 +870,9 @@ function MiniMap({ pan, zoom, vpW, vpH, agents, deskMap }: {
             fill={z.color} opacity="0.5"/>;
         })}
         {agents.map(a => {
-          const pos = getAgentDeskPos(a, deskMap);
-          if (!pos) return null;
+          const disp = getAgentDisplayPos(a, deskMap, poses);
+          if (!disp) return null;
+          const pos = disp.pos;
           return <circle key={a.id} cx={pos[0]*sx} cy={pos[1]*sy} r={3.5}
             fill={a.status==="idle"?"#334155":a.color}
             stroke={a.color} strokeWidth="1"/>;
@@ -868,10 +889,13 @@ function MiniMap({ pan, zoom, vpW, vpH, agents, deskMap }: {
 // ─── Agent sprite ─────────────────────────────────────────────────────────────
 const SPRITE_PX = 160; // world px
 
-function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; deskMap: DeskAssignmentMap }) {
-  const pos = getAgentDeskPos(agent, deskMap);
-  if (!pos) return null;
-  const [wx, wy] = pos;
+function AgentSprite({ agent, zoom, deskMap, poses }: {
+  agent: Agent; zoom: number; deskMap: DeskAssignmentMap; poses: AgentPoseMap;
+}) {
+  const disp = getAgentDisplayPos(agent, deskMap, poses);
+  if (!disp) return null;
+  const [wx, wy] = disp.pos;
+  const pose = disp.pose;
 
   const isActive  = agent.status === "working" || agent.status === "thinking";
   const isDone    = agent.status === "done";
@@ -879,6 +903,9 @@ function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; des
   const isBlocked = agent.status === "blocked";
   const color     = agent.color;
   const task      = agent.currentTask;
+  const isWalking = pose?.state === "walking";
+  const isMingling = pose?.state === "mingling";
+  const facing    = pose?.facing ?? 1;
 
   const labelSz = Math.round(clamp(12/zoom, 9, 15));
   const img = SPRITE_MAP[agent.spriteType] ?? SPRITE_MAP["manager"];
@@ -892,15 +919,18 @@ function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; des
     : "none";
 
   return (
-    <div style={{
-      position:"absolute",
-      left: wx - SPRITE_PX/2,
-      top:  wy - SPRITE_PX,
-      width: SPRITE_PX,
-      zIndex: Math.round(wy + 500),
-      filter: filterStyle,
-      transition:"filter 0.4s",
-    }}>
+    <div
+      data-testid={`agent-sprite-${agent.id}`}
+      data-movement-state={pose?.state ?? "sit"}
+      style={{
+        position:"absolute",
+        left: wx - SPRITE_PX/2,
+        top:  wy - SPRITE_PX,
+        width: SPRITE_PX,
+        zIndex: Math.round(wy + 500),
+        filter: filterStyle,
+        transition:"filter 0.4s",
+      }}>
       {/* Floor shadow */}
       <div style={{
         position:"absolute", bottom:0, left:"50%", transform:"translateX(-50%)",
@@ -956,9 +986,24 @@ function AgentSprite({ agent, zoom, deskMap }: { agent: Agent; zoom: number; des
         </div>
       )}
 
-      {/* Sprite */}
-      <img src={img} alt={agent.name}
-        style={{width:"100%",display:"block",userSelect:"none"}} draggable={false}/>
+      {/* Sprite (wrapper handles facing flip; inner img handles bob/sway) */}
+      <div style={{
+        width:"100%",
+        transform: facing === -1 ? "scaleX(-1)" : undefined,
+        transformOrigin: "50% 90%",
+      }}>
+        <img src={img} alt={agent.name}
+          style={{
+            width:"100%",display:"block",userSelect:"none",
+            animation: isWalking
+              ? "agentBob 0.55s ease-in-out infinite"
+              : isMingling
+              ? "agentSway 3.2s ease-in-out infinite"
+              : undefined,
+            transformOrigin: "50% 90%",
+          }}
+          draggable={false}/>
+      </div>
 
       {/* Name label */}
       <div style={{
@@ -1035,6 +1080,8 @@ export default function IsometricOffice({ agents, project }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [agents.map(a => `${a.id}:${a.spriteType}`).join("|")]
   );
+  // Stage 6.7: live Sims-style poses (idle wander / walk-to-desk).
+  const poses = useAgentMovement(agents, deskMap);
   const [pan,  setPan]      = useState<[number,number]>([0,0]);
   const [zoom, setZoom]     = useState(0.38);
   const initDone            = useRef(false);
@@ -1154,6 +1201,11 @@ export default function IsometricOffice({ agents, project }: Props) {
         @keyframes bounce{from{transform:translateY(0)}to{transform:translateY(-7px)}}
         @keyframes dashFlow{to{stroke-dashoffset:-40}}
         @keyframes fadeOut{from{opacity:1}to{opacity:0}}
+        @keyframes agentBob{0%,100%{transform:translateY(0) rotate(-1deg)}50%{transform:translateY(-3px) rotate(1deg)}}
+        @keyframes agentSway{0%,100%{transform:translateY(0) rotate(-0.6deg)}50%{transform:translateY(-1px) rotate(0.6deg)}}
+        @media (prefers-reduced-motion: reduce){
+          [data-movement-state] img{animation:none !important}
+        }
       `}</style>
 
       {/* ═══ Pannable world ══════════════════════════════════════════════════ */}
@@ -1166,22 +1218,24 @@ export default function IsometricOffice({ agents, project }: Props) {
         <OfficeRoom/>
 
         {/* Communication arcs */}
-        <CommArcs agents={agents} deskMap={deskMap}/>
+        <CommArcs agents={agents} deskMap={deskMap} poses={poses}/>
 
-        {/* Agent sprites — sorted by Y for correct depth */}
+        {/* Agent sprites — sorted by Y for correct depth (uses live pose so
+            walking agents redraw in the correct depth order). */}
         {[...agents]
           .sort((a,b)=>{
-            const pa=getAgentDeskPos(a, deskMap); const pb=getAgentDeskPos(b, deskMap);
-            return (pa?.[1]??0)-(pb?.[1]??0);
+            const pa = poses.get(a.id)?.y ?? getAgentDeskPos(a, deskMap)?.[1] ?? 0;
+            const pb = poses.get(b.id)?.y ?? getAgentDeskPos(b, deskMap)?.[1] ?? 0;
+            return pa - pb;
           })
           .map(agent=>(
-            <AgentSprite key={agent.id} agent={agent} zoom={zoom} deskMap={deskMap}/>
+            <AgentSprite key={agent.id} agent={agent} zoom={zoom} deskMap={deskMap} poses={poses}/>
           ))
         }
       </div>
 
       {/* ═══ Fixed HUD ════════════════════════════════════════════════════════ */}
-      <MiniMap pan={pan} zoom={zoom} vpW={vpDims.w} vpH={vpDims.h} agents={agents} deskMap={deskMap}/>
+      <MiniMap pan={pan} zoom={zoom} vpW={vpDims.w} vpH={vpDims.h} agents={agents} deskMap={deskMap} poses={poses}/>
       <ZoomControls onIn={()=>{
         const nz=clamp(zoom+ZOOM_STEP*2,ZOOM_MIN,ZOOM_MAX);
         setPan(([px,py])=>{const cx=vpDims.w/2,cy=vpDims.h/2;return clampPan(cx-(cx-px)/zoom*nz,cy-(cy-py)/zoom*nz,nz);});
