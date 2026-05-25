@@ -12,6 +12,7 @@ import {
   WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN,
   HEARTBEAT_PROMPT,
 } from "./voiceLab";
+import { renderQaChecklistDescription } from "./editorial/qaChecklist";
 import type {
   Agent, InsertAgent,
   Project, InsertProject,
@@ -1780,6 +1781,56 @@ try {
   }
 } catch (e) {
   console.warn("[seed] Stage 6.7 anti-repeat guard upgrade failed:", e);
+}
+
+// Stage 6.8: refresh the Weekly template's QA task so it points at the
+// canonical 8-step checklist (server/editorial/qaChecklist.ts) with the
+// PASS / FIX / WARN contract and the closing `## Final recommendation`
+// block. Older rows carry the inlined Stage 5.x.3 description that used
+// the PASS / FAIL / N/A tokens and no structured recommendation. The
+// orchestrator's qa-output guard was updated alongside this migration to
+// verify the new contract — without the migration, an existing deployed
+// DB would still feed the editorial-lead the old instructions and the
+// guard would always flag the output as inadequate.
+//
+// Detection: parse the existing plan, find the entry with key === "qa",
+// and look for the canonical token "## Final recommendation" inside its
+// description. If absent → upgrade. Idempotent across boots: once the
+// new description is in place, the token is present and we skip.
+// Conservative: only overwrites the `qa` entry's description, leaving any
+// hand-customised non-QA tasks alone.
+try {
+  const existingWeekly = storage
+    .getProjectTemplates()
+    .find((t) => t.name === WEEKLY_TEMPLATE_NAME);
+  if (existingWeekly && existingWeekly.referencePlan) {
+    let parsed: Array<Record<string, unknown>> | null = null;
+    try {
+      const p = JSON.parse(existingWeekly.referencePlan);
+      if (Array.isArray(p)) parsed = p as Array<Record<string, unknown>>;
+    } catch {
+      parsed = null;
+    }
+    if (parsed) {
+      const qa = parsed.find((t) => t && t.key === "qa");
+      const needsUpgrade =
+        qa &&
+        typeof qa.description === "string" &&
+        !qa.description.includes("## Final recommendation");
+      if (needsUpgrade && qa) {
+        qa.description = renderQaChecklistDescription();
+        storage.updateProjectTemplate(existingWeekly.id, {
+          referencePlan: JSON.stringify(parsed),
+          updatedAt: Date.now(),
+        });
+        console.log(
+          `[seed] Stage 6.8: refreshed Weekly template (id=${existingWeekly.id}) QA description with canonical 8-step checklist (PASS/FIX/WARN + Final recommendation)`,
+        );
+      }
+    }
+  }
+} catch (e) {
+  console.warn("[seed] Stage 6.8 QA checklist refresh failed:", e);
 }
 
 // Heartbeat smoke-test seed kept for fresh databases only — useful for

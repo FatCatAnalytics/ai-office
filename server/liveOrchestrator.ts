@@ -39,6 +39,7 @@ import {
   type RecentIssue,
 } from "./editorial/novelty";
 import { loadRecentIssuesForTemplate } from "./editorial/recentIssues";
+import { evaluateQaOutput } from "./editorial/qaChecklist";
 import type { Agent, Task, Project } from "@shared/schema";
 
 export interface LiveOrchestratorDeps {
@@ -1283,55 +1284,66 @@ async function runWaveConcurrent(
       try {
         let output = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
 
-        // Stage 5.x.5 — QA enforcement.
-        // The 8-step QA self-review must be substantive and contain explicit
-        // PASS / FAIL / N/A verdicts (one per step, 8 steps → ≥6 hits is a
-        // soft floor). When the editorial-lead returns ~0 chars or a verdict
-        // string with too few markers, we re-run ONCE before letting the
-        // pipeline continue with junk. Cap retries at 1 to avoid loops.
+        // Stage 6.8 — QA enforcement.
+        // The 8-step QA self-review must contain the eight `### Step N — …`
+        // headings and a closing `## Final recommendation` block. The older
+        // guard (Stage 5.x.5) counted loose PASS/FAIL/N/A substrings, which
+        // matched inside body prose (e.g. "Pass through to depositors") and
+        // green-lit reviews that had skipped half the checklist. The Stage
+        // 6.8 guard parses for actual step headings via evaluateQaOutput.
         //
-        // Stage 5.x.6 — debug events. We always log the QA guard's view of
-        // the output so the operator can see whether the guard fired, what
-        // it saw, and (on a still-inadequate retry) what the model actually
-        // returned — capped at 2000 chars so the event stream stays usable.
+        // Retry semantics are unchanged: if inadequate, re-run ONCE; if
+        // still inadequate, log the raw response and continue so the run
+        // doesn't stall. The retry guard never reads through the structured
+        // recommendation — we always pass the QA output forward so the
+        // apply-fixes task can react even on a partial review.
         if (plannerKey === "qa") {
-          const countMarkers = (s: string) =>
-            (s.match(/PASS/g)?.length ?? 0) +
-            (s.match(/FAIL/g)?.length ?? 0) +
-            (s.match(/N\/A/g)?.length ?? 0);
-          const verdictHits = countMarkers(output);
-          const inadequate = output.length < 200 || verdictHits < 6;
+          const reportInitial = evaluateQaOutput(output);
           deps.emitEvent(
             project.id, agent.id, agent.name, "qa guard",
-            `QA guard saw ${output.length} chars, ${verdictHits} verdict markers — ${inadequate ? "INADEQUATE" : "ok"}`,
-            inadequate ? "warning" : "info"
+            `QA guard: ${reportInitial.reason}`,
+            reportInitial.adequate ? "info" : "warning"
           );
           const retries = qaRetryCount?.get(task.id) ?? 0;
-          if (inadequate && retries < 1) {
+          if (!reportInitial.adequate && retries < 1) {
             qaRetryCount?.set(task.id, retries + 1);
             deps.emitEvent(
               project.id, agent.id, agent.name, "qa retry",
-              `⚠️ QA output inadequate (${output.length} chars, ${verdictHits} verdict markers) — retrying once`,
+              `⚠️ QA output did not match the 8-step contract (${reportInitial.reason}) — retrying once`,
               "warning"
             );
             output = await runWorkerTask(project, task, agent, priorOutputs, deps, signal, plannerKey);
-            const verdictHits2 = countMarkers(output);
-            const stillInadequate = output.length < 200 || verdictHits2 < 6;
+            const reportRetry = evaluateQaOutput(output);
             deps.emitEvent(
               project.id, agent.id, agent.name, "qa retry result",
-              `Retry produced ${output.length} chars, ${verdictHits2} verdict markers — ${stillInadequate ? "STILL INADEQUATE" : "ok"}`,
-              stillInadequate ? "warning" : "info"
+              `Retry produced ${output.length} chars — ${reportRetry.reason}`,
+              reportRetry.adequate ? "info" : "warning"
             );
-            if (stillInadequate) {
+            if (!reportRetry.adequate) {
               const dump = output.length === 0
                 ? "(empty response)"
                 : output.slice(0, 2000) + (output.length > 2000 ? `\n…[truncated ${output.length - 2000} chars]` : "");
               deps.emitEvent(
                 project.id, agent.id, agent.name, "qa retry inadequate",
-                `⚠️ QA still inadequate after retry (${output.length} chars, ${verdictHits2} markers) — raw response below — continuing anyway\n\n---\n${dump}\n---`,
+                `⚠️ QA still inadequate after retry (${reportRetry.reason}) — raw response below — continuing anyway\n\n---\n${dump}\n---`,
                 "warning"
               );
             }
+          }
+          // Always surface the final recommendation in the activity feed
+          // so an operator scanning the run history sees ship/revise/reject
+          // without having to open the QA file. Done outside the retry
+          // block so we report on whatever output we ended up with.
+          const finalReport = evaluateQaOutput(output);
+          if (finalReport.recommendation) {
+            const sev = finalReport.recommendation === "ship" ? "success"
+              : finalReport.recommendation === "reject" ? "error"
+              : "warning";
+            deps.emitEvent(
+              project.id, agent.id, agent.name, "qa recommendation",
+              `QA recommendation: ${finalReport.recommendation}`,
+              sev
+            );
           }
         }
 
