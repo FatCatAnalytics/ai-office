@@ -986,26 +986,32 @@ function AgentSprite({ agent, zoom, deskMap, poses }: {
         </div>
       )}
 
-      {/* Sprite (wrapper handles facing flip; inner img handles bob/sway) */}
+      {/* Sprite (wrapper handles facing flip + standing offset; inner img
+          handles bob/sway). When walking/mingling we lift the sprite a few
+          px so it no longer reads as "sitting in a chair". */}
       <div style={{
         width:"100%",
-        transform: facing === -1 ? "scaleX(-1)" : undefined,
+        transform: `${facing === -1 ? "scaleX(-1) " : ""}translateY(${
+          isWalking ? -6 : isMingling ? -4 : 0
+        }px)`,
         transformOrigin: "50% 90%",
+        transition: "transform 0.25s ease",
       }}>
         <img src={img} alt={agent.name}
           style={{
             width:"100%",display:"block",userSelect:"none",
             animation: isWalking
-              ? "agentBob 0.55s ease-in-out infinite"
+              ? "agentWalk 0.42s ease-in-out infinite"
               : isMingling
-              ? "agentSway 3.2s ease-in-out infinite"
+              ? "agentMingle 2.4s ease-in-out infinite"
               : undefined,
             transformOrigin: "50% 90%",
           }}
           draggable={false}/>
       </div>
 
-      {/* Name label */}
+      {/* Name label — faded for idle wanderers so movement reads clearly;
+          full opacity for active/blocked/done. */}
       <div style={{
         position:"absolute",
         bottom:-(labelSz*2.8),
@@ -1019,6 +1025,8 @@ function AgentSprite({ agent, zoom, deskMap, poses }: {
         borderRadius:clamp(18/zoom,10,22),
         boxShadow:"0 2px 10px rgba(0,0,0,0.85)",
         pointerEvents:"none",
+        opacity: isIdle && (isWalking || isMingling) ? 0.42 : 1,
+        transition: "opacity 0.35s ease",
       }}>
         <div style={{
           width:clamp(7/zoom,5,8), height:clamp(7/zoom,5,8),
@@ -1201,6 +1209,8 @@ export default function IsometricOffice({ agents, project }: Props) {
         @keyframes bounce{from{transform:translateY(0)}to{transform:translateY(-7px)}}
         @keyframes dashFlow{to{stroke-dashoffset:-40}}
         @keyframes fadeOut{from{opacity:1}to{opacity:0}}
+        @keyframes agentWalk{0%,100%{transform:translateY(0) rotate(-2deg)}25%{transform:translateY(-5px) rotate(0deg)}50%{transform:translateY(0) rotate(2deg)}75%{transform:translateY(-5px) rotate(0deg)}}
+        @keyframes agentMingle{0%,100%{transform:translateY(0) rotate(-0.8deg)}50%{transform:translateY(-2px) rotate(0.8deg)}}
         @keyframes agentBob{0%,100%{transform:translateY(0) rotate(-1deg)}50%{transform:translateY(-3px) rotate(1deg)}}
         @keyframes agentSway{0%,100%{transform:translateY(0) rotate(-0.6deg)}50%{transform:translateY(-1px) rotate(0.6deg)}}
         @media (prefers-reduced-motion: reduce){

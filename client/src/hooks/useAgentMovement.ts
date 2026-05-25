@@ -28,14 +28,17 @@ export interface AgentPose {
 
 export type AgentPoseMap = Map<string, AgentPose>;
 
-// Pixel-per-second wander speed (slow Sims-like saunter).
-const WALK_SPEED = 36;
-// Min/max seconds an agent will linger at a mingle waypoint.
-const MINGLE_MIN_MS = 2500;
-const MINGLE_MAX_MS = 6500;
-// Min/max seconds an agent will pause between idle moves to a new waypoint.
-const IDLE_PAUSE_MIN_MS = 1500;
-const IDLE_PAUSE_MAX_MS = 4500;
+// Pixel-per-second wander speed (Sims-like saunter — fast enough to read
+// as clearly walking at typical zoom).
+const WALK_SPEED = 58;
+// Min/max ms an agent will linger at a mingle waypoint.
+const MINGLE_MIN_MS = 1800;
+const MINGLE_MAX_MS = 4500;
+// Min/max ms an agent will pause between idle moves to a new waypoint.
+const IDLE_PAUSE_MIN_MS = 600;
+const IDLE_PAUSE_MAX_MS = 2400;
+// Status values that mean "go sit at the desk and work".
+const ACTIVE_STATUSES = new Set(["working", "thinking", "blocked", "done"]);
 
 interface AgentRuntime {
   pose: AgentPose;
@@ -102,6 +105,8 @@ export function useAgentMovement(
   useEffect(() => {
     const next = runtimeRef.current;
     const seen = new Set<string>();
+    const initial: AgentPoseMap = new Map();
+    let seededAny = false;
     for (const agent of agents) {
       const desk = deskMap.get(agent.id);
       if (!desk) continue;
@@ -111,22 +116,51 @@ export function useAgentMovement(
       if (existing) {
         existing.deskX = dx;
         existing.deskY = dy;
+        initial.set(agent.id, { ...existing.pose });
       } else {
+        const isActive = ACTIVE_STATUSES.has(agent.status);
+        // Idle agents start *away* from their desks at a wander waypoint so
+        // the first paint already shows them mingling — no "everyone parked
+        // at desks" flash. Active agents sit at the desk as before.
+        let startX = dx, startY = dy;
+        let startState: MovementState = "sit";
+        let startTarget: Waypoint | null = null;
+        let initialPause = 0;
+        if (!isActive && !reducedMotion) {
+          const zoneKey = pickWanderZone(agent);
+          const wp = pickWaypoint(zoneKey);
+          if (wp) {
+            // Drop the sprite at the waypoint (already mingling) and pick a
+            // fresh target so it walks somewhere within a beat or two.
+            startX = wp.x;
+            startY = wp.y;
+            startState = "mingling";
+            const nextWp = pickWaypoint(pickWanderZone(agent));
+            startTarget = nextWp ?? null;
+            // Stagger initial pause so the whole floor doesn't move in sync.
+            initialPause = performance.now() + Math.random() * 800;
+          }
+        }
         next.set(agent.id, {
-          pose: { x: dx, y: dy, state: "sit", facing: 1 },
-          target: null,
-          pauseUntil: 0,
+          pose: { x: startX, y: startY, state: startState, facing: 1 },
+          target: startTarget,
+          pauseUntil: initialPause,
           lastStatus: agent.status,
           deskX: dx,
           deskY: dy,
         });
+        initial.set(agent.id, { x: startX, y: startY, state: startState, facing: 1 });
+        seededAny = true;
       }
     }
     // Drop runtime entries for agents that have been removed.
     for (const id of next.keys()) {
       if (!seen.has(id)) next.delete(id);
     }
-  }, [agents, deskMap]);
+    // Emit immediately so the first React paint already places sprites at
+    // their non-desk start positions (no flash of every agent sitting).
+    if (seededAny) setPoses(initial);
+  }, [agents, deskMap, reducedMotion]);
 
   // Animation loop. Skipped entirely when reduced-motion is active —
   // agents simply render at their desks.
