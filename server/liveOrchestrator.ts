@@ -40,6 +40,19 @@ import {
 } from "./editorial/novelty";
 import { loadRecentIssuesForTemplate } from "./editorial/recentIssues";
 import { evaluateQaOutput } from "./editorial/qaChecklist";
+import {
+  blockedDiagnosticFilename,
+  classifyResearchBrief,
+  evaluatePublishableOutput,
+  evaluateResearchSufficiency,
+  isDownstreamPublishableTask,
+  isResearchTask,
+  renderResearchBlockedDiagnostic,
+  weekLabelFromDate,
+  type BriefKind,
+  type ResearchInput,
+  type SufficiencyReport,
+} from "./editorial/researchGate";
 import type { Agent, Task, Project } from "@shared/schema";
 
 export interface LiveOrchestratorDeps {
@@ -490,6 +503,287 @@ function runNoveltyCheckOnSavedFiles(
   }
 }
 
+// ─── Stage 6.9 — research sufficiency gate ──────────────────────────────────
+// After a wave completes, if any newly-completed task was a research task
+// AND the project's template/plan demands sourced research, evaluate the
+// aggregated research outputs. If insufficient (zero candidates, all tools
+// failed, meta-failure language), block every downstream publishable task
+// and write a diagnostic file. The gate runs ONCE per project — we record
+// the verdict on the project state map so a later wave doesn't re-evaluate
+// and double-block.
+//
+// Why this gate is separate from QA / fact-check:
+//   • QA is the editorial-lead reading its own draft. It can't tell the
+//     orchestrator "the upstream pipeline never ran" — it just self-reviews
+//     whatever prose it produced. On the failed 2026-05-24 run the QA
+//     produced a clean PASS report for a meta-essay because the meta-essay
+//     was internally consistent.
+//   • Fact-check (Stage 5.x.7 deep-search call) is also too late — it
+//     burns a full Sonnet+Tavily round on output that should never have
+//     been written.
+//   • Novelty (Stage 6.7) compares the candidate against last week's
+//     issue — meaningless when the candidate isn't a real story.
+// The sufficiency gate slots in BEFORE any of these, between the research
+// wave and the angle/draft/final waves, and runs in O(few-ms) of pure JS.
+interface ResearchGateState {
+  // True once a verdict has been computed for this project. We only block
+  // once — re-evaluating per-wave would mark the same downstream tasks
+  // blocked twice and spam the event feed.
+  evaluated: boolean;
+  // True only when the gate passed; downstream waves run normally.
+  passed: boolean;
+}
+
+function classifyBriefForProject(
+  project: Project,
+  tasks: Task[],
+): { kind: BriefKind; template: ReturnType<typeof storage.getProjectTemplate> | null } {
+  const template = project.templateId != null
+    ? storage.getProjectTemplate(project.templateId) ?? null
+    : null;
+  const kind = classifyResearchBrief(template, tasks);
+  return { kind, template };
+}
+
+function collectResearchInputs(
+  completedSinceStart: PriorOutput[],
+  plannerKeyByTaskId: Map<number, string> | undefined,
+): ResearchInput[] {
+  const inputs: ResearchInput[] = [];
+  for (const c of completedSinceStart) {
+    const plannerKey = plannerKeyByTaskId?.get(c.task.id);
+    // The fact-check task is a research task by contract (planner key
+    // "factcheck") but it runs AFTER draft/qa, so its output isn't
+    // upstream evidence — it's a downstream verifier. Exclude it from
+    // the sufficiency input set so we don't gate on its presence.
+    if (plannerKey === "factcheck") continue;
+    if (!isResearchTask(c.task, plannerKey)) continue;
+    inputs.push({
+      taskTitle: c.task.title,
+      assignedTo: c.task.assignedTo,
+      output: c.output,
+    });
+  }
+  return inputs;
+}
+
+// Walks the remaining waves and marks every task that depends on (or IS) a
+// publishable downstream step as blocked-by-gate. Idempotent — already-
+// blocked tasks are left alone.
+function blockDownstreamPublishables(
+  projectId: number,
+  remainingWaves: Task[][],
+  plannerKeyByTaskId: Map<number, string> | undefined,
+  reason: string,
+  deps: LiveOrchestratorDeps,
+): { blocked: number; newWaves: Task[][] } {
+  let blocked = 0;
+  const newWaves: Task[][] = [];
+  for (const wave of remainingWaves) {
+    const survivors: Task[] = [];
+    for (const t of wave) {
+      const plannerKey = plannerKeyByTaskId?.get(t.id);
+      if (isDownstreamPublishableTask(t, plannerKey)) {
+        storage.updateTask(t.id, {
+          status: "blocked",
+          blockedReason: reason,
+        });
+        deps.broadcast({
+          type: "task_update",
+          task: { ...t, status: "blocked", blockedReason: reason },
+        });
+        blocked++;
+      } else {
+        survivors.push(t);
+      }
+    }
+    if (survivors.length > 0) newWaves.push(survivors);
+  }
+  return { blocked, newWaves };
+}
+
+// Writes the research-blocked diagnostic markdown file via the standard
+// project-file storage path. Always best-effort — a failure to persist the
+// diagnostic must NOT itself break the run (the run is already failing).
+function saveBlockedDiagnostic(
+  project: Project,
+  briefKind: BriefKind,
+  report: SufficiencyReport,
+  inputs: ResearchInput[],
+  deps: LiveOrchestratorDeps,
+): void {
+  try {
+    const weekLabel = weekLabelFromDate();
+    const filename = blockedDiagnosticFilename(briefKind, weekLabel);
+    const content = renderResearchBlockedDiagnostic(
+      project,
+      briefKind,
+      report,
+      inputs,
+      weekLabel,
+    );
+    const saved = storage.saveProjectFile(
+      {
+        projectId: project.id,
+        taskId: null,
+        agentId: "manager",
+        filename,
+        fileType: "markdown",
+        mimeType: "text/markdown",
+        filePath: "",
+        description: "Research sufficiency gate — blocked diagnostic",
+      },
+      content,
+    );
+    deps.broadcast({ type: "file_created", projectId: project.id, file: saved });
+    deps.emitEvent(
+      project.id,
+      "manager",
+      "Manager",
+      "research blocked diagnostic saved",
+      `📄 ${saved.filename} (${(saved.sizeBytes / 1024).toFixed(1)} KB) — no publishable issue/report was emitted`,
+      "warning",
+    );
+  } catch (e) {
+    deps.emitEvent(
+      project.id,
+      "manager",
+      "Manager",
+      "research blocked diagnostic failed",
+      `Could not save diagnostic file: ${(e as Error).message ?? e}`,
+      "warning",
+    );
+  }
+}
+
+// Evaluate the sufficiency gate after a wave completes. Returns true when
+// the gate is now in a final state (passed or failed); the caller uses this
+// to short-circuit downstream work.
+function maybeRunResearchGate(
+  project: Project,
+  priorOutputs: PriorOutput[],
+  remainingWavesRef: { value: Task[][] },
+  plannerKeyByTaskId: Map<number, string> | undefined,
+  gateState: ResearchGateState,
+  allTasks: Task[],
+  deps: LiveOrchestratorDeps,
+): void {
+  if (gateState.evaluated) return;
+
+  // Classify the brief. If the project doesn't require sourced research,
+  // the gate is a no-op forever.
+  const { kind } = classifyBriefForProject(project, allTasks);
+  if (kind === null) {
+    gateState.evaluated = true;
+    gateState.passed = true;
+    return;
+  }
+
+  // Has at least one research task completed so far? If none, defer the
+  // verdict to a later wave — we never want to fail closed before the
+  // research tasks even had a chance to run.
+  const researchInputs = collectResearchInputs(priorOutputs, plannerKeyByTaskId);
+  if (researchInputs.length === 0) {
+    // No research-tagged completions yet. Check whether any research
+    // tasks still remain ahead — if not, we have to evaluate now (the
+    // research wave finished without producing anything).
+    const stillHasResearchAhead = remainingWavesRef.value.some((wave) =>
+      wave.some((t) => isResearchTask(t, plannerKeyByTaskId?.get(t.id))),
+    );
+    if (stillHasResearchAhead) return; // defer
+  }
+
+  const report = evaluateResearchSufficiency(researchInputs, kind);
+  gateState.evaluated = true;
+  gateState.passed = report.ok;
+
+  if (report.ok) {
+    deps.emitEvent(
+      project.id,
+      "manager",
+      "Manager",
+      "research gate passed",
+      `✓ ${report.reason}`,
+      "info",
+    );
+    return;
+  }
+
+  // Failed closed. Block every remaining publishable task and write the
+  // diagnostic file. Project flips to "blocked" so the operator can see
+  // the run is dead at a glance.
+  deps.emitEvent(
+    project.id,
+    "manager",
+    "Manager",
+    "research blocked — replan",
+    `🚧 Research sufficiency gate failed (${kind}): ${report.reason} No publishable issue/report will be emitted.`,
+    "error",
+  );
+
+  const { blocked, newWaves } = blockDownstreamPublishables(
+    project.id,
+    remainingWavesRef.value,
+    plannerKeyByTaskId,
+    `Research sufficiency gate failed: ${report.reason}`,
+    deps,
+  );
+  remainingWavesRef.value = newWaves;
+  if (blocked > 0) {
+    deps.emitEvent(
+      project.id,
+      "manager",
+      "Manager",
+      "downstream tasks blocked",
+      `Blocked ${blocked} downstream publishable task${blocked === 1 ? "" : "s"} (angle/draft/qa/factcheck/final) because upstream research did not return sourced evidence.`,
+      "warning",
+    );
+  }
+
+  saveBlockedDiagnostic(project, kind, report, researchInputs, deps);
+
+  storage.updateProject(project.id, { status: "blocked" });
+  deps.broadcast({ type: "project_update", projectId: project.id, status: "blocked" });
+}
+
+// Decides whether the given file block (about to be persisted) should be
+// rejected because it looks like a meta-essay / unsourced placeholder.
+// Only applies to research-required briefs and only to filenames that
+// match the publishable shape (issue-*, runner-up-*, final-*, etc.).
+function shouldRejectPublishableFileBlock(
+  project: Project,
+  filename: string,
+  content: string,
+  allTasks: Task[],
+): { reject: boolean; reason: string } | null {
+  const { kind } = classifyBriefForProject(project, allTasks);
+  if (kind === null) return null;
+  const name = filename.toLowerCase();
+  // Only gate filenames that look like the publishable artefact. A research
+  // agent saving a `sources.md` companion file should NOT be blocked.
+  const isIssue = /^issue-\d+\.md$/i.test(name);
+  const isRunner = /^runner-up-\d+\.md$/i.test(name);
+  const isFinalReport = /^(final|report|memo)[-_]/i.test(name) && name.endsWith(".md");
+  if (!isIssue && !isRunner && !isFinalReport) return null;
+
+  const kindForGuard: "issue" | "runner-up" | "generic" = isRunner
+    ? "runner-up"
+    : isIssue
+      ? "issue"
+      : "generic";
+
+  const report = evaluatePublishableOutput(content, { kind: kindForGuard });
+  if (report.ok) return null;
+  return {
+    reject: true,
+    reason: `${report.reason} (links=${report.linkCount}, chars=${report.charLength}${
+      report.metaFailureHits.length > 0
+        ? `, meta-hits=[${report.metaFailureHits.slice(0, 3).join("; ")}]`
+        : ""
+    })`,
+  };
+}
+
 export function parseFileBlocks(raw: string): ParsedFileBlock[] {
   // Stage 5.x.5: tolerant scanner. The previous regex required a closing
   // </file> tag, so when the model's output token cap hit mid-runner-up
@@ -682,8 +976,49 @@ async function saveLiveOutput(
     // Reading them back off disk would also work but adds I/O for no
     // reason — we still have the block content right here.
     const savedMarkdown: { filename: string; content: string }[] = [];
+    // Stage 6.9 — list of every project task at the moment of save, used
+    // by the final-output guard to determine whether this brief required
+    // sourced research. Loaded once, outside the per-block loop.
+    const allTasksAtSave = storage.getTasks(projectId);
     for (const block of fileBlocks) {
       try {
+        // Stage 6.9 — fail-closed final-output guard. Reject publishable
+        // markdown files (issue-*.md / runner-up-*.md / final-*.md / etc.)
+        // when they have zero links, contain meta-failure language, or are
+        // implausibly short. We do this BEFORE persisting so the bad file
+        // never reaches the operator's Files tab. Non-publishable files
+        // (companion sources/notes) are not gated.
+        const reject = shouldRejectPublishableFileBlock(
+          project,
+          block.filename,
+          block.content,
+          allTasksAtSave,
+        );
+        if (reject?.reject) {
+          deps.emitEvent(
+            projectId,
+            agent.id,
+            agent.name,
+            "publishable output rejected",
+            `🚧 ${block.filename} blocked by Stage 6.9 final-output guard — ${reject.reason}`,
+            "error",
+          );
+          // Mark the parent task blocked so the project status reflects
+          // the failure and Resume / replan can act on it.
+          storage.updateTask(task.id, {
+            status: "blocked",
+            blockedReason: `Publishable output rejected by final-output guard: ${reject.reason}`,
+          });
+          deps.broadcast({
+            type: "task_update",
+            task: {
+              ...task,
+              status: "blocked",
+              blockedReason: `Publishable output rejected by final-output guard: ${reject.reason}`,
+            },
+          });
+          continue;
+        }
         // Infer mime/format from extension. Defaults to markdown.
         const ext = (block.filename.split(".").pop() ?? "md").toLowerCase();
         const fmtForExt =
@@ -1521,6 +1856,11 @@ async function runLiveOrchestrationInner(
   // We work over a mutable list of "remaining waves" so a replan can replace it.
   let remainingWaves: Task[][] = waves.map(w => w.map(p => keyToTask.get(p.key)!).filter(Boolean));
 
+  // Stage 6.9 — research sufficiency gate state. The gate evaluates once
+  // per project, after the wave that includes the upstream research task(s)
+  // completes. See maybeRunResearchGate for the semantics.
+  const researchGateState: ResearchGateState = { evaluated: false, passed: false };
+
   while (remainingWaves.length > 0) {
     // Stage 4.14: bail out cleanly if cancelled between waves — cancelProject()
     // has already updated state, we just stop spawning new work.
@@ -1540,6 +1880,23 @@ async function runLiveOrchestrationInner(
     priorOutputs.push(...successes);
     allFailures.push(...failures);
     completedCount += successes.length;
+
+    // Stage 6.9 — fail closed if research evidence is insufficient. Runs
+    // after the wave so we can inspect freshly-completed research tasks.
+    // No-op when the brief doesn't require sourced research, or when the
+    // gate already evaluated. Block conditions short-circuit remaining
+    // waves by clearing publishable tasks out of remainingWaves.
+    const remainingWavesRef = { value: remainingWaves };
+    maybeRunResearchGate(
+      project,
+      priorOutputs,
+      remainingWavesRef,
+      plannerKeyByTaskId,
+      researchGateState,
+      allCreated,
+      deps,
+    );
+    remainingWaves = remainingWavesRef.value;
 
     // Update progress
     const total = allCreated.length;
@@ -1852,9 +2209,17 @@ async function resumeLiveOrchestrationInner(
   const total = storage.getTasks(projectId)
     .filter(t => t.blockedReason !== "Superseded by replan").length;
 
-  for (let wIdx = 0; wIdx < waves.length; wIdx++) {
+  // Stage 6.9 — resume run also enforces the sufficiency gate so a stale
+  // half-finished project that hit Tavily quota mid-run does not green-light
+  // its publishable tasks on Resume just because the research tasks happened
+  // to flip back to "done" in a previous attempt.
+  const resumeGateState: ResearchGateState = { evaluated: false, passed: false };
+  let resumeWaves: Task[][] = waves;
+  const allResumeTasks = storage.getTasks(projectId);
+
+  for (let wIdx = 0; wIdx < resumeWaves.length; wIdx++) {
     if (bailIfCancelled()) return;
-    const wave = waves[wIdx];
+    const wave = resumeWaves[wIdx];
     if (wave.length === 0) continue;
 
     deps.emitEvent(
@@ -1867,6 +2232,20 @@ async function resumeLiveOrchestrationInner(
     priorOutputs.push(...successes);
     allFailures.push(...failures);
     completedCount += successes.length;
+
+    const resumeWavesRef = { value: resumeWaves.slice(wIdx + 1) };
+    maybeRunResearchGate(
+      project,
+      priorOutputs,
+      resumeWavesRef,
+      resumePlannerKeyByTaskId,
+      resumeGateState,
+      allResumeTasks,
+      deps,
+    );
+    // Re-stitch: keep the waves we already ran + whatever the gate left
+    // standing for the future.
+    resumeWaves = [...resumeWaves.slice(0, wIdx + 1), ...resumeWavesRef.value];
 
     const progress = Math.round((completedCount / Math.max(1, total)) * 100);
     const usageRows = storage.getTokenUsage().filter(u => u.projectId === projectId);
