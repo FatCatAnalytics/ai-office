@@ -14,6 +14,7 @@ import { newsRssConnector } from "./newsRss";
 import { gdeltConnector } from "./gdelt";
 import { openAlexConnector } from "./openalex";
 import { marketDataConnector } from "./marketData";
+import { perplexityConnector } from "./perplexity";
 
 export const CONNECTORS: Connector[] = [
   websiteConnector,
@@ -24,6 +25,9 @@ export const CONNECTORS: Connector[] = [
   gdeltConnector,
   openAlexConnector,
   marketDataConnector,
+  // Stage 6.10: Perplexity backup provider. Self-skips with [] when
+  // PERPLEXITY_API_KEY is unset, so leaving it in the default list is safe.
+  perplexityConnector,
 ];
 
 export interface GatherOutcome {

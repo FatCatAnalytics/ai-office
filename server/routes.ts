@@ -11,6 +11,7 @@ import { handleLogin, handleLogout, handleMe, isWsUpgradeAuthenticated } from ".
 import { fireTemplate, recomputeNextRun, setSchedulerKickoff } from "./projectScheduler";
 import { describeCron, validateCron, nextRun } from "./cron";
 import { registerInvestmentRoutes } from "./investment/routes";
+import { getPerplexityStatus } from "./research/perplexity";
 
 // ─── WebSocket broadcast ───────────────────────────────────────────────────────
 const wsClients = new Set<WebSocket>();
@@ -561,6 +562,16 @@ export function registerRoutes(httpServer: Server, app: Express) {
   app.post("/api/auth/login", handleLogin);
   app.post("/api/auth/logout", handleLogout);
   app.get("/api/auth/me", handleMe);
+
+  // ── Integrations status (Stage 6.10) ──────────────────────────────────────
+  // Read-only "is Perplexity wired up?" check so the Settings UI (or an
+  // operator with curl) can confirm a key is present without ever revealing
+  // the key itself. Returns the model name, base URL, and timeout that
+  // calls will use — these are not sensitive — and a boolean `configured`
+  // flag. The key value itself is never serialised here or downstream.
+  app.get("/api/integrations/perplexity", (_req, res) => {
+    res.json(getPerplexityStatus());
+  });
 
   // ── WebSocket (Stage 4.18: handshake gated by session cookie) ─────────────
   // Use noServer mode so we can authenticate the upgrade request before

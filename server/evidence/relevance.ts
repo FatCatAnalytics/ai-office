@@ -83,6 +83,10 @@ const SECONDARY_SOURCE_TYPES = new Set<string>([
  */
 const NOISY_SOURCE_TYPES = new Set<string>([
   "openalex", "arxiv", "gdelt", "news_rss",
+  // Stage 6.10: Perplexity citations come from open web search, so they get
+  // the same false-positive treatment as GDELT / news_rss. The relevance gate
+  // still keeps on-topic citations and discards drift.
+  "perplexity",
 ]);
 
 const STOPWORDS = new Set<string>([
