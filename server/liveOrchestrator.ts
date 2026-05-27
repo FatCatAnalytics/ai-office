@@ -19,10 +19,25 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { storage, toolsForAgent } from "./storage";
-import { streamCompletion, calculateCost, settingKeyForProvider, type Provider, type LLMMessage } from "./llm";
+import {
+  streamCompletion,
+  calculateCost,
+  settingKeyForProvider,
+  type Provider,
+  type LLMMessage,
+  type StreamRequest,
+  type StreamHandlers,
+} from "./llm";
 import { renderPdf, renderXlsx, renderPdfFromManifest, renderXlsxFromManifest, type RenderMeta } from "./renderers";
 import { extractManifest, manifestToMarkdown, manifestToCsv, manifestToJson, type DeliverableManifest } from "./manifest";
-import { routeForComplexity, routeForCriticalCall, normaliseComplexity, type Complexity } from "./modelRouter";
+import {
+  isQuotaOrCreditError,
+  normaliseComplexity,
+  routeForComplexityChain,
+  routeForCriticalCallChain,
+  type Complexity,
+  type RoutedModel,
+} from "./modelRouter";
 import { reviewProjectQA } from "./qaReviewer";
 import { resolveTools, tavilyConfigured, perplexityConfigured } from "./tools";
 import {
@@ -30,9 +45,9 @@ import {
   findAllTooSimilar,
   findTooSimilar,
   formatNoveltyMatch,
-  isAnalyticalBankerTemplate,
   isIssueFilename,
   isRunnerUpFilename,
+  isWeeklyNewsletterTemplate,
   similarityScore,
   summariseRecentTopics,
   SIMILARITY_THRESHOLD,
@@ -356,7 +371,10 @@ function augmentPlanWithRecentTopics(
 ): void {
   if (project.templateId == null) return;
   const template = storage.getProjectTemplate(project.templateId);
-  if (!isAnalyticalBankerTemplate(template)) return;
+  // Stage 6.11: any weekly-newsletter template uses the same anti-repeat
+  // guard shape, not only Analytical Banker. The SME Analytics weekly
+  // shares the angle / final keys and benefits from the same pre-pick hint.
+  if (!isWeeklyNewsletterTemplate(template)) return;
 
   let recents: RecentIssue[] = [];
   try {
@@ -423,7 +441,12 @@ function runNoveltyCheckOnSavedFiles(
 ): void {
   if (project.templateId == null) return;
   const template = storage.getProjectTemplate(project.templateId);
-  if (!isAnalyticalBankerTemplate(template)) return;
+  // Stage 6.11: post-save novelty also runs for the SME Analytics weekly.
+  // The recent-issues load is scoped to the project's templateId so SME
+  // issues are only ever compared against prior SME issues (and banker
+  // issues against prior banker issues) — the two newsletters' pools
+  // never cross-pollinate even though both filenames pass isIssueFilename.
+  if (!isWeeklyNewsletterTemplate(template)) return;
 
   const issueFiles = savedFiles.filter(f => isIssueFilename(f.filename));
   const runnerUpFiles = savedFiles.filter(f => isRunnerUpFilename(f.filename));
@@ -761,8 +784,10 @@ function shouldRejectPublishableFileBlock(
   const name = filename.toLowerCase();
   // Only gate filenames that look like the publishable artefact. A research
   // agent saving a `sources.md` companion file should NOT be blocked.
-  const isIssue = /^issue-\d+\.md$/i.test(name);
-  const isRunner = /^runner-up-\d+\.md$/i.test(name);
+  // Stage 6.11: SME Analytics weekly emits `sme-issue-*.md` /
+  // `sme-runner-up-*.md` — same guard shape as the banker issues.
+  const isIssue = /^issue-\d+\.md$/i.test(name) || /^sme-issue-\d+\.md$/i.test(name);
+  const isRunner = /^runner-up-\d+\.md$/i.test(name) || /^sme-runner-up-\d+\.md$/i.test(name);
   const isFinalReport = /^(final|report|memo)[-_]/i.test(name) && name.endsWith(".md");
   if (!isIssue && !isRunner && !isFinalReport) return null;
 
@@ -1351,35 +1376,123 @@ async function callManagerLLM(
   // — they decide what every other agent will do. Always route through the
   // high-tier path (Opus → GPT-5.5 → Sonnet → …) regardless of how the
   // "manager" agent row was seeded. Operator pin in the registry overrides.
-  const routed = routeForCriticalCall(manager);
-  const apiKey = storage.getSetting(settingKeyForProvider(routed.provider));
-  if (!apiKey) {
-    throw new Error(`No API key configured for ${routed.provider} (Manager planning)`);
-  }
-
-  deps.setAgentStatus("manager", "thinking", label);
-  deps.emitEvent(
-    project.id, "manager", manager.name,
-    "calling LLM",
-    `[LIVE] ${routed.provider}/${routed.modelId} — ${label} (${routed.reason})`,
-    "info"
-  );
-
-  const stream = makeStreamCoalescer(project.id, manager, label, deps);
-  let result;
-  try {
-    result = await streamCompletion(
-      { provider: routed.provider, modelId: routed.modelId, apiKey, messages, maxTokens: 2048, temperature: 0.4 },
-      { onDelta: (d) => stream.push(d) }
-    );
-  } finally {
-    stream.end();
-  }
-  recordUsage(manager, project.id, result.tokensIn, result.tokensOut, deps, {
-    provider: routed.provider,
-    modelId: routed.modelId,
+  //
+  // Stage 6.11: walk the high-tier fallback chain on quota/credit/auth
+  // errors so a missing key on Anthropic does not blow up the whole run
+  // when GPT-5.5 or Sonnet is also configured.
+  const chain = routeForCriticalCallChain(manager);
+  return callWithFallback({
+    project,
+    agent: manager,
+    label,
+    chain,
+    statusKey: "manager",
+    streamLabel: label,
+    deps,
+    requestFactory: (routed, apiKey) => ({
+      provider: routed.provider,
+      modelId: routed.modelId,
+      apiKey,
+      messages,
+      maxTokens: 2048,
+      temperature: 0.4,
+    }),
   });
-  return result.text;
+}
+
+// Stage 6.11 — execute a streamCompletion against a routed model, falling
+// back to the next chain entry on quota/credit/auth errors. Keeps the
+// activity feed honest about which model was actually called and which
+// entries were skipped because their provider had no key configured.
+//
+// On the happy path the first chain entry succeeds and this is a single
+// API call. On a 429/402/401/403 (quota / credits / auth) we move to the
+// next chain entry; on AbortError or any other error we surface
+// immediately. If every chain entry fails the original first error is
+// re-thrown so the caller's failure message still reflects the primary
+// model that the operator pinned.
+async function callWithFallback(opts: {
+  project: Project;
+  agent: Agent;
+  label: string;
+  chain: RoutedModel[];
+  statusKey: string;
+  streamLabel: string;
+  deps: LiveOrchestratorDeps;
+  requestFactory: (routed: RoutedModel, apiKey: string) => StreamRequest;
+  onToolCall?: StreamHandlers["onToolCall"];
+}): Promise<string> {
+  const { project, agent, chain, deps, requestFactory } = opts;
+  if (chain.length === 0) {
+    throw new Error(`Model router returned an empty chain for ${agent.id}`);
+  }
+
+  let firstError: unknown = null;
+  for (let i = 0; i < chain.length; i++) {
+    const routed = chain[i];
+    const apiKey = storage.getSetting(settingKeyForProvider(routed.provider));
+    if (!apiKey) {
+      // Skip silently — routeForComplexityChain already filtered chain
+      // entries by hasKey(), but the agent-default last-resort can still
+      // land here with no key. Log it as info so the operator can see why
+      // a chain entry was skipped, then move on.
+      deps.emitEvent(
+        project.id, agent.id, agent.name, "model skipped",
+        `Skipping ${routed.provider}/${routed.modelId} — no API key configured`,
+        "info",
+      );
+      continue;
+    }
+
+    deps.setAgentStatus(opts.statusKey, "thinking", opts.streamLabel);
+    deps.emitEvent(
+      project.id, agent.id, agent.name,
+      i === 0 ? "calling LLM" : "fallback model",
+      i === 0
+        ? `[LIVE] ${routed.provider}/${routed.modelId} — ${opts.label} (${routed.reason})`
+        : `↩ Falling back to ${routed.provider}/${routed.modelId} after upstream failure — ${routed.reason}`,
+      i === 0 ? "info" : "warning",
+    );
+
+    const stream = makeStreamCoalescer(project.id, agent, opts.streamLabel, deps);
+    try {
+      const result = await streamCompletion(
+        requestFactory(routed, apiKey),
+        {
+          onDelta: (d) => stream.push(d),
+          onToolCall: opts.onToolCall,
+        },
+      );
+      stream.end();
+      recordUsage(agent, project.id, result.tokensIn, result.tokensOut, deps, {
+        provider: routed.provider,
+        modelId: routed.modelId,
+      });
+      // Persist the actual model used so the dashboard reflects routing.
+      // (Only on tasks — manager calls have no task row.)
+      return result.text;
+    } catch (e) {
+      stream.end();
+      if (firstError == null) firstError = e;
+      if (!isQuotaOrCreditError(e)) {
+        // Non-quota errors (AbortError, malformed request, etc) bubble up
+        // immediately. Falling back wouldn't help and would mask the cause.
+        throw e;
+      }
+      deps.emitEvent(
+        project.id, agent.id, agent.name, "model quota / credits failure",
+        `⚠️ ${routed.provider}/${routed.modelId} unavailable (${(e as Error).message ?? e}) — trying next fallback`,
+        "warning",
+      );
+      // Continue to next chain entry.
+    }
+  }
+
+  // Exhausted the chain. Fail clean rather than silently downgrade.
+  const finalErr = firstError ?? new Error("All configured models failed");
+  throw new Error(
+    `All ${chain.length} fallback model${chain.length === 1 ? "" : "s"} failed for ${agent.name}. First error: ${(finalErr as Error).message ?? finalErr}`,
+  );
 }
 
 async function planProjectLive(
@@ -1476,14 +1589,23 @@ async function runWorkerTask(
   // can act on. Same idea as the final-task token cap bump — per-key
   // override sitting on top of the planner's complexity tag.
   const effectiveComplexity: Complexity = plannerKey === "qa" ? "high" : complexity;
-  const routed = routeForComplexity(effectiveComplexity, agent);
-  const apiKey = storage.getSetting(settingKeyForProvider(routed.provider));
-  if (!apiKey) {
-    throw new Error(`No API key configured for ${routed.provider} (needed for ${effectiveComplexity}-tier task)`);
+  // Stage 6.11: walk the full chain. The first entry that has a configured
+  // API key gets the call; on a quota/credit/auth failure we move to the
+  // next entry. The chain is built fit-for-purpose by tier so SME / banker
+  // / generic agents don't all hammer Opus by default.
+  const chain = routeForComplexityChain(effectiveComplexity, agent);
+  const firstWithKey = chain.find(c => Boolean(storage.getSetting(settingKeyForProvider(c.provider))));
+  if (!firstWithKey) {
+    throw new Error(
+      `No API key configured for any ${effectiveComplexity}-tier model — ` +
+      `tried ${chain.length} provider${chain.length === 1 ? "" : "s"}`,
+    );
   }
 
-  // Persist the actual model used so the dashboard reflects routing decisions.
-  storage.updateTask(task.id, { modelUsed: routed.modelId });
+  // Persist the first-choice model used so the dashboard reflects routing
+  // decisions. If a fallback model ends up being the one that succeeds, the
+  // callWithFallback path below updates this row again after the call.
+  storage.updateTask(task.id, { modelUsed: firstWithKey.modelId });
 
   const messages: LLMMessage[] = [
     {
@@ -1538,72 +1660,58 @@ async function runWorkerTask(
   deps.setAgentStatus(agent.id, "working", task.title);
   deps.emitEvent(
     project.id, agent.id, agent.name, "started task",
-    `[LIVE] ${routed.provider}/${routed.modelId} — ${task.title} (${effectiveComplexity}${effectiveComplexity !== complexity ? ` · forced from ${complexity}` : ""}${tools.length > 0 ? " · web tools on" : ""})`,
+    `[LIVE] ${firstWithKey.provider}/${firstWithKey.modelId} — ${task.title} (${effectiveComplexity}${effectiveComplexity !== complexity ? ` · forced from ${complexity}` : ""}${tools.length > 0 ? " · web tools on" : ""})`,
     "info"
   );
 
-  const stream = makeStreamCoalescer(project.id, agent, task.title, deps);
-  let result;
-  try {
-    result = await streamCompletion(
-      {
+  // Stage 6.11 — wrap the LLM call in the fallback chain walker. On a
+  // quota/credit/auth error the helper logs the failure and tries the next
+  // chain entry. AbortError + other errors propagate immediately. The
+  // happy path is identical to the pre-6.11 single-call shape.
+  return callWithFallback({
+    project,
+    agent,
+    label: task.title,
+    chain,
+    statusKey: agent.id,
+    streamLabel: task.title,
+    deps,
+    onToolCall: ({ name, args, result }) => {
+      // Surface tool activity in the live event feed so operators can see
+      // exactly which queries / URLs the agent is hitting.
+      let argSummary = args;
+      try {
+        const parsed = JSON.parse(args);
+        if (parsed.query) argSummary = `"${String(parsed.query).slice(0, 120)}"`;
+        else if (parsed.urls) argSummary = (parsed.urls as string[]).slice(0, 3).join(", ");
+      } catch { /* keep raw args */ }
+      const ok = !result.startsWith("Error:");
+      deps.emitEvent(
+        project.id, agent.id, agent.name,
+        ok ? "used tool" : "tool error",
+        `🔍 ${name}(${argSummary}) → ${result.length.toLocaleString()} chars`,
+        ok ? "info" : "warning"
+      );
+    },
+    requestFactory: (routed, apiKey) => {
+      // Persist whichever model actually carries the load (post-fallback).
+      storage.updateTask(task.id, { modelUsed: routed.modelId });
+      return {
         provider: routed.provider,
         modelId: routed.modelId,
         apiKey,
         messages,
-        // Stage 4.16: research agents that emit DeliverableManifest tables
-        // routinely need 6–8k output tokens (a 60–90 row portfolio table is
-        // ~4k tokens on its own, plus prose summary). 4096 caused mid-row
-        // truncation in project #19. Non-research agents pay for the bigger
-        // budget but rarely use it — the worker still terminates on stop_reason
-        // "end_turn" which usually fires well below the cap.
-        // Stage 5.x.5: the editorial pipeline's "final" task emits two file
-        // blocks back-to-back (issue + runner-up, ~7K + ~1K chars each =
-        // ~3-4K tokens). The 8K cap clipped issue-18's runner-up mid-tag.
-        // Bump only this one task to 16K — research / qa / factcheck still
-        // cap at 8K / 4K to keep cost bounded.
+        // Stage 4.16 / 5.x.5 token budgets — unchanged by 6.11.
         maxTokens: plannerKey === "final"
           ? 16384
           : tools.length > 0 ? 8192 : 4096,
         temperature: 0.7,
         tools: tools.length > 0 ? tools : undefined,
-        // Stage 4.14: cancel-aware fetch — if the operator hits Stop, every
-        // active LLM/tool call aborts and the worker's catch block will
-        // surface the AbortError as the task reason.
+        // Stage 4.14: cancel-aware fetch.
         signal,
-      },
-      {
-        onDelta: (d) => stream.push(d),
-        onToolCall: ({ name, args, result }) => {
-          // Surface tool activity in the live event feed so operators can see
-          // exactly which queries / URLs the agent is hitting.
-          let argSummary = args;
-          try {
-            const parsed = JSON.parse(args);
-            if (parsed.query) argSummary = `"${String(parsed.query).slice(0, 120)}"`;
-            else if (parsed.urls) argSummary = (parsed.urls as string[]).slice(0, 3).join(", ");
-          } catch { /* keep raw args */ }
-          const ok = !result.startsWith("Error:");
-          deps.emitEvent(
-            project.id, agent.id, agent.name,
-            ok ? "used tool" : "tool error",
-            `🔍 ${name}(${argSummary}) → ${result.length.toLocaleString()} chars`,
-            ok ? "info" : "warning"
-          );
-        },
-      }
-    );
-  } finally {
-    stream.end();
-  }
-
-  const cost = recordUsage(agent, project.id, result.tokensIn, result.tokensOut, deps, { provider: routed.provider, modelId: routed.modelId });
-  deps.emitEvent(
-    project.id, agent.id, agent.name, "model response",
-    `${result.tokensIn.toLocaleString()} in / ${result.tokensOut.toLocaleString()} out · $${cost.toFixed(4)} · ${routed.modelId}`,
-    "info"
-  );
-  return result.text;
+      };
+    },
+  });
 }
 
 // Run a list of tasks under a concurrency cap. Returns successes + failures.

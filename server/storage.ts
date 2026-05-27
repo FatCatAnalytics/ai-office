@@ -10,6 +10,8 @@ import {
   TECHNICAL_WRITER_PROMPT,
   WEEKLY_ANALYTICAL_BANKER_PROMPT,
   WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN,
+  WEEKLY_SME_ANALYTICS_PROMPT,
+  WEEKLY_SME_ANALYTICS_REFERENCE_PLAN,
   HEARTBEAT_PROMPT,
 } from "./voiceLab";
 import { renderQaChecklistDescription } from "./editorial/qaChecklist";
@@ -1877,6 +1879,74 @@ try {
   }
 } catch (e) {
   console.warn("[seed] Stage 6.8 QA checklist refresh failed:", e);
+}
+
+// ── Stage 6.11 — seed the Weekly SME Analytics newsletter template ──────────
+// Mirrors the Analytical Banker seed (idempotent, gates on template name).
+// Disabled by default — operator flips `enabled` from the Templates page once
+// ready for the first run. Distinct output filenames (sme-issue-*.md /
+// sme-runner-up-*.md) so SME issues never collide with Analytical Banker
+// issues in any merged Files view or downstream search index.
+const SME_WEEKLY_TEMPLATE_NAME = "Weekly SME Analytics";
+const alreadyHasSmeWeekly = storage
+  .getProjectTemplates()
+  .some((t) => t.name === SME_WEEKLY_TEMPLATE_NAME);
+if (!alreadyHasSmeWeekly) {
+  storage.createProjectTemplate({
+    name: SME_WEEKLY_TEMPLATE_NAME,
+    description:
+      "Sunday 18:00 UK — research the week and draft a 900–1100 word SME " +
+      "newsletter in Aksel's voice for delivery to owner-operators and FDs " +
+      "at growing UK businesses (£2M–£20M turnover). Disabled by default; " +
+      "flip enabled when you're ready for the first run.",
+    kind: "weekly",
+    prompt: WEEKLY_SME_ANALYTICS_PROMPT,
+    // Same Sunday 18:00 UK slot as the Analytical Banker — the orchestrator
+    // queues each project sequentially per-template so the two newsletters
+    // don't fight for the same research budget within a single tick.
+    scheduleCron: "0 18 * * 0",
+    enabled: 0,
+    outputDir: "output/newsletters/sme",
+    metadata: JSON.stringify({
+      stage: "6.11",
+      brand: "Weekly SME Analytics",
+      audience: "UK SME owner-operators / FDs at £2M–£20M businesses",
+      voiceSamples: [
+        "issue-001-tickle-my-filings",
+        "issue-002-corporate-hierarchies",
+      ],
+    }),
+    referencePlan: WEEKLY_SME_ANALYTICS_REFERENCE_PLAN,
+    lastRunAt: null,
+    nextRunAt: null,
+    lastProjectId: null,
+  });
+}
+
+// Stage 6.11 — backfill the SME Weekly reference plan onto an EXISTING row
+// (e.g. a prod DB seeded under an earlier stage where the plan was empty
+// or out of date). Only writes when referencePlan is currently empty OR
+// the seeded prompt is the canonical Stage 6.11 one — avoids clobbering a
+// user's customised plan.
+try {
+  const existingSme = storage
+    .getProjectTemplates()
+    .find((t) => t.name === SME_WEEKLY_TEMPLATE_NAME);
+  if (
+    existingSme &&
+    (!existingSme.referencePlan || existingSme.referencePlan.trim() === "")
+  ) {
+    storage.updateProjectTemplate(existingSme.id, {
+      referencePlan: WEEKLY_SME_ANALYTICS_REFERENCE_PLAN,
+      prompt: WEEKLY_SME_ANALYTICS_PROMPT,
+      updatedAt: Date.now(),
+    });
+    console.log(
+      `[seed] Stage 6.11: backfilled referencePlan onto existing SME Weekly template (id=${existingSme.id})`,
+    );
+  }
+} catch (e) {
+  console.warn("[seed] Stage 6.11 SME referencePlan backfill failed:", e);
 }
 
 // Heartbeat smoke-test seed kept for fresh databases only — useful for
