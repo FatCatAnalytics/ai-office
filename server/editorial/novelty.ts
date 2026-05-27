@@ -259,14 +259,39 @@ export interface LoadRecentIssuesOpts {
   excludeProjectId?: number;
 }
 
+// Stage 6.11: SME Analytics weekly newsletter ships its publishable issue
+// under a distinct filename pattern (sme-issue-*.md / sme-runner-up-*.md)
+// so SME issues never collide with Analytical Banker issues. The novelty
+// guard, the research sufficiency gate, and the orchestrator's
+// shouldRejectPublishableFileBlock check all use these helpers — extend the
+// regexes in ONE place and every consumer follows.
 const ISSUE_FILENAME_RE = /^issue-\d+\.md$/i;
 const RUNNER_UP_FILENAME_RE = /^runner-up-\d+\.md$/i;
+const SME_ISSUE_FILENAME_RE = /^sme-issue-\d+\.md$/i;
+const SME_RUNNER_UP_FILENAME_RE = /^sme-runner-up-\d+\.md$/i;
 
 export function isIssueFilename(name: string): boolean {
-  return ISSUE_FILENAME_RE.test(name);
+  return ISSUE_FILENAME_RE.test(name) || SME_ISSUE_FILENAME_RE.test(name);
 }
 export function isRunnerUpFilename(name: string): boolean {
+  return RUNNER_UP_FILENAME_RE.test(name) || SME_RUNNER_UP_FILENAME_RE.test(name);
+}
+// Banker-only / SME-only predicates — used where the orchestrator needs to
+// keep the two newsletters' file pools separate (e.g. the novelty guard's
+// "recent issues" load, which compares each newsletter against its own
+// history only — an SME issue should not be flagged as too similar to a
+// banker issue because the registers differ deliberately).
+export function isBankerIssueFilename(name: string): boolean {
+  return ISSUE_FILENAME_RE.test(name);
+}
+export function isBankerRunnerUpFilename(name: string): boolean {
   return RUNNER_UP_FILENAME_RE.test(name);
+}
+export function isSmeIssueFilename(name: string): boolean {
+  return SME_ISSUE_FILENAME_RE.test(name);
+}
+export function isSmeRunnerUpFilename(name: string): boolean {
+  return SME_RUNNER_UP_FILENAME_RE.test(name);
 }
 
 // Pure version — caller supplies the list of candidate files. The
@@ -403,6 +428,34 @@ export function isAnalyticalBankerTemplate(
 ): boolean {
   if (!template || !template.name) return false;
   return template.name.trim().toLowerCase().startsWith("the analytical banker");
+}
+
+// Stage 6.11: predicate for the SME Analytics weekly newsletter. Matches
+// "Weekly SME Analytics", "SME Analytics Weekly", "SME-Analytics Weekly",
+// "Weekly SME Analytics Report", etc. — the same loose matching shape the
+// research-gate brief classifier uses.
+export function isSmeAnalyticsTemplate(
+  template: { name?: string | null } | null | undefined,
+): boolean {
+  if (!template || !template.name) return false;
+  const name = template.name.trim().toLowerCase();
+  return (
+    name.includes("sme analytics") ||
+    name.includes("sme-analytics") ||
+    name.includes("smeanalytics") ||
+    (name.includes("weekly") && name.includes("sme"))
+  );
+}
+
+// Stage 6.11: convenience union — true for any weekly-newsletter template
+// the editorial pipeline knows how to run end-to-end (Analytical Banker
+// or SME Analytics). The orchestrator uses this for the novelty guard
+// and the post-save publishable-file checks, both of which behave the
+// same shape for either newsletter (anti-repeat, sourced claims, sign-off).
+export function isWeeklyNewsletterTemplate(
+  template: { name?: string | null } | null | undefined,
+): boolean {
+  return isAnalyticalBankerTemplate(template) || isSmeAnalyticsTemplate(template);
 }
 
 // Format a NoveltyMatch as a short event-message string for the activity feed.

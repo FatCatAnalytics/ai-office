@@ -1021,6 +1021,376 @@ export const WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN = JSON.stringify([
   },
 ]);
 
+// ── Weekly SME Analytics template prompt (Stage 6.11) ───────────────────────
+//
+// Mirrors The Analytical Banker weekly pipeline so the SME Analytics
+// newsletter generates a publishable issue, not a generic report. Same
+// editorial discipline (one strongest angle, novelty guard, fact-check, 8-step
+// QA), but the register is the SME owner-operator / FD at a £2M–£20M business
+// — plain language, no bank jargon, concrete Monday-morning actions.
+//
+// Distinct filenames `sme-issue-{{week}}.md` / `sme-runner-up-{{week}}.md`
+// avoid colliding with Analytical Banker's `issue-*.md` / `runner-up-*.md`.
+
+export const WEEKLY_SME_ANALYTICS_PROMPT = `Produce this week's issue of "Weekly SME Analytics" — a single newsletter draft, in Aksel's voice but in plain SME register, ready to paste into Beehiiv as a draft post for delivery to owner-operators and FDs at growing UK businesses (£2M–£20M turnover).
+
+WEEK COVERED: the seven days ending the Sunday this template fires (i.e. Mon–Sun of the week just finished).
+
+╔══ REFERENCE PLAN — USE THIS EXACTLY ═════════════════════════════════
+
+The manager MUST emit a plan with EXACTLY the tasks below, in this order,
+with EXACTLY these assignedTo values. Do not split, merge, rename agents,
+or reassign. The agent IDs below are correct — they exist in the roster.
+
+  key="research"     assignedTo="deep-search"     complexity="high"
+      title: Identify candidate SME-analytics stories from the past week (Mon–Sun)
+      dependsOn: []
+
+  key="angle"        assignedTo="editorial-lead"  complexity="medium"
+      title: Select the single strongest SME-flavoured angle for this week's issue
+      dependsOn: ["research"]
+
+  key="draft"        assignedTo="editorial-lead"  complexity="high"
+      title: Draft the SME newsletter issue in plain-language register (900–1100 words)
+      dependsOn: ["angle"]
+
+  key="qa"           assignedTo="editorial-lead"  complexity="high"
+      title: QA self-review against the 8-step editorial checklist (SME register)
+      dependsOn: ["draft"]
+
+  key="factcheck"    assignedTo="deep-search"     complexity="high"
+      title: Independent fact-check of every numeric claim and named source
+      dependsOn: ["qa"]
+
+  key="final"        assignedTo="editorial-lead"  complexity="high"
+      title: Apply QA + fact-check fixes and emit final file blocks
+      dependsOn: ["factcheck"]
+
+HARD RULES on assignedTo (these override any general planning heuristic):
+  • DO NOT assign QA to the "qa" agent. Use editorial-lead. The QA pass
+    requires the brand voice + register knowledge baked into the
+    editorial-lead system prompt; the generic qa agent produces empty
+    output for newsletter briefs (same failure mode as Analytical Banker).
+  • DO NOT assign the final-output task to "technical-writer". The
+    technical-writer agent does NOT speak SME register and will sound
+    like a vendor pitch. Final files must come from editorial-lead.
+  • DO NOT add a separate "web-scraper" or "data-val-specialist" task.
+    deep-search handles its own scraping and source verification for this
+    brief. One research task, one fact-check task. Six tasks total.
+╚══════════════════════════════════════════════════════════════════════════════
+
+DETAIL FOR EACH TASK (manager: pass these as the description field):
+  1. Research pass — Use the deep-research stack to identify 5–8 candidate
+     stories from the week relevant to SME owner-operators / FDs. Themes
+     to scan: small-business finance & cashflow data, SME lending & credit
+     conditions, operational analytics / pricing / margin / working-capital
+     visibility, practical AI/LLM use for businesses without an ML team,
+     SME-relevant ONS / BoE / Companies House releases, payment trends,
+     HMRC/Treasury announcements that move the £2M–£20M segment. Each
+     candidate: one-line summary, primary URL, why an SME owner/FD should
+     care, honest "so what" implication for a growing business.
+  2. Angle selection — Pick the ONE story with the strongest practitioner
+     angle FOR AN SME OWNER/FD. Discard the others. We are not writing a
+     roundup. If two stories tie, prefer the one closer to data /
+     analytics / pricing / margin / cashflow plumbing (the brand wedge)
+     over pure macro or pure regulatory news. Audience is FIXED to 'sme'
+     for this newsletter — sub-line is always "*For growing businesses*".
+  3. Editorial draft — ASSIGN TO editorial-lead. They draft the issue in
+     Aksel's voice but in plain SME register (900–1100 words, blockquote
+     diagnostic, sentence-case headers, "The takeaway" section,
+     "— Aksel" sign-off, standard footer). No internal-bank jargon
+     ("BoE", "MREL", "GLEIF" require plain-language explanation if used
+     at all). Output is markdown — NO <file> blocks at this stage.
+  4. QA pass — ASSIGN TO editorial-lead. Self-review against the canonical
+     8-step editorial checklist with the SME register check (Step 5:
+     audience=sme; reject internal-bank jargon as a FIX). PASS / FIX /
+     WARN verdicts, closing with a \`## Final recommendation\` line of
+     ship | revise | reject.
+  5. Fact-check — ASSIGN TO deep-search. Re-fetch every cited primary
+     source, confirm numbers/dates/source names match the draft, mark
+     each claim VERIFIED / NOT_VERIFIED / BROKEN_LINK / NO_SOURCE /
+     CONTRADICTED. Verdict OK_TO_PUBLISH or REQUIRES_FIXES.
+  6. Apply QA fixes & produce final files — ASSIGN TO editorial-lead.
+     Apply EVERY FAIL from QA and EVERY non-VERIFIED row from the
+     fact-check table. The output MUST contain TWO and ONLY TWO file
+     blocks, in this exact format (literal angle brackets, no markdown
+     fences around them):
+
+         <file name="sme-issue-{{week}}.md">
+         # <issue title>
+         *For growing businesses*
+
+         <full final article body, ready to paste into Beehiiv — no
+         meta-headers, no review notes, no "---" separators above the
+         title, no leading H1 like "Draft the newsletter issue…">
+         </file>
+
+         <file name="sme-runner-up-{{week}}.md">
+         # <runner-up title>
+
+         One paragraph on why this angle lost to the chosen one.
+         Optionally a 2–3 sentence skeleton in case it needs to be
+         revived next week.
+         </file>
+
+     Where {{week}} is the ISO week number of the week COVERED (Mon–Sun
+     just finished), zero-padded to 2 digits, e.g. sme-issue-17.md. Do
+     NOT wrap the file blocks in code fences. The ONLY text allowed
+     outside the two <file>…</file> blocks is one preamble line at the
+     top: "Producing final files for sme-issue-{{week}}." The
+     orchestrator parses these blocks and saves them as-is; any prose
+     outside the blocks is discarded.
+
+CURATED SOURCES (preferred, not exclusive — bias toward SME-relevant):
+
+${renderCuratedSources()}
+
+BRAND FINGERPRINT (read this before assigning the editorial task):
+
+${BRAND_FINGERPRINT}
+
+NON-NEGOTIABLES FOR THIS RUN:
+  • Audience is fixed: SME owner-operator / FD at a £2M–£20M business.
+    Sub-line on every issue is "*For growing businesses*" — never another
+    variant for this template.
+  • The issue must answer three things the reader cares about:
+    (a) what happened in SME analytics / small-business finance last week,
+    (b) which concrete pain point this creates for SME leaders right now,
+    (c) how a small analytics team — or FatCat Analytics — can help,
+    WITHOUT turning the body into a sales pitch. The standard footer is
+    the only CTA.
+  • Do not write more than one issue. The runner-up exists only as a
+    one-paragraph note in sme-runner-up-{{week}}.md, not as a second draft.
+  • Do not produce a roundup or a "this week in SME" digest. The output
+    is one publishable newsletter.
+  • Do not invent statistics. If a number isn't in a fetched source, drop
+    the line that needed it.
+  • The final apply-fixes task is the ONLY task that emits <file> blocks.
+  • sme-issue-{{week}}.md must start directly with the article's H1 title
+    and contain only the article body — no agent meta-headers, no QA
+    notes, no "Project:" / "Agent:" / "Completed:" lines. It will be
+    pasted into Beehiiv verbatim.`;
+
+// ── Stage 6.11 — deterministic task graph for the Weekly SME Analytics ──────
+//
+// Mirrors WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN. Same six-stage shape
+// (research → angle → draft → qa → factcheck → final), same agent
+// assignments, but with SME-flavoured task descriptions and SME-specific
+// file block names. The orchestrator's research-sufficiency gate and
+// novelty guard recognise this template via the "Weekly SME Analytics"
+// name (see server/editorial/researchGate.ts:classifyResearchBrief and
+// server/editorial/novelty.ts:isWeeklyNewsletterTemplate).
+
+export const WEEKLY_SME_ANALYTICS_REFERENCE_PLAN = JSON.stringify([
+  {
+    key: "research",
+    title: "Identify candidate SME-analytics stories from the past week (Mon–Sun)",
+    assignedTo: "deep-search",
+    priority: "critical",
+    complexity: "high",
+    dependsOn: [],
+    description:
+      "Identify 5–8 candidate stories from the seven days ending on the most " +
+      "recently completed Sunday (Mon–Sun, the week just finished) relevant " +
+      "to an SME owner-operator or FD at a £2M–£20M UK business. Themes to " +
+      "scan: small-business finance & cashflow data, SME lending & credit " +
+      "conditions, operational analytics, pricing & margin & working-capital " +
+      "visibility, practical AI/LLM use for businesses without an ML team, " +
+      "SME-relevant ONS / BoE / Companies House / HMRC / Treasury releases, " +
+      "payment trends. For each candidate, return: a one-line summary, a " +
+      "primary source URL (Tier 1 regulator/central-bank or Tier 2 specialist " +
+      "press), why an SME owner/FD should care, and an honest 'so what' " +
+      "implication for a growing business. Do NOT scrape, do NOT validate — " +
+      "those are not separate tasks for this brief. Output a plain markdown " +
+      "list of candidates; the next agent will read it.",
+  },
+  {
+    key: "angle",
+    title: "Select the single strongest SME-flavoured angle for this week's issue",
+    assignedTo: "editorial-lead",
+    priority: "high",
+    complexity: "medium",
+    dependsOn: ["research"],
+    description:
+      "Read the candidate list from the previous task. Pick the ONE story " +
+      "with the strongest practitioner angle FOR AN SME OWNER/FD. Discard " +
+      "the others. We are not writing a roundup. If two stories tie, prefer " +
+      "the one closer to data / analytics / pricing / margin / cashflow " +
+      "plumbing (the brand wedge) over pure macro or pure regulatory news.\n\n" +
+      "AUDIENCE — FIXED. This newsletter is the SME-only sibling of the " +
+      "Analytical Banker. Audience is ALWAYS 'sme'. Sub-line on every issue " +
+      "is '*For growing businesses*'. Do NOT classify the angle as 'bank' or " +
+      "'universal' for this template — if no genuine SME-flavoured candidate " +
+      "exists in the research output, pick the candidate closest to the SME " +
+      "lens and reframe it for the SME reader.\n\n" +
+      "ANTI-REPEAT GUARD (Stage 6.7 — HARD RULE). If a 'RECENT ISSUES (do " +
+      "not repeat these themes)' block has been appended to the bottom of " +
+      "this brief, scan it before finalising your pick. Do NOT choose a " +
+      "candidate that materially overlaps with any title or summary in that " +
+      "list — same primary subject, same regulator/event focus, same angle " +
+      "shape. If the strongest candidate overlaps with a recent issue, pick " +
+      "the NEXT strongest candidate that is materially distinct. A near-" +
+      "repeat is the single fastest way to lose subscribers.\n\n" +
+      "OUTPUT FORMAT — a short markdown note with these exact headings, in " +
+      "order:\n\n" +
+      "  ## Chosen story\n" +
+      "  <one-line title>\n\n" +
+      "  ## Audience\n" +
+      "  sme    (fixed for this newsletter)\n\n" +
+      "  ## Sub-line\n" +
+      "  *For growing businesses*\n\n" +
+      "  ## Justification\n" +
+      "  2–3 sentences on why this beat the others for an SME owner/FD.\n\n" +
+      "  ## Primary source\n" +
+      "  <markdown link>\n\n" +
+      "  ## Runner-up\n" +
+      "  <one line: which other story you'd save for next week>",
+  },
+  {
+    key: "draft",
+    title: "Draft the SME newsletter issue in plain-language register (900–1100 words)",
+    assignedTo: "editorial-lead",
+    priority: "critical",
+    complexity: "high",
+    dependsOn: ["angle"],
+    description:
+      "Draft this week's SME issue in Aksel's voice using the chosen angle " +
+      "and its sources. Target 900–1100 words. Required structural elements:\n" +
+      "  • H1 title in sentence case.\n" +
+      "  • Audience sub-line on the line directly under the H1, in italics: " +
+      "'*For growing businesses*'. Always exactly this sub-line for this " +
+      "template — no other variant.\n" +
+      "  • Sentence-case section headers throughout.\n" +
+      "  • A single italic blockquote diagnostic question placed roughly " +
+      "two-thirds of the way through.\n" +
+      "  • A 'The takeaway' section near the end with ONE concrete action " +
+      "an SME owner/FD could take in the next 7 days.\n" +
+      "  • '— Aksel' sign-off on its own line.\n" +
+      "  • The standard footer paragraph.\n" +
+      "Inline-link every factual claim to its source.\n\n" +
+      "REGISTER. Write for a £2M–£20M business owner with their FD reading " +
+      "over their shoulder. Plain language, no internal-bank jargon ('BoE', " +
+      "'MREL', 'GLEIF', 'NIM', 'Pillar 2') unless plainly explained on first " +
+      "use. Prefer concrete examples and round-number specifics ('£3,500', " +
+      "'8% of customers') over abstractions. The reader wants 'what should " +
+      "I do on Monday morning' answers with enough detail that the FD can " +
+      "act on them. NO body-text sales pitches — the standard footer is " +
+      "the only CTA. The issue should naturally answer: what happened in " +
+      "SME analytics / small-business finance last week, what concrete " +
+      "pain point that creates for SME leaders right now, and how a small " +
+      "analytics team (or FatCat Analytics) can help — without becoming a " +
+      "vendor pitch.\n\n" +
+      "No <file> blocks at this stage — just the markdown article. The QA " +
+      "task will review this output and the final task will produce the " +
+      "publish-ready files.",
+  },
+  {
+    key: "qa",
+    title: "QA self-review against the 8-step editorial checklist (SME register)",
+    assignedTo: "editorial-lead",
+    priority: "high",
+    // Stage 6.11: same complexity bump as the banker QA — the 8-step
+    // checklist is instruction-heavy meta-work that medium-tier silently
+    // produces 0 chars for. high-tier routes to Sonnet/Opus reliably.
+    complexity: "high",
+    dependsOn: ["draft"],
+    // Stage 6.11: the per-step rules live in
+    // server/editorial/qaChecklist.ts. The renderer reads the canonical
+    // 8-step description that also includes the SME register check
+    // (Step 5: audience=sme; reject internal-bank jargon as a FIX).
+    description: renderQaChecklistDescription(),
+  },
+  {
+    key: "factcheck",
+    title: "Independent fact-check of every numeric claim and named source",
+    assignedTo: "deep-search",
+    priority: "critical",
+    complexity: "high",
+    dependsOn: ["qa"],
+    description:
+      "You are an independent fact-checker. Your job is to catch " +
+      "hallucinated statistics, fabricated sources, and stale dates BEFORE " +
+      "the apply-fixes task produces the final files. The editorial-lead " +
+      "can self-check format but cannot reliably self-check facts — that " +
+      "requires re-fetching primary sources.\n\n" +
+      "PROCEDURE:\n" +
+      "  1. Read the draft from the 'draft' task and the QA review from " +
+      "     the 'qa' task. Extract a list of every factual claim that " +
+      "     could be wrong: every numeric figure, every date, every named " +
+      "     organisation, every quoted statistic, every cited URL.\n" +
+      "  2. For EACH claim, fetch the primary source the draft cites " +
+      "     (use the deep-search web tools — you have web access). " +
+      "     Confirm the number, the date, and the source name match the " +
+      "     draft exactly.\n" +
+      "  3. If a claim has no inline link, that is an automatic FAIL — " +
+      "     editorial-lead must drop or re-source it.\n" +
+      "  4. If a cited URL doesn't load, returns a 404, or doesn't " +
+      "     contain the claimed number — FAIL.\n" +
+      "  5. If a claim is internally contradicted by another part of the " +
+      "     draft — FAIL.\n\n" +
+      "OUTPUT FORMAT — a plain markdown table with these columns:\n\n" +
+      "  | Claim (quoted) | Source URL in draft | Verified? | Action |\n" +
+      "\n" +
+      "Verified column is one of: VERIFIED, NOT_VERIFIED, BROKEN_LINK, " +
+      "NO_SOURCE, CONTRADICTED. Action column is one of: KEEP, DROP, " +
+      "REPLACE_NUMBER (give the correct number), REPLACE_SOURCE (give " +
+      "the corrected URL).\n\n" +
+      "Below the table, write a short 'Summary' paragraph: how many " +
+      "claims, how many verified, how many failed, and a verdict — " +
+      "either OK_TO_PUBLISH or REQUIRES_FIXES. If REQUIRES_FIXES, the " +
+      "apply-fixes task MUST act on every non-VERIFIED row.\n\n" +
+      "You may not invent verifications. If you cannot fetch a source " +
+      "within reasonable effort, mark it NOT_VERIFIED rather than " +
+      "guessing. NO <file> blocks at this stage.",
+  },
+  {
+    key: "final",
+    title: "Apply QA + fact-check fixes and emit final SME issue file blocks",
+    assignedTo: "editorial-lead",
+    priority: "critical",
+    complexity: "high",
+    dependsOn: ["factcheck"],
+    description:
+      "Read the draft, the QA review, and the fact-check report from the " +
+      "three previous tasks. Apply EVERY FIX item from the QA review and " +
+      "EVERY non-VERIFIED row from the fact-check table (DROP, " +
+      "REPLACE_NUMBER, or REPLACE_SOURCE as instructed).\n\n" +
+      "ANTI-REPEAT GUARD (Stage 6.7 — HARD RULE for the RUNNER-UP). If a " +
+      "'RECENT ISSUES (do not repeat these themes)' block has been appended " +
+      "to the bottom of this brief, the runner-up paragraph you write MUST " +
+      "be a materially distinct angle from (a) the issue you are about to " +
+      "publish above it AND (b) every entry in that recent-issues list. " +
+      "Don't propose a runner-up that's just a tighter re-skin of this " +
+      "week's chosen angle, and don't propose one that revives last week's " +
+      "topic.\n\n" +
+      "DELIBERATE-RISK MOMENT (mandatory). Before emitting the file " +
+      "blocks, identify ONE place in the article to take a small genuine " +
+      "risk — a sharp opinion, an admission of personal failure, a " +
+      "slightly contrarian view, or a piece of dry humour that might not " +
+      "land. AI defaults to safe. Aksel's voice differentiates because it " +
+      "isn't. Insert ONE moment that makes a reader think 'huh, didn't " +
+      "expect that'. Mention briefly in your one-line preamble where you " +
+      "placed the risk moment.\n\n" +
+      "Then produce TWO and ONLY TWO file blocks, in this exact format " +
+      "(literal angle brackets, no markdown fences around them):\n\n" +
+      "<file name=\"sme-issue-{{week}}.md\">\n# <issue title>\n" +
+      "*For growing businesses*\n\n<full final article body, ready to " +
+      "paste into Beehiiv — no meta-headers, no review notes, no '---' " +
+      "separators above the title>\n</file>\n\n" +
+      "<file name=\"sme-runner-up-{{week}}.md\">\n# <runner-up title>\n\n" +
+      "One paragraph on why this angle lost to the chosen one. Optionally " +
+      "a 2–3 sentence skeleton in case it needs to be revived next week.\n" +
+      "</file>\n\n" +
+      "Where {{week}} is the ISO week number of the week COVERED (Mon–Sun " +
+      "just finished), zero-padded to 2 digits, e.g. 'sme-issue-17.md'. " +
+      "Do NOT wrap the file blocks in code fences. The ONLY text allowed " +
+      "outside the two <file>…</file> blocks is one preamble line at the " +
+      "top: 'Producing final files for sme-issue-{{week}}. Risk moment " +
+      "placed at: <one-line description>.' Anything else outside the " +
+      "blocks is discarded by the orchestrator.",
+  },
+]);
+
 // ── Heartbeat smoke-test prompt (kept for the optional second seed) ─────────
 //
 // Stage 5.1 shipped this as the only seeded template. In Stage 5.2 the

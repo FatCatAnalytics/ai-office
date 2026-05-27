@@ -77,52 +77,147 @@ function hasKey(provider: Provider): boolean {
 //   3. Hardcoded TIER_PREFERENCES fall-through (first provider with a key).
 //   4. The agent's own modelId.
 export function routeForComplexity(complexity: Complexity, fallbackAgent: Agent): RoutedModel {
+  const chain = routeForComplexityChain(complexity, fallbackAgent);
+  return chain[0];
+}
+
+// Stage 6.11 — fit-for-purpose routing with explicit fallback chain.
+//
+// Same resolution order as routeForComplexity, but returns EVERY candidate
+// the caller could try, in priority order, with duplicate (provider+modelId)
+// entries de-duplicated. The orchestrator's callWithFallback wrapper walks
+// this list when a call fails with a quota/credits/auth-style error, so
+// agents pick the cheapest fit-for-purpose model first and only escalate to
+// a more expensive backup when the cheaper one is actually unavailable.
+//
+// Each entry's `reason` carries the resolution stage so the activity feed
+// shows WHY a particular model was chosen on the wire (operator default vs
+// pool member vs hardcoded preference vs agent-default last-resort).
+export function routeForComplexityChain(
+  complexity: Complexity,
+  fallbackAgent: Agent,
+): RoutedModel[] {
+  const out: RoutedModel[] = [];
+  const seen = new Set<string>(); // provider:modelId
+  const push = (entry: RoutedModel) => {
+    const key = `${entry.provider}:${entry.modelId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(entry);
+  };
+
   // 1. Operator-pinned DEFAULT for the tier.
   try {
     const pinned = storage.getPreferredModelForTier(complexity);
     if (pinned && hasKey(pinned.provider as Provider)) {
-      return {
+      push({
         provider: pinned.provider as Provider,
         modelId: pinned.modelId,
         reason: `${complexity}-tier → operator default (${pinned.displayName || pinned.modelId})`,
-      };
+      });
     }
   } catch { /* registry not yet migrated; fall through */ }
 
-  // 2. Any other model the operator added to this tier's pool. Picking the
-  //    first one with a configured provider key keeps things deterministic for
-  //    a given key set, while still letting operators stage multiple choices.
+  // 2. Any other model the operator added to this tier's pool.
   try {
     const pool = storage.getPoolModelsForTier(complexity);
     for (const m of pool) {
       if (hasKey(m.provider as Provider)) {
-        return {
+        push({
           provider: m.provider as Provider,
           modelId: m.modelId,
           reason: `${complexity}-tier → pool member (${m.displayName || m.modelId})`,
-        };
+        });
       }
     }
   } catch { /* migration race; fall through */ }
 
-  // 3. Hardcoded preference chain.
+  // 3. Hardcoded preference chain — every preference whose provider key is
+  //    configured. This is the bulk of the fallback chain in practice: the
+  //    operator typically pins one model and the rest of the chain comes
+  //    from these hardcoded sensible defaults.
   const prefs = TIER_PREFERENCES[complexity] ?? TIER_PREFERENCES.medium;
   for (const pick of prefs) {
-    if (hasKey(pick.provider)) return pick;
+    if (hasKey(pick.provider)) push(pick);
   }
 
-  // 3. Agent default.
-  return {
+  // 4. Agent default — last resort. Always present so a configured agent
+  //    always has *something* to call, even if every other lookup fails.
+  push({
     provider: (fallbackAgent.provider as Provider) ?? "anthropic",
     modelId: fallbackAgent.modelId,
-    reason: `no preferred provider keys configured — using agent default ${fallbackAgent.modelId}`,
-  };
+    reason: `${complexity}-tier → agent default ${fallbackAgent.modelId} (last resort)`,
+  });
+
+  return out;
 }
 
 // Manager planning + QA review always go to a high-tier model (Sonnet first).
 // The fallbackAgent.provider key is honored if everything else is missing.
 export function routeForCriticalCall(fallbackAgent: Agent): RoutedModel {
   return routeForComplexity("high", fallbackAgent);
+}
+
+// Stage 6.11 — chain variant of routeForCriticalCall. Used by the
+// orchestrator's manager-planning + QA-review paths to walk the high-tier
+// fallback list on quota errors.
+export function routeForCriticalCallChain(fallbackAgent: Agent): RoutedModel[] {
+  return routeForComplexityChain("high", fallbackAgent);
+}
+
+// Stage 6.11 — classify an LLM error as "should we walk the fallback
+// chain?" or "fail clean". The orchestrator's runWorkerTask / callManagerLLM
+// catch the streamCompletion rejection and ask this predicate whether
+// retrying with the next chain entry is appropriate.
+//
+// We TRY the next model when:
+//   • status is 429 / 402 / 401 / 403 (rate-limit, payment-required,
+//     unauthorised, forbidden — the provider is refusing the call for
+//     account-level reasons, NOT for our prompt content).
+//   • the error message mentions credits / quota / billing / not enough
+//     funds / insufficient balance / payment required.
+//   • the error message mentions model-not-found / unsupported model —
+//     the configured model id is wrong for that provider but the next
+//     provider's model id will likely work.
+//
+// We DO NOT walk the chain on:
+//   • AbortError (operator pressed Stop).
+//   • 4xx other than the codes above (probably a malformed request —
+//     trying again with a different provider will just fail the same way).
+//   • Transient errors (5xx / network); streamCompletion already retries
+//     those internally via fetchWithRetry. By the time we see the
+//     exception, the call has exhausted its in-provider retries.
+export function isQuotaOrCreditError(err: unknown): boolean {
+  if (err == null) return false;
+  const e = err as { name?: string; message?: string };
+  if (e?.name === "AbortError") return false;
+  const msg = String(e?.message ?? err).toLowerCase();
+  // HTTP status patterns surfaced by the provider edges (Anthropic / OpenAI
+  // / Google / Kimi / DeepSeek format the status as `<Provider> API <status>`).
+  if (/\bapi\s+(429|402|401|403)\b/.test(msg)) return true;
+  // Phrase patterns — covers the natural-language explanations providers
+  // bundle in the response body when status is generic 4xx/5xx.
+  const phrases = [
+    "rate limit",
+    "rate-limit",
+    "quota",
+    "credits",
+    "billing",
+    "insufficient balance",
+    "insufficient_quota",
+    "payment required",
+    "out of credit",
+    "exceeded your current quota",
+    "model not found",
+    "model_not_found",
+    "unsupported model",
+    "no credit",
+    "no credits",
+  ];
+  for (const p of phrases) {
+    if (msg.includes(p)) return true;
+  }
+  return false;
 }
 
 // Map a free-form complexity hint from the planner to the canonical tier.
