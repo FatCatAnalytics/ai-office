@@ -24,7 +24,7 @@ import { renderPdf, renderXlsx, renderPdfFromManifest, renderXlsxFromManifest, t
 import { extractManifest, manifestToMarkdown, manifestToCsv, manifestToJson, type DeliverableManifest } from "./manifest";
 import { routeForComplexity, routeForCriticalCall, normaliseComplexity, type Complexity } from "./modelRouter";
 import { reviewProjectQA } from "./qaReviewer";
-import { resolveTools, tavilyConfigured } from "./tools";
+import { resolveTools, tavilyConfigured, perplexityConfigured } from "./tools";
 import {
   extractIssueSignature,
   findAllTooSimilar,
@@ -1501,13 +1501,37 @@ async function runWorkerTask(
   // TAVILY_API_KEY surfaces as a single warning event instead of a per-call
   // 401 cascade.
   const toolNames = toolsForAgent(agent.id);
-  const tools = toolNames.length > 0 && tavilyConfigured()
-    ? resolveTools(toolNames)
-    : [];
+  // Stage 6.10: keep the perplexity_research tool available even when Tavily
+  // is unconfigured — Perplexity is a standalone search-with-citations
+  // provider and a viable substitute. Conversely, if Perplexity is unset,
+  // we still expose Tavily. Only drop ALL tools when both providers are
+  // unconfigured.
+  const tavilyOn = tavilyConfigured();
+  const perplexityOn = perplexityConfigured();
+  const filteredToolNames = toolNames.filter((n) => {
+    if (n === "tavily_search" || n === "tavily_extract") return tavilyOn;
+    if (n === "perplexity_research") return perplexityOn;
+    return true;
+  });
+  const tools = filteredToolNames.length > 0 ? resolveTools(filteredToolNames) : [];
   if (toolNames.length > 0 && tools.length === 0) {
     deps.emitEvent(
       project.id, agent.id, agent.name, "tools disabled",
-      "TAVILY_API_KEY not set — agent will run without web tools and may produce empty results", "warning"
+      "Neither TAVILY_API_KEY nor PERPLEXITY_API_KEY is set — agent will run without web tools and may produce empty results. Configure at least one provider; Perplexity is the recommended fallback when Tavily quota is exhausted.",
+      "warning"
+    );
+  } else if (toolNames.length > 0 && !tavilyOn && perplexityOn) {
+    deps.emitEvent(
+      project.id, agent.id, agent.name, "tavily disabled — using perplexity",
+      "TAVILY_API_KEY not set; agent will use perplexity_research only. Sourced research is still possible via Perplexity citations.",
+      "info"
+    );
+  } else if (toolNames.length > 0 && tavilyOn && !perplexityOn && toolNames.includes("perplexity_research")) {
+    // Quiet info — not a failure, but operator should know fallback isn't armed.
+    deps.emitEvent(
+      project.id, agent.id, agent.name, "perplexity fallback unarmed",
+      "PERPLEXITY_API_KEY not set — if Tavily hits its quota or returns zero results, the research wave will fail closed with no fallback. Set PERPLEXITY_API_KEY to enable automatic fallback.",
+      "info"
     );
   }
 
