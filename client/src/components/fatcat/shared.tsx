@@ -33,6 +33,11 @@ export function FatCatStyles() {
       @media (prefers-reduced-motion: reduce) {
         .fc-motion { animation: none !important; }
       }
+      /* Hotspot buttons never draw a browser default focus outline over the art;
+         the only focus affordance is the custom ring revealed below. */
+      .fc-hot { outline: none; -webkit-tap-highlight-color: transparent; }
+      .fc-hot::-moz-focus-inner { border: 0; }
+
       /* Hotspot reveal: ring + tooltip are invisible by default so the approved
          artwork stays clean. They fade in only on hover, keyboard focus, or when
          the seat is selected (.fc-hot-on). */
@@ -44,6 +49,15 @@ export function FatCatStyles() {
       .fc-hot:hover .fc-hot-tip,
       .fc-hot:focus-visible .fc-hot-tip,
       .fc-hot.fc-hot-on .fc-hot-tip { opacity: 1; }
+
+      /* The tiny status dot is persistent ONLY for live/active seats (it carries
+         the .fc-dot-active marker). Quiet seats (idle/waiting/complete) that do
+         render a dot keep it hidden until the seat is hovered/focused/selected,
+         so waiting cats never get a persistent highlight. */
+      .fc-hot .fc-dot-quiet { opacity: 0; transition: opacity 160ms ease; }
+      .fc-hot:hover .fc-dot-quiet,
+      .fc-hot:focus-visible .fc-dot-quiet,
+      .fc-hot.fc-hot-on .fc-dot-quiet { opacity: 1; }
     `}</style>
   );
 }

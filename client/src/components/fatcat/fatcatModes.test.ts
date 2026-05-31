@@ -101,4 +101,60 @@ describe("FatCat modes are asset-backed (approved artwork, not placeholders)", (
       expect(src).not.toMatch(/Name plate anchored/);
     }
   });
+
+  // ── Stage 6.12.3: waiting/idle stays quiet, only live states get a marker ──
+
+  it("renders NO status dot at all for idle/waiting seats", () => {
+    for (const file of [ISO, MISSION]) {
+      const src = read(file);
+      // The status dot is gated behind a not-idle guard, so a waiting cat draws
+      // nothing over the approved artwork.
+      expect(src).toMatch(/slot\.status !== "idle" &&/);
+    }
+  });
+
+  it("only genuinely active states get a persistent dot; others are reveal-only", () => {
+    for (const file of [ISO, MISSION]) {
+      const src = read(file);
+      // Active = working/verifying/blocked (via isActiveStatus). The dot picks the
+      // persistent .fc-dot-active class for those and the reveal-only
+      // .fc-dot-quiet class otherwise (e.g. a settled "complete" seat).
+      expect(src).toMatch(/isActiveStatus\(slot\.status\)/);
+      expect(src).toMatch(/active \? "fc-dot-active" : "fc-dot-quiet"/);
+    }
+  });
+
+  it("does not rely on a browser default focus outline over the art", () => {
+    // The hotspot button no longer carries focus:outline-none as its only focus
+    // handling; the outline is reset in CSS and replaced by the custom ring.
+    const css = read(SHARED);
+    expect(css).toMatch(/\.fc-hot\s*\{[^}]*outline:\s*none/);
+    for (const file of [ISO, MISSION]) {
+      expect(read(file)).toMatch(/className=\{`fc-hot group absolute /);
+    }
+  });
+
+  it("the quiet dot is hidden by default and revealed only on interaction", () => {
+    const css = read(SHARED);
+    // Quiet dots start transparent…
+    expect(css).toMatch(/\.fc-hot \.fc-dot-quiet\s*\{\s*opacity:\s*0/);
+    // …and only show on hover / keyboard focus / selected.
+    expect(css).toMatch(/\.fc-hot:hover \.fc-dot-quiet/);
+    expect(css).toMatch(/\.fc-hot\.fc-hot-on \.fc-dot-quiet/);
+  });
+
+  it("keeps hotspot hit zones tight (no oversized rectangles spanning panels)", () => {
+    // Guard against regressing to huge seats. Every seat width/height is kept
+    // modest so a revealed ring hugs a single cat, never a whole panel.
+    for (const file of [ISO, MISSION]) {
+      const src = read(file);
+      const seatBlock = src.slice(src.indexOf("const SEATS"), src.indexOf("MANAGER_SEAT"));
+      const dims = [...seatBlock.matchAll(/w:\s*(\d+(?:\.\d+)?),\s*h:\s*(\d+(?:\.\d+)?)/g)];
+      expect(dims.length).toBeGreaterThanOrEqual(6);
+      for (const [, w, h] of dims) {
+        expect(Number(w)).toBeLessThanOrEqual(14);
+        expect(Number(h)).toBeLessThanOrEqual(28);
+      }
+    }
+  });
 });

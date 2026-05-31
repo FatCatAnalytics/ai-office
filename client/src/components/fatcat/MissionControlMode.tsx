@@ -19,7 +19,7 @@ import missionImage from "@assets/fatcat/fatcat_mission_control.jpg";
 import type { Agent, AgentEvent, Project } from "../../types";
 import {
   buildRoster, classifyWorkflow, workflowLabel,
-  FATCAT_STATUS_META, type RosterSlot,
+  FATCAT_STATUS_META, isActiveStatus, type RosterSlot,
 } from "../../lib/fatcatRoster";
 import {
   FatCatStyles, StatusPill, AgentDetailPanel, useReducedMotion,
@@ -31,19 +31,22 @@ interface Props {
   events: AgentEvent[];
 }
 
-// Hotspot seats as a percentage of the artwork box, mapped to the painted
-// committee FatCats in the approved Mission Control artwork. Left column then
-// right column, top-to-bottom — the order specialists are assigned.
+// Hotspot seats as a percentage of the artwork box, calibrated to the painted
+// committee FatCat *portraits* in the approved Mission Control artwork. The art
+// already paints a portrait card per specialist; these hit zones are sized to
+// hug just the cat's head/shoulders inside each card, not the whole card, so a
+// revealed ring sits tight on the character rather than boxing the panel. Left
+// column then right column, top-to-bottom — the order specialists are assigned.
 const SEATS: { x: number; y: number; w: number; h: number }[] = [
-  { x: 27.5, y: 22, w: 12, h: 22 }, // committee upper-left (Prof. Whiskerton)
-  { x: 27.5, y: 47, w: 12, h: 22 }, // committee mid-left (Data Purrson)
-  { x: 27.5, y: 70, w: 12, h: 24 }, // committee lower-left (Agent Clawrence)
-  { x: 72.5, y: 22, w: 12, h: 22 }, // committee upper-right (Counsel Pawsley)
-  { x: 72.5, y: 47, w: 12, h: 22 }, // committee mid-right (SecureCat)
-  { x: 72.5, y: 70, w: 12, h: 24 }, // committee lower-right (Mktg. Meowdison)
+  { x: 27, y: 26, w: 8, h: 16 }, // committee upper-left (Prof. Whiskerton)
+  { x: 27, y: 49, w: 8, h: 16 }, // committee mid-left (Data Purrson)
+  { x: 27, y: 72, w: 8, h: 16 }, // committee lower-left (Agent Clawrence)
+  { x: 72, y: 26, w: 8, h: 16 }, // committee upper-right (Counsel Pawsley)
+  { x: 72, y: 49, w: 8, h: 16 }, // committee mid-right (SecureCat)
+  { x: 72, y: 72, w: 8, h: 16 }, // committee lower-right (Mktg. Meowdison)
 ];
-// Central FatCat Manager seat in the artwork.
-const MANAGER_SEAT = { x: 50, y: 38, w: 18, h: 44 };
+// Central FatCat Manager — sized to the painted body on the central dais.
+const MANAGER_SEAT = { x: 50, y: 35, w: 14, h: 38 };
 
 export default function MissionControlMode({ agents, project, events }: Props) {
   const reduced = useReducedMotion();
@@ -158,14 +161,15 @@ function Hotspot({
   reduced: boolean;
 }) {
   const statusColor = FATCAT_STATUS_META[slot.status].color;
-  const active = slot.status === "working" || slot.status === "verifying";
+  const active = isActiveStatus(slot.status);
+  const animated = slot.status === "working" || slot.status === "verifying";
   const revealClass = selected ? "fc-hot-on" : "";
   return (
     <button
       onClick={onSelect}
       aria-pressed={selected}
       aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
-      className={`fc-hot group absolute focus:outline-none ${revealClass}`}
+      className={`fc-hot group absolute ${revealClass}`}
       style={{
         left: `${seat.x}%`,
         top: `${seat.y}%`,
@@ -179,21 +183,27 @@ function Hotspot({
         zIndex: manager ? 20 : 10,
       }}
     >
-      {/* Tiny status dot — the only persistent mark, only for active cats. */}
+      {/* Tiny status dot. Persistent ONLY for genuinely live cats (working /
+          verifying / blocked). Waiting/idle cats render no dot at all; a settled
+          "complete" cat gets a quiet dot that only appears on hover/focus/select
+          (.fc-dot-quiet) so the resting artwork stays clean. */}
       {slot.status !== "idle" && (
         <span
           aria-hidden
-          className={!reduced && active ? "fc-motion" : undefined}
+          className={[
+            active ? "fc-dot-active" : "fc-dot-quiet",
+            !reduced && animated ? "fc-motion" : "",
+          ].filter(Boolean).join(" ")}
           style={{
             position: "absolute",
-            top: "6%",
-            right: "12%",
+            top: "4%",
+            right: "8%",
             width: 9,
             height: 9,
             borderRadius: "50%",
             background: statusColor,
             boxShadow: `0 0 8px ${statusColor}cc`,
-            animation: !reduced && active ? "fcPulse 2.4s ease-in-out infinite" : undefined,
+            animation: !reduced && animated ? "fcPulse 2.4s ease-in-out infinite" : undefined,
           }}
         />
       )}
@@ -204,7 +214,7 @@ function Hotspot({
         className="fc-hot-ring"
         style={{
           position: "absolute",
-          inset: "8%",
+          inset: "4%",
           borderRadius: "14px",
           border: `1.5px solid ${slot.color}`,
           boxShadow: `0 0 16px ${slot.color}66`,
