@@ -57,11 +57,11 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
   const selected = roster.find((r) => r.key === selectedKey) ?? null;
 
   return (
-    <div className="w-full h-full relative overflow-hidden" style={{ background: "radial-gradient(circle at 50% 30%, #11182e 0%, #060b16 70%)" }}>
+    <div className="w-full h-full flex flex-col overflow-hidden" style={{ background: "radial-gradient(circle at 50% 30%, #11182e 0%, #060b16 70%)" }}>
       <FatCatStyles />
 
       {/* Header band */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800/80" style={{ background: "rgba(8,12,24,0.6)" }}>
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800/80 flex-shrink-0" style={{ background: "rgba(8,12,24,0.6)" }}>
         <div className="flex items-center gap-2">
           <Layers size={14} className="text-violet-400" />
           <span className="text-xs font-semibold text-slate-200 uppercase tracking-wider">FatCat Isometric Office</span>
@@ -80,7 +80,7 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
       </div>
 
       {/* 3-column body: left panel | floor | right panel */}
-      <div className="flex h-[calc(100%-86px)]">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Left: project / evidence panel */}
         <aside className="hidden lg:flex flex-col w-60 border-r border-slate-800/80 p-3 gap-3 overflow-y-auto custom-scroll" style={{ background: "rgba(8,12,24,0.45)" }}>
           <ProjectCard project={project} workflowName={workflowLabel(workflow)} />
@@ -388,7 +388,7 @@ function ActivityPanel({ events }: { events: AgentEvent[] }) {
 // ─── Bottom pipeline rail ────────────────────────────────────────────────────
 function PipelineRail({ roster, onSelect }: { roster: RosterSlot[]; onSelect: (k: string) => void }) {
   return (
-    <div className="flex items-center gap-1.5 px-3 border-t border-slate-800/80 overflow-x-auto" style={{ height: 44, background: "rgba(8,12,24,0.7)" }}>
+    <div className="flex items-center gap-1.5 px-3 border-t border-slate-800/80 overflow-x-auto flex-shrink-0" style={{ height: 44, background: "rgba(8,12,24,0.7)" }}>
       <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap mr-2">Pipeline</span>
       {roster.map((slot, i) => (
         <div key={slot.key} className="flex items-center gap-1.5 flex-shrink-0">

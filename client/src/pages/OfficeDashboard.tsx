@@ -14,6 +14,10 @@ import {
 import IsometricOffice from "../components/IsometricOffice";
 import IsometricOfficeMode from "../components/fatcat/IsometricOfficeMode";
 import MissionControlMode from "../components/fatcat/MissionControlMode";
+import {
+  type OfficeView, DEFAULT_OFFICE_VIEW, OFFICE_VIEW_META,
+  isOfficeView, isExperimentalView, selectableViews, resolveOfficeView,
+} from "../lib/officeView";
 
 const ICON_MAP: Record<string, React.ElementType> = {
   Crown, Monitor, Server, Bug, Palette, Rocket, Database, BarChart3, Shield, Briefcase,
@@ -695,19 +699,15 @@ interface DashboardProps {
 }
 
 // ─── Main dashboard ─────────────────────────────────────────────────────────────
-type OfficeView = "sims" | "board" | "iso" | "mission";
-const OFFICE_VIEWS: { key: OfficeView; label: string }[] = [
-  { key: "sims",    label: "Sims" },
-  { key: "board",   label: "Board" },
-  { key: "iso",     label: "Iso Office" },
-  { key: "mission", label: "Mission Control" },
-];
-function isOfficeView(v: string): v is OfficeView {
-  return v === "sims" || v === "board" || v === "iso" || v === "mission";
-}
+// View config + safe resolution live in ../lib/officeView. The experimental
+// FatCat modes (iso / mission) are gated off by default after the 6.12 visual
+// regression; see resolveOfficeView for the fallback guarantee.
 
 export default function OfficeDashboard({ agents, events, project, tasks, connected, showModal, setShowModal, agentMode, setAgentMode, liveStreams }: DashboardProps) {
-  const [activeView, setActiveView] = useState<OfficeView>("iso");
+  const [activeView, setActiveView] = useState<OfficeView>(DEFAULT_OFFICE_VIEW);
+  // Opt-in preview gate for the unfinished FatCat visual modes. Default off so
+  // no deploy can show the broken iso/mission UI without an explicit toggle.
+  const [showExperimental, setShowExperimental] = useState(false);
 
   // Sync agentMode + persisted office view from server on mount
   useEffect(() => {
@@ -716,17 +716,35 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       .then((s: Record<string, string>) => {
         const m = s["agent_mode"];
         if (m === "live" || m === "simulation") setAgentMode(m);
+        // A persisted experimental view re-enables the preview toggle so the
+        // user's prior choice is honoured, but only because they opted in before.
         const v = s["office_view_mode"];
-        if (v && isOfficeView(v)) setActiveView(v);
+        const allowExp = isOfficeView(v) && isExperimentalView(v);
+        if (allowExp) setShowExperimental(true);
+        setActiveView(resolveOfficeView(v, allowExp));
       })
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleViewChange = (view: OfficeView) => {
-    setActiveView(view);
-    apiRequest("PATCH", "/api/settings", { office_view_mode: view }).catch(() => {});
+    const safe = resolveOfficeView(view, showExperimental);
+    setActiveView(safe);
+    apiRequest("PATCH", "/api/settings", { office_view_mode: safe }).catch(() => {});
   };
+
+  const toggleExperimental = () => {
+    setShowExperimental(prev => {
+      const next = !prev;
+      // Leaving preview mode drops any experimental view back to a stable one.
+      if (!next && isExperimentalView(activeView)) handleViewChange(DEFAULT_OFFICE_VIEW);
+      return next;
+    });
+  };
+
+  const views = selectableViews(showExperimental);
+  // Hard guard: never render an experimental mode unless the preview is on.
+  const safeView = resolveOfficeView(activeView, showExperimental);
 
   const handleModeToggle = async (mode: "simulation" | "live") => {
     setAgentMode(mode);
@@ -750,20 +768,41 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       {/* ── Top header (app nav bar) ── */}
       <header className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800 bg-slate-900/90 backdrop-blur z-10 flex-shrink-0" style={{ minHeight: 48 }}>
         <div className="flex items-center gap-3">
-          <nav className="flex gap-1" role="tablist" aria-label="Office view mode">
-            {OFFICE_VIEWS.map(view => (
-              <button key={view.key} onClick={() => handleViewChange(view.key)}
-                role="tab"
-                aria-selected={activeView === view.key}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500 ${
-                  activeView === view.key
-                    ? "bg-cyan-500/15 text-cyan-400 border border-cyan-500/30"
-                    : "text-slate-500 hover:text-slate-300"
-                }`}
-                data-testid={`tab-${view.key}`}>
-                {view.label}
-              </button>
-            ))}
+          <nav className="flex gap-1 items-center" role="tablist" aria-label="Office view mode">
+            {views.map(view => {
+              const meta = OFFICE_VIEW_META[view];
+              return (
+                <button key={view} onClick={() => handleViewChange(view)}
+                  role="tab"
+                  aria-selected={safeView === view}
+                  title={meta.experimental ? "Experimental preview — visual rebuild in progress" : undefined}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500 ${
+                    safeView === view
+                      ? "bg-cyan-500/15 text-cyan-400 border border-cyan-500/30"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                  data-testid={`tab-${view}`}>
+                  {meta.label}
+                  {meta.experimental && (
+                    <span className="ml-1.5 px-1 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                      Experimental
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+            <button
+              onClick={toggleExperimental}
+              aria-pressed={showExperimental}
+              title="Show in-progress FatCat visual modes (Isometric Office / Mission Control)"
+              className={`ml-1 px-2 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wide border transition-colors focus:outline-none focus:ring-1 focus:ring-amber-500 ${
+                showExperimental
+                  ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                  : "text-slate-600 border-slate-700 hover:text-slate-400"
+              }`}
+              data-testid="toggle-experimental-modes">
+              {showExperimental ? "Preview ✓" : "Preview"}
+            </button>
           </nav>
           {project && (
             <div className="flex items-center gap-1.5 text-xs text-slate-400 border-l border-slate-800 pl-3">
@@ -829,9 +868,9 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       {/* The FatCat modes (iso / mission) carry their own side panels + rails,
           so they render full-width without the legacy right column. The legacy
           sims / board views keep the original 3-column shell. */}
-      {activeView === "iso" || activeView === "mission" ? (
-        <div className="flex-1 overflow-hidden">
-          {activeView === "iso"
+      {safeView === "iso" || safeView === "mission" ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {safeView === "iso"
             ? <IsometricOfficeMode agents={agents} project={project} events={events} />
             : <MissionControlMode agents={agents} project={project} events={events} />}
         </div>
@@ -844,7 +883,7 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
                 <Loader2 size={24} className="animate-spin" />
                 <span className="text-sm">Loading agents...</span>
               </div>
-            ) : activeView === "sims" ? (
+            ) : safeView === "sims" ? (
               <IsometricOffice agents={agents} project={project} />
             ) : (
               <div className="overflow-y-auto custom-scroll floor-pattern h-full p-5">
@@ -872,7 +911,7 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       )}
 
       {/* ── Bottom bar ── */}
-      {activeView !== "iso" && activeView !== "mission" && <BottomBar />}
+      {safeView !== "iso" && safeView !== "mission" && <BottomBar />}
 
       {/* Submit modal */}
       {showModal && (
