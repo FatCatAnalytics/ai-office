@@ -33,6 +33,17 @@ export function FatCatStyles() {
       @media (prefers-reduced-motion: reduce) {
         .fc-motion { animation: none !important; }
       }
+      /* Hotspot reveal: ring + tooltip are invisible by default so the approved
+         artwork stays clean. They fade in only on hover, keyboard focus, or when
+         the seat is selected (.fc-hot-on). */
+      .fc-hot .fc-hot-ring,
+      .fc-hot .fc-hot-tip { opacity: 0; transition: opacity 160ms ease; }
+      .fc-hot:hover .fc-hot-ring,
+      .fc-hot:focus-visible .fc-hot-ring,
+      .fc-hot.fc-hot-on .fc-hot-ring,
+      .fc-hot:hover .fc-hot-tip,
+      .fc-hot:focus-visible .fc-hot-tip,
+      .fc-hot.fc-hot-on .fc-hot-tip { opacity: 1; }
     `}</style>
   );
 }

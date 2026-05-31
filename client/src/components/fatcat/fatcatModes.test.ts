@@ -67,4 +67,38 @@ describe("FatCat modes are asset-backed (approved artwork, not placeholders)", (
       expect(src).toMatch(/aria-label=\{`\$\{slot\.name\}, \$\{slot\.roleLabel\}/);
     }
   });
+
+  it("hotspot buttons are transparent hit areas (no painted box/border)", () => {
+    for (const file of [ISO, MISSION]) {
+      const src = read(file);
+      // The button itself draws nothing over the artwork.
+      expect(src).toMatch(/background:\s*["']transparent["']/);
+      expect(src).toMatch(/border:\s*["']none["']/);
+      // Reveal chrome is opt-in via the .fc-hot class, not always-on.
+      expect(src).toMatch(/className=\{`fc-hot /);
+      expect(src).toMatch(/className="fc-hot-ring"/);
+      expect(src).toMatch(/className="fc-hot-tip"/);
+    }
+  });
+
+  it("the ring + tooltip are hidden by default and revealed only on hover/focus/selected", () => {
+    const css = read(SHARED);
+    // Default state: both reveal layers start fully transparent.
+    expect(css).toMatch(/\.fc-hot \.fc-hot-ring,[\s\S]*?\.fc-hot \.fc-hot-tip\s*\{\s*opacity:\s*0/);
+    // Revealed only via hover, keyboard focus, or the selected (.fc-hot-on) state.
+    expect(css).toMatch(/\.fc-hot:hover \.fc-hot-ring/);
+    expect(css).toMatch(/\.fc-hot:focus-visible \.fc-hot-ring/);
+    expect(css).toMatch(/\.fc-hot\.fc-hot-on \.fc-hot-tip\s*\{\s*opacity:\s*1/);
+  });
+
+  it("does not render an always-on nameplate/label box over the artwork", () => {
+    for (const file of [ISO, MISSION]) {
+      const src = read(file);
+      // No persistent label class on the canvas. The previous version anchored a
+      // nameplate under each seat with opacity-90 / group-hover; that is gone —
+      // labels now live only inside the opt-in .fc-hot-tip tooltip.
+      expect(src).not.toMatch(/opacity-90 group-hover/);
+      expect(src).not.toMatch(/Name plate anchored/);
+    }
+  });
 });

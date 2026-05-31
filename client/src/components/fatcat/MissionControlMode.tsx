@@ -141,7 +141,12 @@ export default function MissionControlMode({ agents, project, events }: Props) {
   );
 }
 
-// ─── Hotspot: transparent click target + status outline over a painted cat ────
+// ─── Hotspot: invisible hit area over a painted cat ──────────────────────────
+// By default the artwork is left completely clean — the button is a transparent
+// hit target with NO border, box, glow, or nameplate. Interaction reveals only
+// the lightest possible treatment: a tiny status dot at the seat's corner and a
+// small floating tooltip, shown on hover / keyboard focus / selection. Nothing
+// large is ever painted over a cat's face or body.
 function Hotspot({
   slot, seat, manager, selected, onSelect, reduced,
 }: {
@@ -154,12 +159,13 @@ function Hotspot({
 }) {
   const statusColor = FATCAT_STATUS_META[slot.status].color;
   const active = slot.status === "working" || slot.status === "verifying";
+  const revealClass = selected ? "fc-hot-on" : "";
   return (
     <button
       onClick={onSelect}
       aria-pressed={selected}
       aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
-      className="group absolute focus:outline-none"
+      className={`fc-hot group absolute focus:outline-none ${revealClass}`}
       style={{
         left: `${seat.x}%`,
         top: `${seat.y}%`,
@@ -173,58 +179,63 @@ function Hotspot({
         zIndex: manager ? 20 : 10,
       }}
     >
+      {/* Tiny status dot — the only persistent mark, only for active cats. */}
+      {slot.status !== "idle" && (
+        <span
+          aria-hidden
+          className={!reduced && active ? "fc-motion" : undefined}
+          style={{
+            position: "absolute",
+            top: "6%",
+            right: "12%",
+            width: 9,
+            height: 9,
+            borderRadius: "50%",
+            background: statusColor,
+            boxShadow: `0 0 8px ${statusColor}cc`,
+            animation: !reduced && active ? "fcPulse 2.4s ease-in-out infinite" : undefined,
+          }}
+        />
+      )}
+
+      {/* Soft focus ring — hidden until hover/focus/selected (see .fc-hot CSS). */}
       <span
         aria-hidden
-        className={!reduced && active ? "fc-motion" : undefined}
+        className="fc-hot-ring"
         style={{
           position: "absolute",
-          inset: "6%",
+          inset: "8%",
           borderRadius: "14px",
-          border: `2px solid ${statusColor}`,
-          boxShadow: selected
-            ? `0 0 22px ${statusColor}cc, 0 0 0 2px ${statusColor}`
-            : active
-              ? `0 0 16px ${statusColor}88`
-              : "none",
-          opacity: selected ? 1 : active ? 0.85 : 0,
-          transition: "opacity 160ms ease",
-          animation: !reduced && active && !selected ? "fcPulse 2.4s ease-in-out infinite" : undefined,
+          border: `1.5px solid ${slot.color}`,
+          boxShadow: `0 0 16px ${slot.color}66`,
         }}
       />
+
+      {/* Lightweight tooltip — hidden until hover/focus/selected, floated above
+          the seat so it never sits on the cat's face. */}
       <span
         aria-hidden
-        className="opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
-        style={{
-          position: "absolute",
-          inset: "6%",
-          borderRadius: "14px",
-          border: `1.5px dashed ${slot.color}aa`,
-          transition: "opacity 160ms ease",
-        }}
-      />
-      <span
-        className="opacity-90 group-hover:opacity-100"
+        className="fc-hot-tip"
         style={{
           position: "absolute",
           left: "50%",
-          bottom: -4,
-          transform: "translateX(-50%)",
+          top: -8,
+          transform: "translate(-50%,-100%)",
           padding: "2px 8px",
-          borderRadius: 9,
-          background: "rgba(5,8,15,0.92)",
-          border: `1.5px solid ${selected ? slot.color : slot.color + "66"}`,
-          boxShadow: selected ? `0 0 14px ${slot.color}66` : "0 2px 8px rgba(0,0,0,0.6)",
+          borderRadius: 8,
+          background: "rgba(5,8,15,0.95)",
+          border: `1px solid ${slot.color}88`,
+          boxShadow: "0 4px 14px rgba(0,0,0,0.6)",
           whiteSpace: "nowrap",
-          maxWidth: 160,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
+          maxWidth: 170,
+          textAlign: "center",
+          pointerEvents: "none",
         }}
       >
-        <span style={{ fontSize: 10, fontWeight: 700, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 150 }}>
+        <span style={{ display: "block", fontSize: 10, fontWeight: 700, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160 }}>
           {slot.name}
         </span>
-        <span style={{ fontSize: 9, color: "#94a3b8" }}>{slot.roleLabel}</span>
+        <span style={{ display: "block", fontSize: 9, color: "#94a3b8" }}>{slot.roleLabel}</span>
       </span>
     </button>
   );
