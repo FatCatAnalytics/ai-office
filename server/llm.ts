@@ -15,7 +15,19 @@
 
 import { executeTool, type ToolDefinition } from "./tools";
 
-export type Provider = "anthropic" | "openai" | "google" | "kimi" | "deepseek";
+export type Provider = "anthropic" | "openai" | "google" | "kimi" | "deepseek" | "perplexity";
+
+// Perplexity Sonar reasoning models (sonar-reasoning-pro) prepend a
+// <think>...</think> chain-of-thought block to the assistant message that is
+// NOT stripped even in JSON mode. Strip it so downstream consumers (UI, JSON
+// parsers, evidence pipeline) only see the final answer. Safe no-op for
+// non-reasoning Sonar models (sonar-pro) which never emit the block.
+function stripReasoningBlock(text: string): string {
+  if (!text) return text;
+  // Remove a leading <think>...</think> block (most common), then any stray
+  // ones. Non-greedy, dot-matches-newline.
+  return text.replace(/<think>[\s\S]*?<\/think>\s*/gi, "").trimStart();
+}
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
@@ -105,6 +117,14 @@ const COST_PER_1K: Record<string, { in: number; out: number }> = {
   // Legacy aliases — DeepSeek routes both to V4-Flash internally.
   "deepseek-chat":     { in: 0.00014, out: 0.00028 },
   "deepseek-reasoner": { in: 0.00014, out: 0.00028 },
+  // Perplexity Sonar (Chat Completions). Rates per Perplexity / Vercel AI
+  // Gateway: sonar-pro $3/$15, sonar-reasoning-pro $2/$8, sonar $1/$1 per 1M.
+  // (Search/citation tokens are no longer billed separately on Sonar Pro /
+  // Reasoning Pro since Apr 2025.)
+  "sonar-reasoning-pro": { in: 0.002,  out: 0.008 },
+  "sonar-pro":           { in: 0.003,  out: 0.015 },
+  "sonar-reasoning":     { in: 0.001,  out: 0.005 },
+  "sonar":               { in: 0.001,  out: 0.001 },
 };
 
 export function calculateCost(modelId: string, tokensIn: number, tokensOut: number): number {
@@ -245,6 +265,62 @@ async function streamOpenAI(req: StreamRequest, handlers: StreamHandlers): Promi
     }
   }
 
+  handlers.onUsage?.({ tokensIn, tokensOut });
+  return { text, tokensIn, tokensOut };
+}
+
+// ─── Perplexity Sonar ───────────────────────────────────────────────────────
+// Stage 6.13: OpenAI-compatible Chat Completions endpoint at
+// api.perplexity.ai. Identical SSE shape to OpenAI. sonar-reasoning-pro streams
+// a <think> CoT block first; we buffer the full text and strip it before
+// returning so callers/UI only see the answer. (We can't reliably strip mid
+// stream because the </think> close tag may arrive in a later delta, so the
+// per-delta handler is suppressed for Perplexity and we emit once at the end.)
+async function streamPerplexity(req: StreamRequest, handlers: StreamHandlers): Promise<StreamResult> {
+  const body = {
+    model: req.modelId,
+    messages: req.messages,
+    temperature: req.temperature ?? 0.7,
+    max_tokens: req.maxTokens ?? 2048,
+    stream: true,
+  };
+
+  const res = await fetch("https://api.perplexity.ai/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${req.apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: req.signal,
+  });
+
+  if (!res.ok || !res.body) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Perplexity API ${res.status}: ${errText.slice(0, 200)}`);
+  }
+
+  let raw = "";
+  let tokensIn = 0;
+  let tokensOut = 0;
+
+  for await (const data of parseSSE(res.body)) {
+    if (!data || data === "[DONE]") continue;
+    let evt: any;
+    try { evt = JSON.parse(data); } catch { continue; }
+
+    const delta = evt.choices?.[0]?.delta?.content;
+    if (typeof delta === "string" && delta.length > 0) {
+      raw += delta;
+    }
+    if (evt.usage) {
+      tokensIn = evt.usage.prompt_tokens ?? tokensIn;
+      tokensOut = evt.usage.completion_tokens ?? tokensOut;
+    }
+  }
+
+  const text = stripReasoningBlock(raw);
+  if (text) handlers.onDelta?.(text);
   handlers.onUsage?.({ tokensIn, tokensOut });
   return { text, tokensIn, tokensOut };
 }
@@ -609,9 +685,9 @@ async function callOpenAICompatible(
 async function runOpenAIWithTools(
   req: StreamRequest,
   handlers: StreamHandlers,
-  flavour: "openai" | "kimi" | "deepseek",
+  flavour: "openai" | "kimi" | "deepseek" | "perplexity",
 ): Promise<StreamResult> {
-  // OpenAI, Kimi, and DeepSeek all accept the same tools shape.
+  // OpenAI, Kimi, DeepSeek, and Perplexity all accept the same tools shape.
   const toolsParam = (req.tools ?? []).map(t => ({
     type: "function" as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -637,6 +713,16 @@ async function runOpenAIWithTools(
       // no regional fallback. Keeps the loop logic identical to OpenAI.
       return {
         endpoint: "https://api.deepseek.com/v1/chat/completions",
+        fallback: undefined as string | undefined,
+        temperature: req.temperature ?? 0.7,
+      };
+    }
+    if (flavour === "perplexity") {
+      // Stage 6.13: Perplexity Sonar is OpenAI-compatible. Single global
+      // endpoint, standard temperature. sonar-reasoning-pro emits a <think>
+      // CoT block that we strip from the final text below.
+      return {
+        endpoint: "https://api.perplexity.ai/chat/completions",
         fallback: undefined as string | undefined,
         temperature: req.temperature ?? 0.7,
       };
@@ -680,7 +766,10 @@ async function runOpenAIWithTools(
 
     if (toolCalls.length === 0) {
       // Final answer. Stream it out as one delta so the UI gets the text.
-      const text = msg.content ?? "";
+      // Perplexity reasoning models prepend a <think> CoT block — strip it.
+      const text = flavour === "perplexity"
+        ? stripReasoningBlock(msg.content ?? "")
+        : (msg.content ?? "");
       if (text) handlers.onDelta?.(text);
       handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
       return { text, tokensIn: totalIn, tokensOut: totalOut };
@@ -737,7 +826,9 @@ async function runOpenAIWithTools(
   }
   totalIn += synth.tokensIn;
   totalOut += synth.tokensOut;
-  const synthText = synth.message.content ?? "";
+  const synthText = flavour === "perplexity"
+    ? stripReasoningBlock(synth.message.content ?? "")
+    : (synth.message.content ?? "");
   if (synthText) handlers.onDelta?.(synthText);
   handlers.onUsage?.({ tokensIn: totalIn, tokensOut: totalOut });
   return { text: synthText, tokensIn: totalIn, tokensOut: totalOut };
@@ -1031,6 +1122,7 @@ export async function streamCompletion(
       case "openai":    return runOpenAIWithTools(req, handlers, "openai");
       case "kimi":      return runOpenAIWithTools(req, handlers, "kimi");
       case "deepseek":  return runOpenAIWithTools(req, handlers, "deepseek");
+      case "perplexity": return runOpenAIWithTools(req, handlers, "perplexity");
       case "google":    return runGoogleWithTools(req, handlers);
       default:
         throw new Error(`Unknown provider "${(req as StreamRequest).provider}"`);
@@ -1043,6 +1135,7 @@ export async function streamCompletion(
     case "google":    return streamGoogle(req, handlers);
     case "kimi":      return streamKimi(req, handlers);
     case "deepseek":  return streamDeepSeek(req, handlers);
+    case "perplexity": return streamPerplexity(req, handlers);
     default:
       throw new Error(`Unknown provider "${(req as StreamRequest).provider}"`);
   }
@@ -1054,4 +1147,32 @@ export function settingKeyForProvider(p: string): string {
   // Note: Google key was stored under "google_api_key" historically, even though
   // the env var is GEMINI_API_KEY in the SettingsPage UI.
   return `${p}_api_key`;
+}
+
+// Conventional environment variable name per provider, mirroring the
+// SettingsPage provider cards. Used as a fallback when no key is saved in the
+// settings DB so operators who configure keys purely via env (e.g.
+// PERPLEXITY_API_KEY, already used by the research connector) still get model
+// routing + failover for that provider.
+export function envKeyForProvider(p: string): string {
+  switch (p) {
+    case "google":     return "GEMINI_API_KEY"; // historical: env is GEMINI_*
+    case "perplexity": return "PERPLEXITY_API_KEY";
+    default:           return `${p.toUpperCase()}_API_KEY`;
+  }
+}
+
+// Resolve a provider's API key: settings DB first (operator-saved via the UI),
+// then the conventional environment variable. Returns undefined if neither is
+// set. Centralising this keeps hasKey() (router) and the orchestrator's
+// per-call key lookup consistent.
+export function resolveProviderKey(
+  p: string,
+  getSetting: (key: string) => string | undefined,
+): string | undefined {
+  const fromSettings = getSetting(settingKeyForProvider(p));
+  if (fromSettings && fromSettings.length > 0) return fromSettings;
+  const fromEnv = process.env[envKeyForProvider(p)];
+  if (fromEnv && fromEnv.length > 0) return fromEnv;
+  return undefined;
 }

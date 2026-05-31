@@ -22,7 +22,7 @@ import { storage, toolsForAgent } from "./storage";
 import {
   streamCompletion,
   calculateCost,
-  settingKeyForProvider,
+  resolveProviderKey,
   type Provider,
   type LLMMessage,
   type StreamRequest,
@@ -898,7 +898,7 @@ function extractJSON<T = unknown>(raw: string): T | null {
 
 function resolveAgentKey(agent: Agent): { apiKey: string; provider: Provider } {
   const provider = (agent.provider as Provider) ?? "anthropic";
-  const key = storage.getSetting(settingKeyForProvider(provider));
+  const key = resolveProviderKey(provider, (k) => storage.getSetting(k));
   if (!key) throw new Error(`No API key configured for ${provider} (${agent.name})`);
   return { apiKey: key, provider };
 }
@@ -1430,7 +1430,7 @@ async function callWithFallback(opts: {
   let firstError: unknown = null;
   for (let i = 0; i < chain.length; i++) {
     const routed = chain[i];
-    const apiKey = storage.getSetting(settingKeyForProvider(routed.provider));
+    const apiKey = resolveProviderKey(routed.provider, (k) => storage.getSetting(k));
     if (!apiKey) {
       // Skip silently — routeForComplexityChain already filtered chain
       // entries by hasKey(), but the agent-default last-resort can still
@@ -1594,7 +1594,7 @@ async function runWorkerTask(
   // next entry. The chain is built fit-for-purpose by tier so SME / banker
   // / generic agents don't all hammer Opus by default.
   const chain = routeForComplexityChain(effectiveComplexity, agent);
-  const firstWithKey = chain.find(c => Boolean(storage.getSetting(settingKeyForProvider(c.provider))));
+  const firstWithKey = chain.find(c => Boolean(resolveProviderKey(c.provider, (k) => storage.getSetting(k))));
   if (!firstWithKey) {
     throw new Error(
       `No API key configured for any ${effectiveComplexity}-tier model — ` +

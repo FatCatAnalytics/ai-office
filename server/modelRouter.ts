@@ -20,7 +20,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { storage } from "./storage";
-import { settingKeyForProvider, type Provider } from "./llm";
+import { resolveProviderKey, type Provider } from "./llm";
 import type { Agent } from "@shared/schema";
 
 export type Complexity = "low" | "medium" | "high";
@@ -39,15 +39,22 @@ const TIER_PREFERENCES: Record<Complexity, RoutedModel[]> = {
   // we support — roughly 6× cheaper than Kimi Moonshot v1-32k while still
   // supporting tool calling and a 1M context window. Existing pinned-model
   // agents are unaffected; this only changes the dynamic routing default.
+  // Stage 6.13: Perplexity Sonar sits immediately after Anthropic in every
+  // tier as the preferred backup (the PERPLEXITY_API_KEY is already wired for
+  // the research connector), with OpenAI next after that. High-tier uses
+  // sonar-reasoning-pro (advanced multi-step CoT reasoning); medium/low use
+  // sonar-pro (faster, no reasoning-token overhead).
   low: [
     { provider: "deepseek",  modelId: "deepseek-v4-flash", reason: "low-tier → DeepSeek V4-Flash (cheapest)" },
     { provider: "kimi",      modelId: "moonshot-v1-32k",   reason: "low-tier → Kimi fallback (DeepSeek key missing)" },
     { provider: "anthropic", modelId: "claude-haiku-4-5",  reason: "low-tier → Haiku fallback" },
+    { provider: "perplexity",modelId: "sonar-pro",         reason: "low-tier → Perplexity Sonar Pro fallback" },
     { provider: "openai",    modelId: "gpt-4.1-mini",      reason: "low-tier → gpt-4.1-mini fallback" },
     { provider: "google",    modelId: "gemini-2.5-flash",  reason: "low-tier → Gemini Flash fallback" },
   ],
   medium: [
     { provider: "anthropic", modelId: "claude-haiku-4-5",  reason: "medium-tier → Haiku" },
+    { provider: "perplexity",modelId: "sonar-pro",         reason: "medium-tier → Perplexity Sonar Pro fallback" },
     { provider: "openai",    modelId: "gpt-4.1-mini",      reason: "medium-tier → gpt-4.1-mini" },
     { provider: "deepseek",  modelId: "deepseek-v4-flash", reason: "medium-tier → DeepSeek V4-Flash fallback" },
     { provider: "kimi",      modelId: "moonshot-v1-128k",  reason: "medium-tier → Kimi 128k fallback" },
@@ -57,6 +64,7 @@ const TIER_PREFERENCES: Record<Complexity, RoutedModel[]> = {
   // sign-off agent, and any task the planner tags as high complexity.
   high: [
     { provider: "anthropic", modelId: "claude-opus-4-7",   reason: "high-tier → Opus (frontier reasoning)" },
+    { provider: "perplexity",modelId: "sonar-reasoning-pro",reason: "high-tier → Perplexity Sonar Reasoning Pro fallback" },
     { provider: "openai",    modelId: "gpt-5.5",           reason: "high-tier → GPT-5.5 fallback" },
     { provider: "openai",    modelId: "gpt-5",             reason: "high-tier → GPT-5 fallback" },
     { provider: "anthropic", modelId: "claude-sonnet-4-6", reason: "high-tier → Sonnet fallback" },
@@ -68,7 +76,10 @@ const TIER_PREFERENCES: Record<Complexity, RoutedModel[]> = {
 };
 
 function hasKey(provider: Provider): boolean {
-  return Boolean(storage.getSetting(settingKeyForProvider(provider)));
+  // Env-aware: a key saved in settings OR present as the conventional env var
+  // (e.g. PERPLEXITY_API_KEY) counts. This keeps the fallback chain in sync
+  // with how keys are actually configured.
+  return Boolean(resolveProviderKey(provider, (k) => storage.getSetting(k)));
 }
 
 // Pick a model based on complexity. Resolution order:

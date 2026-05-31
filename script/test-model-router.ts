@@ -37,8 +37,27 @@ function truthy(name: string, got: unknown) { cases.push({ name, got: Boolean(go
 function falsy(name: string, got: unknown) { cases.push({ name, got: Boolean(got), want: false }); }
 
 // Stash original setting values so the test leaves the db clean.
-const PROVIDERS = ["anthropic", "openai", "google", "kimi", "deepseek"] as const;
+const PROVIDERS = ["anthropic", "openai", "google", "kimi", "deepseek", "perplexity"] as const;
 type ProviderKey = typeof PROVIDERS[number];
+
+// Stage 6.13: hasKey() is now env-aware (settings DB OR conventional env var).
+// Clear any provider env vars that might be present in the runtime so the
+// settings-DB-driven test setup is deterministic. We snapshot + restore them.
+const PROVIDER_ENV_VARS = [
+  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+  "KIMI_API_KEY", "DEEPSEEK_API_KEY", "PERPLEXITY_API_KEY",
+];
+const originalEnv = new Map<string, string | undefined>();
+for (const v of PROVIDER_ENV_VARS) {
+  originalEnv.set(v, process.env[v]);
+  delete process.env[v];
+}
+function restoreEnv() {
+  for (const [k, v] of originalEnv.entries()) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+}
 
 const original = new Map<string, string | undefined>();
 function setKey(provider: ProviderKey, value: string | undefined) {
@@ -296,6 +315,44 @@ eq(
   "claude-sonnet-4-6",
 );
 
+// ── 4b) Perplexity Sonar failover wiring (Stage 6.13) ──────────────────────
+
+// With ONLY Anthropic + Perplexity keys, the high-tier chain should place
+// Perplexity (sonar-reasoning-pro) immediately after Anthropic's Opus — i.e.
+// it is the preferred backup when Anthropic hits its usage limit.
+for (const p of PROVIDERS) setKey(p, undefined);
+setKey("anthropic", "test-key");
+setKey("perplexity", "test-key");
+const anthPplxChain = routeForComplexityChain("high", agent);
+eq(
+  "high-tier first entry is Anthropic Opus",
+  anthPplxChain[0].modelId,
+  "claude-opus-4-7",
+);
+eq(
+  "high-tier backup after Anthropic is Perplexity sonar-reasoning-pro",
+  { provider: anthPplxChain[1].provider, modelId: anthPplxChain[1].modelId },
+  { provider: "perplexity", modelId: "sonar-reasoning-pro" },
+);
+
+// Medium / low tiers use sonar-pro (faster, no reasoning-token overhead).
+const medPplxChain = routeForComplexityChain("medium", agent);
+truthy(
+  "medium-tier chain includes Perplexity sonar-pro",
+  medPplxChain.some(e => e.provider === "perplexity" && e.modelId === "sonar-pro"),
+);
+
+// hasKey() is env-aware: a PERPLEXITY_API_KEY env var (no settings row) still
+// makes Perplexity selectable. This mirrors the research connector's behavior.
+setKey("perplexity", undefined); // clear the settings row
+process.env.PERPLEXITY_API_KEY = "env-only-key";
+const envOnlyChain = routeForComplexityChain("high", agent);
+truthy(
+  "Perplexity selectable via PERPLEXITY_API_KEY env var alone (no settings row)",
+  envOnlyChain.some(e => e.provider === "perplexity"),
+);
+delete process.env.PERPLEXITY_API_KEY;
+
 // ── 5) normaliseComplexity ─────────────────────────────────────────────────
 
 eq("normaliseComplexity 'simple' → 'low'", normaliseComplexity("simple"), "low");
@@ -309,6 +366,7 @@ eq("normaliseComplexity 'LOW' → 'low' (case insensitive)", normaliseComplexity
 // ── Cleanup + report ─────────────────────────────────────────────────────
 
 restoreKeys();
+restoreEnv();
 
 let failed = 0;
 for (const c of cases) {

@@ -7,7 +7,7 @@ import { storage } from "./storage";
 import { settingKeyForProvider } from "./llm";
 import type { InsertModel, Model } from "@shared/schema";
 
-export type Provider = "anthropic" | "openai" | "google" | "kimi" | "deepseek";
+export type Provider = "anthropic" | "openai" | "google" | "kimi" | "deepseek" | "perplexity";
 
 export interface RefreshSummary {
   ranAt: number;
@@ -120,23 +120,37 @@ async function listKimi(apiKey: string): Promise<string[]> {
   return Array.from(seen);
 }
 
+async function listPerplexity(_apiKey: string): Promise<string[]> {
+  // Stage 6.13: Perplexity does not expose a public /v1/models discovery
+  // endpoint, so we return the known Sonar Chat Completion model IDs. These
+  // are the failover targets used by the model router.
+  return [
+    "sonar-reasoning-pro",
+    "sonar-pro",
+    "sonar-reasoning",
+    "sonar",
+  ];
+}
+
 const PROVIDER_LISTERS: Record<Provider, (apiKey: string) => Promise<string[]>> = {
   anthropic: listAnthropic,
   openai: listOpenAI,
   google: listGoogle,
   kimi: listKimi,
   deepseek: listDeepSeek,
+  perplexity: listPerplexity,
 };
 
 // ─── Refresh job ───────────────────────────────────────────────────────────
 export async function refreshAllProviders(): Promise<RefreshSummary> {
-  const providers: Provider[] = ["anthropic", "openai", "google", "kimi", "deepseek"];
+  const providers: Provider[] = ["anthropic", "openai", "google", "kimi", "deepseek", "perplexity"];
   const totals: RefreshSummary["totals"] = {
     anthropic: { discovered: 0, updated: 0 },
     openai: { discovered: 0, updated: 0 },
     google: { discovered: 0, updated: 0 },
     kimi: { discovered: 0, updated: 0 },
     deepseek: { discovered: 0, updated: 0 },
+    perplexity: { discovered: 0, updated: 0 },
   };
 
   const before = new Map(storage.getModels().map((m) => [m.id, m]));
