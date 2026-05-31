@@ -1,25 +1,26 @@
-// Stage 6.12 — FatCat Mission Control mode.
+// Stage 6.12.2 — FatCat Mission Control mode (approved asset-backed).
 //
-// A serious command-center read on the same roster the Isometric Office shows.
-// The Manager FatCat / AI committee sits in a central command pod, ringed by
-// analytical panels: workflow overview, model routing/status, source
-// verification & evidence alerts, the live task stream, and a cost / usage /
-// system-health strip. The tone is Jarvis-like and original — concentric rings,
-// HUD framing, monospace telemetry — not a copy of any film UI.
+// The mode renders the approved FatCat "Mission Control" HUD artwork as the
+// visual canvas. The painted scene shows the central FatCat Manager flanked by
+// the AI committee of specialist FatCats inside a command-center HUD. We overlay
+// the live app on top: a command header, transparent clickable hotspots over
+// each painted committee FatCat (driven by the dynamic roster), a live task
+// stream, a selected-agent detail panel, and a bottom health strip. Roster
+// roles beyond the painted committee seats fall into a "bench" list.
 //
-// Responsive: the grid collapses to a single column on tablet, and to a stacked
-// roster + key panels on mobile.
+// No generated emoji/circle avatars are used — the cats come entirely from the
+// approved artwork; the roster only drives labels/status/hotspots over it.
 
 import { useMemo, useState } from "react";
 import {
-  Radar, Cpu, ShieldCheck, Terminal, Gauge, DollarSign, Zap, Activity,
+  Radar, Terminal, ShieldCheck, DollarSign, Zap, Activity, Gauge, Users,
 } from "lucide-react";
+import missionImage from "@assets/fatcat/fatcat_mission_control.jpg";
 import type { Agent, AgentEvent, Project } from "../../types";
 import {
   buildRoster, classifyWorkflow, workflowLabel,
   FATCAT_STATUS_META, type RosterSlot,
 } from "../../lib/fatcatRoster";
-import FatCatAvatar from "./FatCatAvatar";
 import {
   FatCatStyles, StatusPill, AgentDetailPanel, useReducedMotion,
 } from "./shared";
@@ -29,6 +30,20 @@ interface Props {
   project: Project | null;
   events: AgentEvent[];
 }
+
+// Hotspot seats as a percentage of the artwork box, mapped to the painted
+// committee FatCats in the approved Mission Control artwork. Left column then
+// right column, top-to-bottom — the order specialists are assigned.
+const SEATS: { x: number; y: number; w: number; h: number }[] = [
+  { x: 27.5, y: 22, w: 12, h: 22 }, // committee upper-left (Prof. Whiskerton)
+  { x: 27.5, y: 47, w: 12, h: 22 }, // committee mid-left (Data Purrson)
+  { x: 27.5, y: 70, w: 12, h: 24 }, // committee lower-left (Agent Clawrence)
+  { x: 72.5, y: 22, w: 12, h: 22 }, // committee upper-right (Counsel Pawsley)
+  { x: 72.5, y: 47, w: 12, h: 22 }, // committee mid-right (SecureCat)
+  { x: 72.5, y: 70, w: 12, h: 24 }, // committee lower-right (Mktg. Meowdison)
+];
+// Central FatCat Manager seat in the artwork.
+const MANAGER_SEAT = { x: 50, y: 38, w: 18, h: 44 };
 
 export default function MissionControlMode({ agents, project, events }: Props) {
   const reduced = useReducedMotion();
@@ -42,14 +57,16 @@ export default function MissionControlMode({ agents, project, events }: Props) {
 
   const manager = roster.find((r) => r.archetype === "manager") ?? roster[0];
   const committee = roster.filter((r) => r !== manager);
+  const seated = committee.slice(0, SEATS.length);
+  const bench = committee.slice(SEATS.length);
   const selected = roster.find((r) => r.key === selectedKey) ?? null;
 
   return (
-    <div className="w-full h-full overflow-y-auto custom-scroll" style={{ background: "radial-gradient(circle at 50% 0%, #0a1326 0%, #05080f 60%)" }}>
+    <div className="w-full h-full flex flex-col overflow-hidden" style={{ background: "#05080f" }}>
       <FatCatStyles />
 
       {/* Command header */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800/80 sticky top-0 z-20" style={{ background: "rgba(5,8,15,0.92)", backdropFilter: "blur(8px)" }}>
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800/80 flex-shrink-0" style={{ background: "rgba(5,8,15,0.92)" }}>
         <div className="flex items-center gap-2">
           <Radar size={14} className="text-cyan-400" />
           <span className="text-xs font-semibold text-slate-200 uppercase tracking-[0.18em]">FatCat Mission Control</span>
@@ -60,44 +77,156 @@ export default function MissionControlMode({ agents, project, events }: Props) {
         <SystemClock reduced={reduced} />
       </div>
 
-      {/* Main grid */}
-      <div className="grid gap-3 p-3" style={{ gridTemplateColumns: "minmax(0,1fr)" }}>
-        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(12, minmax(0,1fr))" }}>
-          {/* Left column: workflow + model routing */}
-          <div className="col-span-12 lg:col-span-3 flex flex-col gap-3">
-            <WorkflowOverview roster={roster} project={project} workflowName={workflowLabel(workflow)} />
-            <ModelRouting roster={roster} />
-          </div>
+      {/* Body: canvas (left/centre) + live side rail */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Centre: approved HUD image canvas with overlaid hotspots */}
+        <main className="flex-1 relative overflow-auto custom-scroll" style={{ background: "#05080f" }}>
+          <div
+            className="relative mx-auto"
+            style={{
+              width: "100%",
+              minWidth: 640,
+              maxWidth: 1180,
+              aspectRatio: "768 / 512",
+            }}
+          >
+            <img
+              src={missionImage}
+              alt="FatCat Mission Control HUD: the central FatCat Manager flanked by the AI committee of specialist FatCats inside a command center."
+              className="absolute inset-0 w-full h-full object-cover select-none"
+              draggable={false}
+            />
 
-          {/* Centre: command pod + committee ring */}
-          <div className="col-span-12 lg:col-span-6">
-            <CommandPod
-              manager={manager}
-              committee={committee}
-              selectedKey={selectedKey}
-              onSelect={setSelectedKey}
+            {/* Manager hotspot */}
+            <Hotspot
+              slot={manager}
+              seat={MANAGER_SEAT}
+              manager
+              selected={selectedKey === manager.key}
+              onSelect={() => setSelectedKey(manager.key)}
               reduced={reduced}
             />
+
+            {/* Committee hotspots over painted seats */}
+            {seated.map((slot, i) => (
+              <Hotspot
+                key={slot.key}
+                slot={slot}
+                seat={SEATS[i]}
+                selected={selectedKey === slot.key}
+                onSelect={() => setSelectedKey(slot.key)}
+                reduced={reduced}
+              />
+            ))}
           </div>
 
-          {/* Right column: source verification + task stream */}
-          <div className="col-span-12 lg:col-span-3 flex flex-col gap-3">
-            <SourceVerification roster={roster} />
-            <TaskStream events={events} />
-          </div>
-        </div>
+          {/* Selected detail — floating */}
+          {selected && (
+            <div className="absolute bottom-3 right-3 z-30">
+              <AgentDetailPanel slot={selected} events={events} onClose={() => setSelectedKey(null)} />
+            </div>
+          )}
+        </main>
 
-        {/* Bottom strip: cost / usage / health */}
-        <HealthStrip project={project} roster={roster} />
+        {/* Right rail: live task stream + bench (kept off the artwork) */}
+        <aside className="hidden xl:flex flex-col w-72 border-l border-slate-800/80 overflow-y-auto custom-scroll p-3 gap-3" style={{ background: "rgba(5,8,15,0.6)" }}>
+          <TaskStream events={events} />
+          {bench.length > 0 && <BenchPanel bench={bench} onSelect={setSelectedKey} />}
+        </aside>
       </div>
 
-      {/* Selected detail overlay */}
-      {selected && (
-        <div className="fixed bottom-4 right-4 z-40">
-          <AgentDetailPanel slot={selected} events={events} onClose={() => setSelectedKey(null)} />
-        </div>
-      )}
+      {/* Bottom health strip */}
+      <HealthStrip project={project} roster={roster} />
     </div>
+  );
+}
+
+// ─── Hotspot: transparent click target + status outline over a painted cat ────
+function Hotspot({
+  slot, seat, manager, selected, onSelect, reduced,
+}: {
+  slot: RosterSlot;
+  seat: { x: number; y: number; w: number; h: number };
+  manager?: boolean;
+  selected: boolean;
+  onSelect: () => void;
+  reduced: boolean;
+}) {
+  const statusColor = FATCAT_STATUS_META[slot.status].color;
+  const active = slot.status === "working" || slot.status === "verifying";
+  return (
+    <button
+      onClick={onSelect}
+      aria-pressed={selected}
+      aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
+      className="group absolute focus:outline-none"
+      style={{
+        left: `${seat.x}%`,
+        top: `${seat.y}%`,
+        width: `${seat.w}%`,
+        height: `${seat.h}%`,
+        transform: "translate(-50%,-50%)",
+        background: "transparent",
+        border: "none",
+        padding: 0,
+        cursor: "pointer",
+        zIndex: manager ? 20 : 10,
+      }}
+    >
+      <span
+        aria-hidden
+        className={!reduced && active ? "fc-motion" : undefined}
+        style={{
+          position: "absolute",
+          inset: "6%",
+          borderRadius: "14px",
+          border: `2px solid ${statusColor}`,
+          boxShadow: selected
+            ? `0 0 22px ${statusColor}cc, 0 0 0 2px ${statusColor}`
+            : active
+              ? `0 0 16px ${statusColor}88`
+              : "none",
+          opacity: selected ? 1 : active ? 0.85 : 0,
+          transition: "opacity 160ms ease",
+          animation: !reduced && active && !selected ? "fcPulse 2.4s ease-in-out infinite" : undefined,
+        }}
+      />
+      <span
+        aria-hidden
+        className="opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
+        style={{
+          position: "absolute",
+          inset: "6%",
+          borderRadius: "14px",
+          border: `1.5px dashed ${slot.color}aa`,
+          transition: "opacity 160ms ease",
+        }}
+      />
+      <span
+        className="opacity-90 group-hover:opacity-100"
+        style={{
+          position: "absolute",
+          left: "50%",
+          bottom: -4,
+          transform: "translateX(-50%)",
+          padding: "2px 8px",
+          borderRadius: 9,
+          background: "rgba(5,8,15,0.92)",
+          border: `1.5px solid ${selected ? slot.color : slot.color + "66"}`,
+          boxShadow: selected ? `0 0 14px ${slot.color}66` : "0 2px 8px rgba(0,0,0,0.6)",
+          whiteSpace: "nowrap",
+          maxWidth: 160,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+        }}
+      >
+        <span style={{ fontSize: 10, fontWeight: 700, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 150 }}>
+          {slot.name}
+        </span>
+        <span style={{ fontSize: 9, color: "#94a3b8" }}>{slot.roleLabel}</span>
+      </span>
+    </button>
   );
 }
 
@@ -116,158 +245,28 @@ function Panel({ title, icon: Icon, color = "#06b6d4", children }: {
   );
 }
 
-// ─── Central command pod ─────────────────────────────────────────────────────
-function CommandPod({
-  manager, committee, selectedKey, onSelect, reduced,
-}: {
-  manager: RosterSlot; committee: RosterSlot[];
-  selectedKey: string | null; onSelect: (k: string) => void; reduced: boolean;
-}) {
+// ─── Bench panel (roster roles beyond the painted committee) ──────────────────
+function BenchPanel({ bench, onSelect }: { bench: RosterSlot[]; onSelect: (k: string) => void }) {
   return (
-    <section className="rounded-xl border border-cyan-500/25 relative overflow-hidden" style={{ background: "rgba(8,14,26,0.6)", minHeight: 360 }}>
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-cyan-500/20" style={{ background: "rgba(6,182,212,0.06)" }}>
-        <ShieldCheck size={12} className="text-cyan-400" />
-        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-cyan-400">AI Committee · Manager FatCat</span>
-      </div>
-
-      {/* Concentric HUD rings + central manager */}
-      <div className="relative flex items-center justify-center" style={{ height: 240 }}>
-        {[200, 150, 100].map((d, i) => (
-          <div
-            key={d}
-            aria-hidden
-            className={reduced ? undefined : "fc-motion"}
-            style={{
-              position: "absolute", width: d, height: d, borderRadius: "50%",
-              border: `1px solid rgba(6,182,212,${0.12 + i * 0.06})`,
-              boxShadow: `0 0 24px rgba(6,182,212,0.08) inset`,
-              animation: reduced ? undefined : `fcScan ${4 + i}s ease-in-out infinite`,
-            }}
-          />
-        ))}
-        <button
-          onClick={() => onSelect(manager.key)}
-          aria-pressed={selectedKey === manager.key}
-          aria-label={`${manager.name}, ${manager.roleLabel}, ${FATCAT_STATUS_META[manager.status].label}`}
-          className="relative z-10 flex flex-col items-center focus:outline-none"
-          style={{ background: "none", border: "none", cursor: "pointer" }}
-        >
-          <FatCatAvatar archetype="manager" color={manager.color} status={manager.status} size={92} manager reducedMotion={reduced} />
-          <div className="mt-1.5 text-sm font-bold text-slate-100">{manager.name}</div>
-          <div className="text-xs text-slate-500">{manager.roleLabel}</div>
-          <div className="mt-1"><StatusPill status={manager.status} small /></div>
-        </button>
-      </div>
-
-      {/* Committee strip */}
-      <div className="px-3 pb-3 pt-1">
-        <div className="text-xs text-slate-600 uppercase tracking-wider mb-2">Committee</div>
-        <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))" }}>
-          {committee.map((slot) => {
-            const sel = selectedKey === slot.key;
-            return (
-              <button
-                key={slot.key}
-                onClick={() => onSelect(slot.key)}
-                aria-pressed={sel}
-                aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
-                className="flex flex-col items-center gap-1 rounded-lg p-2 focus:outline-none"
-                style={{
-                  background: sel ? slot.color + "1c" : "rgba(13,20,33,0.7)",
-                  border: `1px solid ${sel ? slot.color : slot.color + "33"}`,
-                  boxShadow: sel ? `0 0 12px ${slot.color}55` : "none",
-                }}
-              >
-                <FatCatAvatar archetype={slot.archetype} color={slot.color} status={slot.status} size={40} reducedMotion={reduced} />
-                <span className="text-slate-300 text-center leading-tight" style={{ fontSize: 9 }}>{slot.roleLabel}</span>
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: FATCAT_STATUS_META[slot.status].color }} />
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ─── Workflow overview ───────────────────────────────────────────────────────
-function WorkflowOverview({ roster, project, workflowName }: {
-  roster: RosterSlot[]; project: Project | null; workflowName: string;
-}) {
-  const done = roster.filter((r) => r.status === "complete").length;
-  return (
-    <Panel title="Workflow" icon={Gauge} color="#8b5cf6">
-      <div className="text-sm font-semibold text-slate-100">{workflowName}</div>
-      <div className="text-xs text-slate-500 mb-3">{project?.name ?? "No active project"}</div>
+    <Panel title="Bench" icon={Users} color="#64748b">
       <div className="space-y-1.5">
-        {roster.map((slot, i) => (
-          <div key={slot.key} className="flex items-center gap-2">
-            <span className="text-slate-600 font-mono w-4 text-right" style={{ fontSize: 9 }}>{i + 1}</span>
+        {bench.map((slot) => (
+          <button
+            key={slot.key}
+            onClick={() => onSelect(slot.key)}
+            aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left focus:outline-none focus:ring-1"
+            style={{ background: "rgba(13,20,33,0.7)", border: `1px solid ${slot.color}33` }}
+          >
             <span style={{ width: 7, height: 7, borderRadius: "50%", background: FATCAT_STATUS_META[slot.status].color, flexShrink: 0 }} />
-            <span className="text-xs text-slate-400 truncate flex-1">{slot.roleLabel}</span>
-            <span className="text-slate-600" style={{ fontSize: 9 }}>{FATCAT_STATUS_META[slot.status].label}</span>
-          </div>
-        ))}
-      </div>
-      <div className="mt-3 flex items-center gap-2">
-        <div className="flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">
-          <div className="h-full rounded-full bg-violet-500" style={{ width: `${roster.length ? (done / roster.length) * 100 : 0}%` }} />
-        </div>
-        <span className="text-xs font-mono text-violet-300">{done}/{roster.length}</span>
-      </div>
-    </Panel>
-  );
-}
-
-// ─── Model routing / status ──────────────────────────────────────────────────
-function ModelRouting({ roster }: { roster: RosterSlot[] }) {
-  const live = roster.filter((r) => r.live && r.modelId);
-  return (
-    <Panel title="Model Routing" icon={Cpu} color="#3b82f6">
-      {live.length === 0 ? (
-        <div className="text-xs text-slate-600 italic">Routing resolves once live agents are assigned. Roles below are fit-for-purpose defaults.</div>
-      ) : null}
-      <div className="space-y-1.5 mt-0.5">
-        {roster.map((slot) => (
-          <div key={slot.key} className="flex items-center gap-2">
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: slot.color, flexShrink: 0 }} />
-            <span className="text-xs text-slate-400 truncate flex-1">{slot.roleLabel}</span>
-            <span className="text-slate-500 font-mono truncate" style={{ fontSize: 9, maxWidth: 110 }}>
-              {slot.modelId ?? (slot.live ? "default" : "—")}
+            <span className="flex-1 min-w-0">
+              <span className="block text-xs font-semibold text-slate-200 truncate">{slot.name}</span>
+              <span className="block text-slate-500" style={{ fontSize: 9 }}>{slot.roleLabel}</span>
             </span>
-          </div>
+            <StatusPill status={slot.status} small />
+          </button>
         ))}
       </div>
-    </Panel>
-  );
-}
-
-// ─── Source verification & evidence alerts ───────────────────────────────────
-function SourceVerification({ roster }: { roster: RosterSlot[] }) {
-  const verifyRoles = roster.filter((r) =>
-    r.archetype === "sourceverify" || r.archetype === "factcheck" || r.archetype === "qa",
-  );
-  const blocked = roster.filter((r) => r.status === "blocked");
-  return (
-    <Panel title="Source & Verification" icon={ShieldCheck} color="#22c55e">
-      {blocked.length > 0 && (
-        <div className="mb-2 rounded-lg px-2 py-1.5 flex items-center gap-2" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.4)" }}>
-          <Zap size={11} className="text-rose-400" />
-          <span className="text-xs text-rose-300">{blocked.length} role(s) blocked — evidence gate may have tripped.</span>
-        </div>
-      )}
-      {verifyRoles.length === 0 ? (
-        <div className="text-xs text-slate-600 italic">No verification roles in this workflow.</div>
-      ) : (
-        <div className="space-y-1.5">
-          {verifyRoles.map((slot) => (
-            <div key={slot.key} className="flex items-center justify-between gap-2">
-              <span className="text-xs text-slate-400 truncate">{slot.roleLabel}</span>
-              <StatusPill status={slot.status} small />
-            </div>
-          ))}
-        </div>
-      )}
     </Panel>
   );
 }
@@ -276,7 +275,7 @@ function SourceVerification({ roster }: { roster: RosterSlot[] }) {
 function TaskStream({ events }: { events: AgentEvent[] }) {
   return (
     <Panel title="Task Stream" icon={Terminal} color="#06b6d4">
-      <div className="space-y-1 max-h-56 overflow-y-auto custom-scroll font-mono" style={{ fontSize: 10 }}>
+      <div className="space-y-1 max-h-72 overflow-y-auto custom-scroll font-mono" style={{ fontSize: 10 }}>
         {events.length === 0 && <div className="text-slate-600 italic" style={{ fontFamily: "Inter" }}>Awaiting telemetry…</div>}
         {events.slice(0, 30).map((ev, i) => (
           <div key={ev.id ?? i} className="leading-snug">
@@ -299,7 +298,7 @@ function HealthStrip({ project, roster }: { project: Project | null; roster: Ros
   const fmtTokens = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(n));
 
   return (
-    <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}>
+    <div className="grid gap-3 p-3 border-t border-slate-800/80 flex-shrink-0" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", background: "rgba(5,8,15,0.7)" }}>
       <Metric icon={Activity} color="#10b981" label="Active Roles" value={String(active)} />
       <Metric icon={Zap} color="#f59e0b" label="Tokens" value={fmtTokens(tokens)} />
       <Metric icon={DollarSign} color="#10b981" label="Cost Today" value={`$${cost.toFixed(2)}`} />

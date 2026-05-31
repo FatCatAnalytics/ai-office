@@ -1,24 +1,24 @@
-// Stage 6.12 — FatCat Isometric Office mode.
+// Stage 6.12.2 — FatCat Isometric Office mode (approved asset-backed).
 //
-// Playful-premium 2.5D office board. The manager FatCat sits centrally on a
-// raised dais; specialist FatCats sit at desks arranged around it on an
-// isometric floor. Glowing connection lines link the manager to any active
-// specialist. A left panel summarises the project/evidence; a right panel shows
-// the live task/activity stream; a bottom rail shows the workflow pipeline.
+// The mode renders the approved FatCat isometric-office artwork as the visual
+// canvas. The painted scene already shows the Manager FatCat on the central
+// dais with specialist FatCats at their desks; we overlay the *live* app on top
+// of it: a mode header, a project/status strip, transparent clickable hotspots
+// positioned over each visible FatCat seat (driven by the dynamic roster), a
+// left project/evidence panel, a right activity stream, and a selected-agent
+// detail panel. Roster roles beyond the painted seats fall into a "bench" list.
 //
-// Desks are positioned with CSS transforms (translate + a light isometric skew)
-// rather than a true SVG projection — this keeps the FatCat SVG avatars crisp,
-// the layout responsive, and click/keyboard targets simple. On narrow screens
-// the floor collapses to a stacked roster list.
+// No generated emoji/circle avatars are used — the cats come entirely from the
+// approved artwork; the roster only drives the labels/status/hotspots over it.
 
 import { useMemo, useState } from "react";
-import { Activity, FolderOpen, FileText, Layers } from "lucide-react";
+import { Activity, FolderOpen, FileText, Layers, Users } from "lucide-react";
+import officeImage from "@assets/fatcat/fatcat_isometric_office.jpg";
 import type { Agent, AgentEvent, Project } from "../../types";
 import {
   buildRoster, classifyWorkflow, workflowLabel,
   FATCAT_STATUS_META, type RosterSlot,
 } from "../../lib/fatcatRoster";
-import FatCatAvatar from "./FatCatAvatar";
 import {
   FatCatStyles, StatusPill, AgentDetailPanel, useReducedMotion,
 } from "./shared";
@@ -29,18 +29,20 @@ interface Props {
   events: AgentEvent[];
 }
 
-// Isometric desk positions (percentage of the floor box) for up to 8 specialists,
-// arranged in a diamond around the central manager dais.
-const DESK_LAYOUT: { x: number; y: number }[] = [
-  { x: 50, y: 14 },
-  { x: 78, y: 30 },
-  { x: 86, y: 58 },
-  { x: 68, y: 80 },
-  { x: 32, y: 80 },
-  { x: 14, y: 58 },
-  { x: 22, y: 30 },
-  { x: 50, y: 92 },
+// Hotspot seats expressed as a percentage of the artwork box. Each entry maps a
+// painted FatCat in the approved image to a clickable overlay. Ordered so the
+// roster's specialists (after the manager) land on sensible seats. Tuned to the
+// approved isometric-office artwork.
+const SEATS: { x: number; y: number; w: number; h: number }[] = [
+  { x: 27.5, y: 33, w: 13, h: 26 }, // research (upper-left desk)
+  { x: 70.5, y: 33, w: 13, h: 28 }, // qa (upper-right, clipboard cat)
+  { x: 84,   y: 50, w: 13, h: 30 }, // engineering (far-right, headphones cat)
+  { x: 66,   y: 64, w: 13, h: 30 }, // data (centre-right, tablet cat)
+  { x: 38,   y: 64, w: 13, h: 30 }, // investment (centre-left, document cat)
+  { x: 15,   y: 56, w: 13, h: 30 }, // writing (lower-left, writing cat)
 ];
+// The manager seat (central dais) sits roughly here in the artwork.
+const MANAGER_SEAT = { x: 50, y: 26, w: 18, h: 34 };
 
 export default function IsometricOfficeMode({ agents, project, events }: Props) {
   const reduced = useReducedMotion();
@@ -53,15 +55,17 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
   );
 
   const manager = roster.find((r) => r.archetype === "manager") ?? roster[0];
-  const specialists = roster.filter((r) => r !== manager).slice(0, DESK_LAYOUT.length);
+  const specialists = roster.filter((r) => r !== manager);
+  const seated = specialists.slice(0, SEATS.length);
+  const bench = specialists.slice(SEATS.length);
   const selected = roster.find((r) => r.key === selectedKey) ?? null;
 
   return (
-    <div className="w-full h-full relative overflow-hidden" style={{ background: "radial-gradient(circle at 50% 30%, #11182e 0%, #060b16 70%)" }}>
+    <div className="w-full h-full flex flex-col overflow-hidden" style={{ background: "#060b16" }}>
       <FatCatStyles />
 
       {/* Header band */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800/80" style={{ background: "rgba(8,12,24,0.6)" }}>
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800/80 flex-shrink-0" style={{ background: "rgba(8,12,24,0.6)" }}>
         <div className="flex items-center gap-2">
           <Layers size={14} className="text-violet-400" />
           <span className="text-xs font-semibold text-slate-200 uppercase tracking-wider">FatCat Isometric Office</span>
@@ -79,47 +83,51 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
         </div>
       </div>
 
-      {/* 3-column body: left panel | floor | right panel */}
-      <div className="flex h-[calc(100%-86px)]">
+      {/* 3-column body: left panel | canvas | right panel */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Left: project / evidence panel */}
         <aside className="hidden lg:flex flex-col w-60 border-r border-slate-800/80 p-3 gap-3 overflow-y-auto custom-scroll" style={{ background: "rgba(8,12,24,0.45)" }}>
           <ProjectCard project={project} workflowName={workflowLabel(workflow)} />
           <EvidencePanel project={project} roster={roster} />
+          {bench.length > 0 && <BenchPanel bench={bench} onSelect={setSelectedKey} />}
         </aside>
 
-        {/* Centre: isometric floor (desktop/tablet) + stacked roster (mobile) */}
-        <main className="flex-1 relative overflow-hidden">
-          {/* Mobile fallback: stacked roster list */}
-          <div className="md:hidden h-full overflow-y-auto custom-scroll p-3 space-y-2">
-            {roster.map((slot) => (
-              <RosterRow key={slot.key} slot={slot} onSelect={() => setSelectedKey(slot.key)} reduced={reduced} />
-            ))}
-          </div>
+        {/* Centre: approved image canvas with overlaid hotspots */}
+        <main className="flex-1 relative overflow-auto custom-scroll" style={{ background: "#060b16" }}>
+          {/* Scene wrapper keeps the image aspect ratio so hotspots stay aligned.
+              On narrow screens it can scroll; min-width prevents horrible crop. */}
+          <div
+            className="relative mx-auto"
+            style={{
+              width: "100%",
+              minWidth: 640,
+              maxWidth: 1280,
+              aspectRatio: "1152 / 769",
+            }}
+          >
+            <img
+              src={officeImage}
+              alt="FatCat isometric office: the Manager FatCat on a central dais with specialist FatCats at desks around an open-plan office."
+              className="absolute inset-0 w-full h-full object-cover select-none"
+              draggable={false}
+            />
 
-          {/* Desktop/tablet: isometric board */}
-          <div className="hidden md:block h-full relative" style={{ perspective: 1200 }}>
-            <IsoFloor reduced={reduced} />
-
-            {/* Connection lines from manager to active specialists */}
-            <ConnectionLines manager={manager} specialists={specialists} reduced={reduced} />
-
-            {/* Manager dais (centre) */}
-            <DeskNode
+            {/* Manager hotspot */}
+            <Hotspot
               slot={manager}
-              x={50} y={48}
+              seat={MANAGER_SEAT}
               manager
               selected={selectedKey === manager.key}
               onSelect={() => setSelectedKey(manager.key)}
               reduced={reduced}
             />
 
-            {/* Specialist desks */}
-            {specialists.map((slot, i) => (
-              <DeskNode
+            {/* Specialist hotspots over painted seats */}
+            {seated.map((slot, i) => (
+              <Hotspot
                 key={slot.key}
                 slot={slot}
-                x={DESK_LAYOUT[i].x}
-                y={DESK_LAYOUT[i].y}
+                seat={SEATS[i]}
                 selected={selectedKey === slot.key}
                 onSelect={() => setSelectedKey(slot.key)}
                 reduced={reduced}
@@ -147,150 +155,125 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
   );
 }
 
-// ─── Isometric floor backdrop ────────────────────────────────────────────────
-function IsoFloor({ reduced }: { reduced: boolean }) {
-  return (
-    <div
-      aria-hidden
-      style={{
-        position: "absolute",
-        left: "50%", top: "52%",
-        width: "78%", height: "70%",
-        transform: "translate(-50%,-50%) rotateX(58deg) rotateZ(45deg)",
-        transformStyle: "preserve-3d",
-        background:
-          "repeating-linear-gradient(0deg, rgba(99,102,241,0.10) 0 1px, transparent 1px 56px)," +
-          "repeating-linear-gradient(90deg, rgba(99,102,241,0.10) 0 1px, transparent 1px 56px)",
-        borderRadius: 18,
-        boxShadow: "0 0 120px rgba(99,102,241,0.18) inset, 0 30px 80px rgba(0,0,0,0.5)",
-        border: "1px solid rgba(99,102,241,0.18)",
-      }}
-    >
-      {/* central glow under manager dais */}
-      <div
-        className={reduced ? undefined : "fc-motion"}
-        style={{
-          position: "absolute", left: "50%", top: "50%", width: 180, height: 180,
-          transform: "translate(-50%,-50%)",
-          background: "radial-gradient(circle, rgba(168,85,247,0.35) 0%, transparent 70%)",
-          borderRadius: "50%",
-          animation: reduced ? undefined : "fcScan 4s ease-in-out infinite",
-        }}
-      />
-    </div>
-  );
-}
-
-// ─── A desk node = a FatCat avatar + name plate ──────────────────────────────
-function DeskNode({
-  slot, x, y, manager, selected, onSelect, reduced,
+// ─── Hotspot: transparent click target + status outline over a painted cat ────
+function Hotspot({
+  slot, seat, manager, selected, onSelect, reduced,
 }: {
-  slot: RosterSlot; x: number; y: number; manager?: boolean;
-  selected: boolean; onSelect: () => void; reduced: boolean;
+  slot: RosterSlot;
+  seat: { x: number; y: number; w: number; h: number };
+  manager?: boolean;
+  selected: boolean;
+  onSelect: () => void;
+  reduced: boolean;
 }) {
-  const size = manager ? 96 : 66;
+  const statusColor = FATCAT_STATUS_META[slot.status].color;
+  const active = slot.status === "working" || slot.status === "verifying";
   return (
     <button
       onClick={onSelect}
       aria-pressed={selected}
       aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
-      className="group focus:outline-none"
+      className="group absolute focus:outline-none"
       style={{
-        position: "absolute",
-        left: `${x}%`, top: `${y}%`,
+        left: `${seat.x}%`,
+        top: `${seat.y}%`,
+        width: `${seat.w}%`,
+        height: `${seat.h}%`,
         transform: "translate(-50%,-50%)",
-        zIndex: manager ? 20 : 10 + Math.round(y),
+        background: "transparent",
+        border: "none",
+        padding: 0,
         cursor: "pointer",
-        background: "none", border: "none", padding: 0,
+        zIndex: manager ? 20 : 10,
       }}
     >
-      {/* desk pad */}
-      <div
+      {/* Status glow outline over the painted cat. Subtle by default, brighter
+          when active or selected, so we enhance rather than cover the artwork. */}
+      <span
+        aria-hidden
+        className={!reduced && active ? "fc-motion" : undefined}
         style={{
-          position: "absolute", left: "50%", bottom: -10,
-          width: size * 1.25, height: size * 0.34,
-          transform: "translateX(-50%) rotateX(60deg)",
-          background: `radial-gradient(ellipse, ${slot.color}33 0%, transparent 72%)`,
-          borderRadius: "50%",
+          position: "absolute",
+          inset: "6%",
+          borderRadius: "16px",
+          border: `2px solid ${statusColor}`,
+          boxShadow: selected
+            ? `0 0 22px ${statusColor}cc, 0 0 0 2px ${statusColor}`
+            : active
+              ? `0 0 16px ${statusColor}88`
+              : "none",
+          opacity: selected ? 1 : active ? 0.85 : 0,
+          transition: "opacity 160ms ease",
+          animation: !reduced && active && !selected ? "fcPulse 2.4s ease-in-out infinite" : undefined,
         }}
       />
-      <div
-        className={!reduced && (slot.status === "working" || slot.status === "verifying") ? "fc-motion" : undefined}
-        style={{ animation: !reduced && (slot.status === "working") ? "fcFloat 3s ease-in-out infinite" : undefined }}
-      >
-        <FatCatAvatar
-          archetype={slot.archetype} color={slot.color} status={slot.status}
-          size={size} manager={manager} reducedMotion={reduced}
-        />
-      </div>
-      {/* name plate */}
-      <div
+      {/* Group-hover ring so idle seats still reveal they are interactive. */}
+      <span
+        aria-hidden
+        className="opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
         style={{
-          marginTop: 6,
+          position: "absolute",
+          inset: "6%",
+          borderRadius: "16px",
+          border: `1.5px dashed ${slot.color}aa`,
+          transition: "opacity 160ms ease",
+        }}
+      />
+      {/* Name plate anchored under the seat. */}
+      <span
+        className="opacity-90 group-hover:opacity-100"
+        style={{
+          position: "absolute",
+          left: "50%",
+          bottom: -6,
+          transform: "translateX(-50%)",
           padding: "3px 9px",
           borderRadius: 10,
           background: "rgba(6,10,20,0.92)",
           border: `1.5px solid ${selected ? slot.color : slot.color + "66"}`,
           boxShadow: selected ? `0 0 14px ${slot.color}66` : "0 2px 8px rgba(0,0,0,0.6)",
           whiteSpace: "nowrap",
-          maxWidth: 150,
+          maxWidth: 170,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
         }}
       >
-        <div style={{ fontSize: 11, fontWeight: 700, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis" }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160 }}>
           {slot.name}
-        </div>
-        <div style={{ fontSize: 9, color: "#94a3b8" }}>{slot.roleLabel}</div>
-      </div>
+        </span>
+        <span style={{ fontSize: 9, color: "#94a3b8" }}>{slot.roleLabel}</span>
+      </span>
     </button>
   );
 }
 
-// ─── Glowing connection lines from manager → active specialists ──────────────
-function ConnectionLines({
-  manager, specialists, reduced,
-}: { manager: RosterSlot; specialists: RosterSlot[]; reduced: boolean }) {
+// ─── Bench panel (roster roles beyond the painted seats) ──────────────────────
+function BenchPanel({ bench, onSelect }: { bench: RosterSlot[]; onSelect: (k: string) => void }) {
   return (
-    <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 5 }} preserveAspectRatio="none" viewBox="0 0 100 100">
-      {specialists.map((slot, i) => {
-        if (slot.status === "idle") return null;
-        const target = DESK_LAYOUT[i];
-        const midX = (50 + target.x) / 2;
-        const midY = (48 + target.y) / 2 - 6;
-        return (
-          <path
+    <div className="rounded-xl border border-slate-800 p-3" style={{ background: "rgba(13,20,33,0.8)" }}>
+      <div className="flex items-center gap-2 mb-2">
+        <Users size={13} className="text-slate-400" />
+        <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Bench</span>
+      </div>
+      <div className="space-y-1.5">
+        {bench.map((slot) => (
+          <button
             key={slot.key}
-            d={`M 50 48 Q ${midX} ${midY} ${target.x} ${target.y}`}
-            fill="none"
-            stroke={slot.color}
-            strokeWidth="0.5"
-            strokeDasharray="2 1.5"
-            opacity={0.65}
-            className={reduced ? undefined : "fc-motion"}
-            style={{ animation: reduced ? undefined : "fcDash 1.6s linear infinite" }}
-            vectorEffect="non-scaling-stroke"
-          />
-        );
-      })}
-    </svg>
-  );
-}
-
-// ─── Roster row (mobile fallback) ────────────────────────────────────────────
-function RosterRow({ slot, onSelect, reduced }: { slot: RosterSlot; onSelect: () => void; reduced: boolean }) {
-  return (
-    <button
-      onClick={onSelect}
-      aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
-      className="w-full flex items-center gap-3 p-2.5 rounded-xl border text-left"
-      style={{ background: "rgba(8,12,24,0.7)", borderColor: slot.color + "44" }}
-    >
-      <FatCatAvatar archetype={slot.archetype} color={slot.color} status={slot.status} size={44} manager={slot.archetype === "manager"} reducedMotion={reduced} />
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-semibold text-slate-100 truncate">{slot.name}</div>
-        <div className="text-xs text-slate-500">{slot.roleLabel}</div>
+            onClick={() => onSelect(slot.key)}
+            aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left focus:outline-none focus:ring-1"
+            style={{ background: "rgba(8,12,24,0.7)", border: `1px solid ${slot.color}33` }}
+          >
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: FATCAT_STATUS_META[slot.status].color, flexShrink: 0 }} />
+            <span className="flex-1 min-w-0">
+              <span className="block text-xs font-semibold text-slate-200 truncate">{slot.name}</span>
+              <span className="block text-slate-500" style={{ fontSize: 9 }}>{slot.roleLabel}</span>
+            </span>
+          </button>
+        ))}
       </div>
-      <StatusPill status={slot.status} small />
-    </button>
+    </div>
   );
 }
 
@@ -388,7 +371,7 @@ function ActivityPanel({ events }: { events: AgentEvent[] }) {
 // ─── Bottom pipeline rail ────────────────────────────────────────────────────
 function PipelineRail({ roster, onSelect }: { roster: RosterSlot[]; onSelect: (k: string) => void }) {
   return (
-    <div className="flex items-center gap-1.5 px-3 border-t border-slate-800/80 overflow-x-auto" style={{ height: 44, background: "rgba(8,12,24,0.7)" }}>
+    <div className="flex items-center gap-1.5 px-3 border-t border-slate-800/80 overflow-x-auto flex-shrink-0" style={{ height: 44, background: "rgba(8,12,24,0.7)" }}>
       <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap mr-2">Pipeline</span>
       {roster.map((slot, i) => (
         <div key={slot.key} className="flex items-center gap-1.5 flex-shrink-0">

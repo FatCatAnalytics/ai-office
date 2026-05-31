@@ -6,7 +6,6 @@ import type { AgentEvent } from "../../types";
 import {
   FATCAT_STATUS_META, type RosterSlot,
 } from "../../lib/fatcatRoster";
-import FatCatAvatar from "./FatCatAvatar";
 
 /** Tracks the user's prefers-reduced-motion setting reactively. */
 export function useReducedMotion(): boolean {
@@ -87,9 +86,13 @@ export function AgentDetailPanel({
       }}
     >
       <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-        <FatCatAvatar
-          archetype={slot.archetype} color={slot.color} status={slot.status}
-          size={52} manager={slot.archetype === "manager"} reducedMotion
+        <span
+          aria-hidden
+          style={{
+            width: 8, height: 8, borderRadius: "50%", flexShrink: 0, marginTop: 6,
+            background: FATCAT_STATUS_META[slot.status].color,
+            boxShadow: `0 0 8px ${FATCAT_STATUS_META[slot.status].color}aa`,
+          }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9" }}>{slot.name}</div>
