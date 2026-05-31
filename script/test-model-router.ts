@@ -253,6 +253,23 @@ falsy(
 );
 falsy("isQuotaOrCreditError returns false for null", isQuotaOrCreditError(null));
 
+// Regression — Anthropic account usage-cap surfaces as a 400
+// invalid_request_error, NOT a 429. The wording must trigger failover so
+// the orchestrator walks the chain to another provider instead of failing
+// the whole task until the cap resets.
+truthy(
+  "isQuotaOrCreditError matches Anthropic 400 'reached your specified API usage limits'",
+  isQuotaOrCreditError(new Error(
+    `Anthropic API 400: {"type":"error","error":{"type":"invalid_request_error",` +
+    `"message":"You have reached your specified API usage limits. You will regain ` +
+    `access on 2026-06-01 at 00:00 UTC."}}`,
+  )),
+);
+truthy(
+  "isQuotaOrCreditError matches a generic 'usage limit' phrase",
+  isQuotaOrCreditError(new Error("OpenAI API 429: monthly usage limit exceeded")),
+);
+
 // ── 4) Manual override / agent default precedence ────────────────────────
 
 // When the agent.provider key IS configured and EVERY chain provider is

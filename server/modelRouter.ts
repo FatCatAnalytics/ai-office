@@ -213,6 +213,18 @@ export function isQuotaOrCreditError(err: unknown): boolean {
     "unsupported model",
     "no credit",
     "no credits",
+    // Account-level usage caps. Anthropic surfaces these as a 400
+    // invalid_request_error whose message reads "You have reached your
+    // specified API usage limits. You will regain access on <date>."
+    // The 400 status is otherwise treated as a clean-fail, so we match the
+    // wording explicitly to walk the fallback chain to another provider.
+    "usage limit",
+    "usage limits",
+    "usage_limit",
+    "reached your specified api usage",
+    "regain access on",
+    "spending limit",
+    "spend limit",
   ];
   for (const p of phrases) {
     if (msg.includes(p)) return true;
