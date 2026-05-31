@@ -17,7 +17,7 @@ import officeImage from "@assets/fatcat/fatcat_isometric_office.jpg";
 import type { Agent, AgentEvent, Project } from "../../types";
 import {
   buildRoster, classifyWorkflow, workflowLabel,
-  FATCAT_STATUS_META, type RosterSlot,
+  FATCAT_STATUS_META, isActiveStatus, type RosterSlot,
 } from "../../lib/fatcatRoster";
 import {
   FatCatStyles, StatusPill, AgentDetailPanel, useReducedMotion,
@@ -30,19 +30,21 @@ interface Props {
 }
 
 // Hotspot seats expressed as a percentage of the artwork box. Each entry maps a
-// painted FatCat in the approved image to a clickable overlay. Ordered so the
-// roster's specialists (after the manager) land on sensible seats. Tuned to the
-// approved isometric-office artwork.
+// painted FatCat *body* in the approved image to a clickable overlay — sized to
+// hug the seated cat (head + torso) rather than the painted info card beside it,
+// so a revealed ring lands on the character and never boxes a panel. Ordered so
+// the roster's specialists (after the manager) land on sensible seats. Tuned to
+// the approved isometric-office artwork.
 const SEATS: { x: number; y: number; w: number; h: number }[] = [
-  { x: 27.5, y: 33, w: 13, h: 26 }, // research (upper-left desk)
-  { x: 70.5, y: 33, w: 13, h: 28 }, // qa (upper-right, clipboard cat)
-  { x: 84,   y: 50, w: 13, h: 30 }, // engineering (far-right, headphones cat)
-  { x: 66,   y: 64, w: 13, h: 30 }, // data (centre-right, tablet cat)
-  { x: 38,   y: 64, w: 13, h: 30 }, // investment (centre-left, document cat)
-  { x: 15,   y: 56, w: 13, h: 30 }, // writing (lower-left, writing cat)
+  { x: 32, y: 39, w: 9, h: 20 }, // research (upper-left desk, magnifier cat)
+  { x: 72, y: 37, w: 9, h: 20 }, // qa (upper-right, clipboard cat)
+  { x: 80, y: 57, w: 9, h: 22 }, // engineering (far-right, headphones cat)
+  { x: 60, y: 58, w: 9, h: 22 }, // data (centre-right, tablet cat)
+  { x: 46, y: 55, w: 9, h: 22 }, // investment (centre, document cat)
+  { x: 19, y: 52, w: 9, h: 22 }, // writing (lower-left, writing-at-desk cat)
 ];
-// The manager seat (central dais) sits roughly here in the artwork.
-const MANAGER_SEAT = { x: 50, y: 26, w: 18, h: 34 };
+// The manager seat — the large central FatCat standing on the dais near the top.
+const MANAGER_SEAT = { x: 48, y: 24, w: 12, h: 28 };
 
 export default function IsometricOfficeMode({ agents, project, events }: Props) {
   const reduced = useReducedMotion();
@@ -172,7 +174,8 @@ function Hotspot({
   reduced: boolean;
 }) {
   const statusColor = FATCAT_STATUS_META[slot.status].color;
-  const active = slot.status === "working" || slot.status === "verifying";
+  const active = isActiveStatus(slot.status);
+  const animated = slot.status === "working" || slot.status === "verifying";
   // A revealed hotspot is one the user is hovering/focusing, or has selected.
   // CSS handles hover/focus; selection forces the reveal class on.
   const revealClass = selected ? "fc-hot-on" : "";
@@ -181,7 +184,7 @@ function Hotspot({
       onClick={onSelect}
       aria-pressed={selected}
       aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
-      className={`fc-hot group absolute focus:outline-none ${revealClass}`}
+      className={`fc-hot group absolute ${revealClass}`}
       style={{
         left: `${seat.x}%`,
         top: `${seat.y}%`,
@@ -195,22 +198,27 @@ function Hotspot({
         zIndex: manager ? 20 : 10,
       }}
     >
-      {/* Tiny status dot — the only persistent mark, and only for cats that are
-          actively working/verifying/blocked. Idle cats leave the art untouched. */}
+      {/* Tiny status dot. Persistent ONLY for genuinely live cats (working /
+          verifying / blocked). Idle/waiting cats render no dot and leave the art
+          untouched; a settled "complete" cat gets a quiet dot that only appears
+          on hover/focus/select (.fc-dot-quiet). */}
       {slot.status !== "idle" && (
         <span
           aria-hidden
-          className={!reduced && active ? "fc-motion" : undefined}
+          className={[
+            active ? "fc-dot-active" : "fc-dot-quiet",
+            !reduced && animated ? "fc-motion" : "",
+          ].filter(Boolean).join(" ")}
           style={{
             position: "absolute",
-            top: "8%",
-            right: "14%",
+            top: "2%",
+            right: "10%",
             width: 10,
             height: 10,
             borderRadius: "50%",
             background: statusColor,
             boxShadow: `0 0 8px ${statusColor}cc`,
-            animation: !reduced && active ? "fcPulse 2.4s ease-in-out infinite" : undefined,
+            animation: !reduced && animated ? "fcPulse 2.4s ease-in-out infinite" : undefined,
           }}
         />
       )}
@@ -221,8 +229,8 @@ function Hotspot({
         className="fc-hot-ring"
         style={{
           position: "absolute",
-          inset: "8%",
-          borderRadius: "16px",
+          inset: "4%",
+          borderRadius: "14px",
           border: `1.5px solid ${slot.color}`,
           boxShadow: `0 0 16px ${slot.color}66`,
         }}

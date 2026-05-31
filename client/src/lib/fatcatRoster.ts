@@ -358,3 +358,12 @@ export const FATCAT_STATUS_META: Record<FatCatStatus, { label: string; color: st
   blocked:   { label: "Blocked",   color: "#ef4444" },
   complete:  { label: "Complete",  color: "#06b6d4" },
 };
+
+// Which statuses earn a persistent (quiet) overlay marker over the artwork.
+// Idle / waiting / pending cats stay completely unmarked so the approved art is
+// left clean; "complete" is also quiet by default (it's a settled, not live,
+// state) and only surfaces when the seat is hovered/focused/selected. Only the
+// genuinely live states get the tiny status dot.
+export function isActiveStatus(status: FatCatStatus): boolean {
+  return status === "working" || status === "verifying" || status === "blocked";
+}

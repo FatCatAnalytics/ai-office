@@ -5,6 +5,7 @@ import {
   mapAgentStatus,
   workflowLabel,
   archetypeColor,
+  isActiveStatus,
   type RosterContext,
 } from "./fatcatRoster";
 import type { Agent, Project } from "../types";
@@ -214,5 +215,15 @@ describe("helpers", () => {
   it("workflowLabel returns readable names", () => {
     expect(workflowLabel("analytical-banker")).toMatch(/Analytical Banker/);
     expect(workflowLabel("generic")).toBeTruthy();
+  });
+
+  it("isActiveStatus only treats live work states as active", () => {
+    // Live states earn a persistent (quiet) overlay marker.
+    expect(isActiveStatus("working")).toBe(true);
+    expect(isActiveStatus("verifying")).toBe(true);
+    expect(isActiveStatus("blocked")).toBe(true);
+    // Waiting/idle and settled/complete must stay visually quiet by default.
+    expect(isActiveStatus("idle")).toBe(false);
+    expect(isActiveStatus("complete")).toBe(false);
   });
 });
