@@ -7,6 +7,46 @@ import {
   FATCAT_STATUS_META, type RosterSlot,
 } from "../../lib/fatcatRoster";
 
+/**
+ * Given a container ref and the artwork's intrinsic aspect ratio, returns the
+ * rectangle (in px, relative to the container) that an object-contain image of
+ * that ratio actually occupies — i.e. the letterboxed image box. Hotspots are
+ * positioned against THIS rect (not the raw container) so percentage seat
+ * coordinates land exactly on the painted cats regardless of container shape.
+ */
+export function useContainRect(
+  ref: React.RefObject<HTMLElement>,
+  ratio: number,
+): { left: number; top: number; width: number; height: number } {
+  const [rect, setRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const compute = () => {
+      const cw = el.clientWidth;
+      const ch = el.clientHeight;
+      if (!cw || !ch) return;
+      const containerRatio = cw / ch;
+      let width: number, height: number;
+      if (containerRatio > ratio) {
+        // container wider than art → height-bound, pillarbox left/right
+        height = ch;
+        width = ch * ratio;
+      } else {
+        // container taller than art → width-bound, letterbox top/bottom
+        width = cw;
+        height = cw / ratio;
+      }
+      setRect({ left: (cw - width) / 2, top: (ch - height) / 2, width, height });
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref, ratio]);
+  return rect;
+}
+
 /** Tracks the user's prefers-reduced-motion setting reactively. */
 export function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState(
@@ -30,6 +70,10 @@ export function FatCatStyles() {
       @keyframes fcDash  { to { stroke-dashoffset: -32 } }
       @keyframes fcFloat { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-4px) } }
       @keyframes fcScan  { 0% { opacity:.2 } 50% { opacity:.7 } 100% { opacity:.2 } }
+      /* Working-highlight breathing glow for the cat/card that is actively
+         doing the work. Subtle so it reads as "this one is live" without
+         covering or boxing the approved artwork. */
+      @keyframes fcWork { 0%,100% { opacity:.7 } 50% { opacity:1 } }
       @media (prefers-reduced-motion: reduce) {
         .fc-motion { animation: none !important; }
       }
@@ -59,6 +103,88 @@ export function FatCatStyles() {
       .fc-hot:focus-visible .fc-dot-quiet,
       .fc-hot.fc-hot-on .fc-dot-quiet { opacity: 1; }
     `}</style>
+  );
+}
+
+/**
+ * Working-highlight: a soft glow drawn on the painted element (a committee card
+ * in Mission Control, a cat in the Iso office) when its slot is actively doing
+ * the work. Shown for live states only (working / verifying / blocked) so idle
+ * and settled cats keep the approved artwork completely clean. It is purely
+ * decorative — the clickable Hotspot sits above it.
+ */
+export function WorkingHighlight({
+  status, color, radius = 16, reduced,
+}: {
+  status: RosterSlot["status"];
+  color: string;
+  radius?: number;
+  reduced: boolean;
+}) {
+  const statusColor = FATCAT_STATUS_META[status].color;
+  const animated = status === "working" || status === "verifying";
+  return (
+    <span
+      aria-hidden
+      className={!reduced && animated ? "fc-motion" : undefined}
+      style={{
+        position: "absolute",
+        inset: 0,
+        borderRadius: radius,
+        border: `2px solid ${statusColor}`,
+        background: `radial-gradient(ellipse at center, ${statusColor}33 0%, ${statusColor}00 72%)`,
+        boxShadow: `0 0 30px ${statusColor}aa, 0 0 12px ${statusColor}cc, inset 0 0 26px ${statusColor}3a`,
+        pointerEvents: "none",
+        animation: !reduced && animated ? "fcWork 2.6s ease-in-out infinite" : undefined,
+      }}
+    />
+  );
+}
+
+/**
+ * Card-highlight: a soft glowing outline drawn over a PAINTED info card (the
+ * labelled panel beside a cat in the Iso office, or the portrait card in Mission
+ * Control). Used instead of ringing the cat itself. It is shown when:
+ *   - `active`  → the card's agent is live (persistent breathing glow), or
+ *   - `revealed` → the user is hovering / focusing / has selected that agent.
+ * Quiet, non-active, non-revealed cards stay completely clean so the resting
+ * artwork is untouched. Purely decorative (pointer-events: none).
+ */
+export function CardHighlight({
+  rect, color, status, active, revealed, reduced, radius = 14,
+}: {
+  rect: { x: number; y: number; w: number; h: number };
+  color: string;
+  status: RosterSlot["status"];
+  active: boolean;
+  revealed: boolean;
+  reduced: boolean;
+  radius?: number;
+}) {
+  const on = active || revealed;
+  const glow = active ? FATCAT_STATUS_META[status].color : color;
+  const animated = active && (status === "working" || status === "verifying");
+  return (
+    <span
+      aria-hidden
+      className={!reduced && animated ? "fc-motion" : undefined}
+      style={{
+        position: "absolute",
+        left: `${rect.x - rect.w / 2}%`,
+        top: `${rect.y - rect.h / 2}%`,
+        width: `${rect.w}%`,
+        height: `${rect.h}%`,
+        borderRadius: radius,
+        border: `2px solid ${glow}`,
+        background: `radial-gradient(ellipse at center, ${glow}26 0%, ${glow}00 75%)`,
+        boxShadow: `0 0 26px ${glow}99, inset 0 0 22px ${glow}33`,
+        pointerEvents: "none",
+        opacity: on ? 1 : 0,
+        transition: "opacity 180ms ease",
+        animation: !reduced && animated && on ? "fcWork 2.6s ease-in-out infinite" : undefined,
+        zIndex: 5,
+      }}
+    />
   );
 }
 

@@ -11,8 +11,8 @@
 // No generated emoji/circle avatars are used — the cats come entirely from the
 // approved artwork; the roster only drives the labels/status/hotspots over it.
 
-import { useMemo, useState } from "react";
-import { Activity, FolderOpen, FileText, Layers, Users } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { Layers } from "lucide-react";
 import officeImage from "@assets/fatcat/fatcat_isometric_office.jpg";
 import type { Agent, AgentEvent, Project } from "../../types";
 import {
@@ -20,8 +20,11 @@ import {
   FATCAT_STATUS_META, isActiveStatus, type RosterSlot,
 } from "../../lib/fatcatRoster";
 import {
-  FatCatStyles, StatusPill, AgentDetailPanel, useReducedMotion,
+  FatCatStyles, AgentDetailPanel, CardHighlight, useReducedMotion, useContainRect,
 } from "./shared";
+
+// Intrinsic aspect ratio of the approved isometric-office artwork (1536 × 1024).
+const ART_RATIO = 1536 / 1024;
 
 interface Props {
   agents: Agent[];
@@ -29,26 +32,43 @@ interface Props {
   events: AgentEvent[];
 }
 
-// Hotspot seats expressed as a percentage of the artwork box. Each entry maps a
-// painted FatCat *body* in the approved image to a clickable overlay — sized to
-// hug the seated cat (head + torso) rather than the painted info card beside it,
-// so a revealed ring lands on the character and never boxes a panel. Ordered so
-// the roster's specialists (after the manager) land on sensible seats. Tuned to
-// the approved isometric-office artwork.
+// Calibrated against the approved isometric-office artwork by overlaying these
+// boxes onto the image and tightening each one to hug the painted cat (head +
+// torso) rather than the info card beside it, so a working-highlight / ring
+// lands on the character. Ordered so the roster's specialists (after the
+// manager) land on sensible seats.
 const SEATS: { x: number; y: number; w: number; h: number }[] = [
-  { x: 32, y: 39, w: 9, h: 20 }, // research (upper-left desk, magnifier cat)
-  { x: 72, y: 37, w: 9, h: 20 }, // qa (upper-right, clipboard cat)
-  { x: 80, y: 57, w: 9, h: 22 }, // engineering (far-right, headphones cat)
-  { x: 60, y: 58, w: 9, h: 22 }, // data (centre-right, tablet cat)
-  { x: 46, y: 55, w: 9, h: 22 }, // investment (centre, document cat)
-  { x: 19, y: 52, w: 9, h: 22 }, // writing (lower-left, writing-at-desk cat)
+  { x: 28.5, y: 33, w: 11, h: 24 }, // research (upper-left, magnifier cat)
+  { x: 63,   y: 33, w: 10, h: 24 }, // qa (upper-right, clipboard cat)
+  { x: 70,   y: 52, w: 11, h: 26 }, // engineering (far-right, headphones cat)
+  { x: 57.5, y: 55, w: 11, h: 27 }, // data (centre-right, tablet cat)
+  { x: 42.5, y: 57, w: 11, h: 25 }, // investment (centre, document/chart cat)
+  { x: 25,   y: 54, w: 11, h: 26 }, // writing (lower-left, writing-at-desk cat)
 ];
 // The manager seat — the large central FatCat standing on the dais near the top.
-const MANAGER_SEAT = { x: 48, y: 24, w: 12, h: 28 };
+const MANAGER_SEAT = { x: 48, y: 23, w: 13, h: 28 };
+
+// Calibrated rects of the PAINTED info card beside each cat (name + status +
+// description panel). The highlight is drawn on THIS card — not on the cat —
+// when its agent is live or the user hovers/selects the cat. Same index order
+// as SEATS so card[i] belongs to the cat at seat[i]; MANAGER_CARD is the top
+// centre "Manager FatCat" pill.
+const CARDS: { x: number; y: number; w: number; h: number }[] = [
+  { x: 13, y: 33, w: 13, h: 11 }, // research card (top-left)
+  { x: 83, y: 32, w: 13, h: 11 }, // qa card (upper-right)
+  { x: 86, y: 49, w: 14, h: 11 }, // engineering card (right)
+  { x: 68, y: 71, w: 9,  h: 11 }, // data card (centre-right-low)
+  { x: 34, y: 68, w: 13, h: 11 }, // investment card (centre-low)
+  { x: 12, y: 53, w: 13, h: 11 }, // writing card (left)
+];
+const MANAGER_CARD = { x: 50, y: 8, w: 23, h: 6 };
 
 export default function IsometricOfficeMode({ agents, project, events }: Props) {
   const reduced = useReducedMotion();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const imgRect = useContainRect(containerRef, ART_RATIO);
 
   const roster = useMemo(() => buildRoster({ project, agents }), [project, agents]);
   const workflow = useMemo(
@@ -59,72 +79,66 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
   const manager = roster.find((r) => r.archetype === "manager") ?? roster[0];
   const specialists = roster.filter((r) => r !== manager);
   const seated = specialists.slice(0, SEATS.length);
-  const bench = specialists.slice(SEATS.length);
   const selected = roster.find((r) => r.key === selectedKey) ?? null;
 
+  // The approved artwork IS the view: rendered object-contain (never cropped),
+  // centred on a matching dark backdrop. The only things over it are the soft
+  // working-highlight on the cat whose agent is live, invisible click hotspots,
+  // an optional floating detail panel, and a tiny mode chip — no duplicate side
+  // rails / pipeline / header that fight the panels painted into the scene.
   return (
-    <div className="w-full h-full flex flex-col overflow-hidden" style={{ background: "#060b16" }}>
+    <div className="w-full h-full relative overflow-hidden" style={{ background: "#060b16" }}>
       <FatCatStyles />
 
-      {/* Header band */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800/80 flex-shrink-0" style={{ background: "rgba(8,12,24,0.6)" }}>
-        <div className="flex items-center gap-2">
-          <Layers size={14} className="text-violet-400" />
-          <span className="text-xs font-semibold text-slate-200 uppercase tracking-wider">FatCat Isometric Office</span>
-          <span className="text-xs text-slate-500 ml-2 px-2 py-0.5 rounded-full border border-slate-700">
-            {workflowLabel(workflow)}
-          </span>
-        </div>
-        <div className="hidden sm:flex items-center gap-3 text-xs">
-          {Object.entries(FATCAT_STATUS_META).map(([k, m]) => (
-            <span key={k} className="flex items-center gap-1.5 text-slate-500">
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: m.color }} />
-              {m.label}
-            </span>
-          ))}
-        </div>
-      </div>
+      <div ref={containerRef} className="absolute inset-0 p-2 sm:p-4">
+        <div className="relative w-full h-full">
+          <img
+            src={officeImage}
+            alt="FatCat isometric office: the Manager FatCat on a central dais with specialist FatCats at desks around an open-plan office."
+            className="absolute inset-0 w-full h-full object-contain select-none"
+            draggable={false}
+          />
 
-      {/* 3-column body: left panel | canvas | right panel */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* Left: project / evidence panel */}
-        <aside className="hidden lg:flex flex-col w-60 border-r border-slate-800/80 p-3 gap-3 overflow-y-auto custom-scroll" style={{ background: "rgba(8,12,24,0.45)" }}>
-          <ProjectCard project={project} workflowName={workflowLabel(workflow)} />
-          <EvidencePanel project={project} roster={roster} />
-          {bench.length > 0 && <BenchPanel bench={bench} onSelect={setSelectedKey} />}
-        </aside>
-
-        {/* Centre: approved image canvas with overlaid hotspots */}
-        <main className="flex-1 relative overflow-auto custom-scroll" style={{ background: "#060b16" }}>
-          {/* Scene wrapper keeps the image aspect ratio so hotspots stay aligned.
-              On narrow screens it can scroll; min-width prevents horrible crop. */}
+          {/* Hotspot layer aligned to the rendered image box */}
           <div
-            className="relative mx-auto"
-            style={{
-              width: "100%",
-              minWidth: 640,
-              maxWidth: 1280,
-              aspectRatio: "1152 / 769",
-            }}
+            className="absolute"
+            style={{ left: imgRect.left, top: imgRect.top, width: imgRect.width, height: imgRect.height }}
           >
-            <img
-              src={officeImage}
-              alt="FatCat isometric office: the Manager FatCat on a central dais with specialist FatCats at desks around an open-plan office."
-              className="absolute inset-0 w-full h-full object-cover select-none"
-              draggable={false}
+            {/* Card-highlight layer: the glow lives on the painted INFO CARD
+                beside each cat, not on the cat. Persistent for the live agent;
+                otherwise revealed on hover / focus / selection of its cat. */}
+            <CardHighlight
+              rect={MANAGER_CARD}
+              color={manager.color}
+              status={manager.status}
+              active={isActiveStatus(manager.status)}
+              revealed={hoveredKey === manager.key || selectedKey === manager.key}
+              reduced={reduced}
             />
+            {seated.map((slot, i) => (
+              <CardHighlight
+                key={`card-${slot.key}`}
+                rect={CARDS[i]}
+                color={slot.color}
+                status={slot.status}
+                active={isActiveStatus(slot.status)}
+                revealed={hoveredKey === slot.key || selectedKey === slot.key}
+                reduced={reduced}
+              />
+            ))}
 
-            {/* Manager hotspot */}
+            {/* Manager hotspot (transparent hit area over the painted cat). */}
             <Hotspot
               slot={manager}
               seat={MANAGER_SEAT}
               manager
               selected={selectedKey === manager.key}
               onSelect={() => setSelectedKey(manager.key)}
+              onHover={setHoveredKey}
               reduced={reduced}
             />
 
-            {/* Specialist hotspots over painted seats */}
+            {/* Specialist hotspots over painted cats */}
             {seated.map((slot, i) => (
               <Hotspot
                 key={slot.key}
@@ -132,59 +146,58 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
                 seat={SEATS[i]}
                 selected={selectedKey === slot.key}
                 onSelect={() => setSelectedKey(slot.key)}
+                onHover={setHoveredKey}
                 reduced={reduced}
               />
             ))}
           </div>
-
-          {/* Selected detail — floating */}
-          {selected && (
-            <div className="absolute top-3 right-3 z-30">
-              <AgentDetailPanel slot={selected} events={events} onClose={() => setSelectedKey(null)} />
-            </div>
-          )}
-        </main>
-
-        {/* Right: live activity stream */}
-        <aside className="hidden xl:flex flex-col w-64 border-l border-slate-800/80 overflow-hidden" style={{ background: "rgba(8,12,24,0.45)" }}>
-          <ActivityPanel events={events} />
-        </aside>
+        </div>
       </div>
 
-      {/* Bottom: workflow pipeline rail */}
-      <PipelineRail roster={roster} onSelect={setSelectedKey} />
+      {/* Tiny floating mode chip (top-left). */}
+      <div className="absolute top-3 left-3 z-30 flex items-center gap-2 px-2.5 py-1 rounded-full pointer-events-none"
+        style={{ background: "rgba(8,12,24,0.7)", border: "1px solid rgba(139,92,246,0.3)", backdropFilter: "blur(4px)" }}>
+        <Layers size={12} className="text-violet-400" />
+        <span className="text-slate-200/90" style={{ fontSize: 10, letterSpacing: "0.04em" }}>{workflowLabel(workflow)}</span>
+      </div>
+
+      {/* Selected detail — floating top-right, off the painted panels. */}
+      {selected && (
+        <div className="absolute top-3 right-3 z-40">
+          <AgentDetailPanel slot={selected} events={events} onClose={() => setSelectedKey(null)} />
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Hotspot: invisible hit area over a painted cat ──────────────────────────
-// By default the artwork is left completely clean — the button is a transparent
-// hit target with NO border, box, glow, or nameplate. Interaction reveals only
-// the lightest possible treatment: a tiny status dot at the seat's corner and a
-// small floating tooltip, shown on hover / keyboard focus / selection. Nothing
-// large is ever painted over a cat's face or body.
+// The button is a fully transparent hit target with NO border, box, glow, dot,
+// or tooltip painted over the cat. All visual feedback now lives on the painted
+// INFO CARD beside the cat (see CardHighlight): hovering / focusing / selecting
+// a cat lights up its card, and the live agent's card glows persistently. This
+// keeps every cat's face and body completely clean.
 function Hotspot({
-  slot, seat, manager, selected, onSelect, reduced,
+  slot, seat, manager, selected, onSelect, onHover,
 }: {
   slot: RosterSlot;
   seat: { x: number; y: number; w: number; h: number };
   manager?: boolean;
   selected: boolean;
   onSelect: () => void;
+  onHover: (key: string | null) => void;
   reduced: boolean;
 }) {
-  const statusColor = FATCAT_STATUS_META[slot.status].color;
-  const active = isActiveStatus(slot.status);
-  const animated = slot.status === "working" || slot.status === "verifying";
-  // A revealed hotspot is one the user is hovering/focusing, or has selected.
-  // CSS handles hover/focus; selection forces the reveal class on.
-  const revealClass = selected ? "fc-hot-on" : "";
   return (
     <button
       onClick={onSelect}
+      onMouseEnter={() => onHover(slot.key)}
+      onMouseLeave={() => onHover(null)}
+      onFocus={() => onHover(slot.key)}
+      onBlur={() => onHover(null)}
       aria-pressed={selected}
       aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
-      className={`fc-hot group absolute ${revealClass}`}
+      className="fc-hot absolute"
       style={{
         left: `${seat.x}%`,
         top: `${seat.y}%`,
@@ -197,213 +210,6 @@ function Hotspot({
         cursor: "pointer",
         zIndex: manager ? 20 : 10,
       }}
-    >
-      {/* Tiny status dot. Persistent ONLY for genuinely live cats (working /
-          verifying / blocked). Idle/waiting cats render no dot and leave the art
-          untouched; a settled "complete" cat gets a quiet dot that only appears
-          on hover/focus/select (.fc-dot-quiet). */}
-      {slot.status !== "idle" && (
-        <span
-          aria-hidden
-          className={[
-            active ? "fc-dot-active" : "fc-dot-quiet",
-            !reduced && animated ? "fc-motion" : "",
-          ].filter(Boolean).join(" ")}
-          style={{
-            position: "absolute",
-            top: "2%",
-            right: "10%",
-            width: 10,
-            height: 10,
-            borderRadius: "50%",
-            background: statusColor,
-            boxShadow: `0 0 8px ${statusColor}cc`,
-            animation: !reduced && animated ? "fcPulse 2.4s ease-in-out infinite" : undefined,
-          }}
-        />
-      )}
-
-      {/* Soft focus ring — hidden until hover/focus/selected (see .fc-hot CSS). */}
-      <span
-        aria-hidden
-        className="fc-hot-ring"
-        style={{
-          position: "absolute",
-          inset: "4%",
-          borderRadius: "14px",
-          border: `1.5px solid ${slot.color}`,
-          boxShadow: `0 0 16px ${slot.color}66`,
-        }}
-      />
-
-      {/* Lightweight tooltip — hidden until hover/focus/selected. Floats just
-          above the seat so it never sits on the cat's face. */}
-      <span
-        aria-hidden
-        className="fc-hot-tip"
-        style={{
-          position: "absolute",
-          left: "50%",
-          top: -10,
-          transform: "translate(-50%,-100%)",
-          padding: "3px 9px",
-          borderRadius: 8,
-          background: "rgba(6,10,20,0.95)",
-          border: `1px solid ${slot.color}88`,
-          boxShadow: "0 4px 14px rgba(0,0,0,0.6)",
-          whiteSpace: "nowrap",
-          maxWidth: 180,
-          textAlign: "center",
-          pointerEvents: "none",
-        }}
-      >
-        <span style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 170 }}>
-          {slot.name}
-        </span>
-        <span style={{ display: "block", fontSize: 9, color: "#94a3b8" }}>{slot.roleLabel}</span>
-      </span>
-    </button>
-  );
-}
-
-// ─── Bench panel (roster roles beyond the painted seats) ──────────────────────
-function BenchPanel({ bench, onSelect }: { bench: RosterSlot[]; onSelect: (k: string) => void }) {
-  return (
-    <div className="rounded-xl border border-slate-800 p-3" style={{ background: "rgba(13,20,33,0.8)" }}>
-      <div className="flex items-center gap-2 mb-2">
-        <Users size={13} className="text-slate-400" />
-        <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Bench</span>
-      </div>
-      <div className="space-y-1.5">
-        {bench.map((slot) => (
-          <button
-            key={slot.key}
-            onClick={() => onSelect(slot.key)}
-            aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left focus:outline-none focus:ring-1"
-            style={{ background: "rgba(8,12,24,0.7)", border: `1px solid ${slot.color}33` }}
-          >
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: FATCAT_STATUS_META[slot.status].color, flexShrink: 0 }} />
-            <span className="flex-1 min-w-0">
-              <span className="block text-xs font-semibold text-slate-200 truncate">{slot.name}</span>
-              <span className="block text-slate-500" style={{ fontSize: 9 }}>{slot.roleLabel}</span>
-            </span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ─── Left panels ─────────────────────────────────────────────────────────────
-function ProjectCard({ project, workflowName }: { project: Project | null; workflowName: string }) {
-  return (
-    <div className="rounded-xl border border-slate-800 p-3" style={{ background: "rgba(13,20,33,0.8)" }}>
-      <div className="flex items-center gap-2 mb-2">
-        <FolderOpen size={13} className="text-cyan-400" />
-        <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Project</span>
-      </div>
-      {project ? (
-        <>
-          <div className="text-sm font-semibold text-slate-100 leading-tight">{project.name}</div>
-          <div className="text-xs text-slate-500 mt-0.5">{workflowName}</div>
-          <div className="flex items-center gap-2 mt-3">
-            <div className="flex-1 h-1.5 rounded-full bg-slate-700 overflow-hidden">
-              <div className="h-full rounded-full" style={{ width: `${project.progress}%`, background: "linear-gradient(90deg,#06b6d4,#8b5cf6)" }} />
-            </div>
-            <span className="text-xs font-mono text-cyan-400 font-bold">{project.progress}%</span>
-          </div>
-          <div className="grid grid-cols-2 gap-2 mt-3 text-center">
-            <Stat label="Tasks" value={`${project.tasksCompleted}/${project.tasksTotal}`} />
-            <Stat label="Status" value={project.status} />
-          </div>
-        </>
-      ) : (
-        <div className="text-xs text-slate-600 italic">No active project. Submit one to staff the office.</div>
-      )}
-    </div>
-  );
-}
-
-function EvidencePanel({ project, roster }: { project: Project | null; roster: RosterSlot[] }) {
-  const verifying = roster.filter((r) => r.status === "verifying");
-  const blocked = roster.filter((r) => r.status === "blocked");
-  return (
-    <div className="rounded-xl border border-slate-800 p-3" style={{ background: "rgba(13,20,33,0.8)" }}>
-      <div className="flex items-center gap-2 mb-2">
-        <FileText size={13} className="text-amber-400" />
-        <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Evidence & Checks</span>
-      </div>
-      <div className="space-y-1.5 text-xs">
-        <LineItem ok={blocked.length === 0} label={blocked.length ? `${blocked.length} blocked role(s)` : "No blockers"} />
-        <LineItem ok={verifying.length > 0} label={verifying.length ? `${verifying.length} verification pass(es) running` : "No active verification"} neutral={verifying.length === 0} />
-        <LineItem ok={!!project && project.progress >= 100} label={project && project.progress >= 100 ? "Workflow complete" : "Workflow in progress"} neutral />
-      </div>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg bg-slate-800/40 py-1.5">
-      <div className="text-xs font-semibold text-slate-200 capitalize">{value}</div>
-      <div className="text-slate-500" style={{ fontSize: 9 }}>{label}</div>
-    </div>
-  );
-}
-
-function LineItem({ ok, label, neutral }: { ok: boolean; label: string; neutral?: boolean }) {
-  const color = neutral ? "#64748b" : ok ? "#10b981" : "#ef4444";
-  return (
-    <div className="flex items-center gap-2">
-      <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 }} />
-      <span className="text-slate-400">{label}</span>
-    </div>
-  );
-}
-
-// ─── Right activity panel ────────────────────────────────────────────────────
-function ActivityPanel({ events }: { events: AgentEvent[] }) {
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-slate-800">
-        <Activity size={13} className="text-cyan-400" />
-        <span className="text-xs font-semibold text-slate-200 uppercase tracking-wider">Task Activity</span>
-      </div>
-      <div className="flex-1 overflow-y-auto custom-scroll p-2 space-y-1.5">
-        {events.length === 0 && <div className="text-xs text-slate-600 italic px-1">No activity yet.</div>}
-        {events.slice(0, 40).map((ev, i) => (
-          <div key={ev.id ?? i} className="rounded-lg px-2 py-1.5" style={{ background: "rgba(13,20,33,0.7)" }}>
-            <div className="text-xs leading-snug">
-              <span className="font-semibold text-slate-200">{ev.agentName}</span>{" "}
-              <span className="text-slate-400">{ev.action}</span>
-            </div>
-            <div className="text-slate-500 truncate" style={{ fontSize: 10 }}>{ev.detail}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ─── Bottom pipeline rail ────────────────────────────────────────────────────
-function PipelineRail({ roster, onSelect }: { roster: RosterSlot[]; onSelect: (k: string) => void }) {
-  return (
-    <div className="flex items-center gap-1.5 px-3 border-t border-slate-800/80 overflow-x-auto flex-shrink-0" style={{ height: 44, background: "rgba(8,12,24,0.7)" }}>
-      <span className="text-xs text-slate-500 uppercase tracking-wider whitespace-nowrap mr-2">Pipeline</span>
-      {roster.map((slot, i) => (
-        <div key={slot.key} className="flex items-center gap-1.5 flex-shrink-0">
-          {i > 0 && <div className="w-4 h-px bg-slate-700" />}
-          <button
-            onClick={() => onSelect(slot.key)}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-md focus:outline-none focus:ring-1"
-            style={{ background: `${slot.color}14`, border: `1px solid ${slot.color}44` }}
-          >
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: FATCAT_STATUS_META[slot.status].color }} />
-            <span className="text-slate-300 whitespace-nowrap" style={{ fontSize: 10 }}>{slot.roleLabel}</span>
-          </button>
-        </div>
-      ))}
-    </div>
+    />
   );
 }

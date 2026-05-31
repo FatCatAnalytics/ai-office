@@ -68,27 +68,39 @@ describe("FatCat modes are asset-backed (approved artwork, not placeholders)", (
     }
   });
 
-  it("hotspot buttons are transparent hit areas (no painted box/border)", () => {
+  it("hotspot buttons are transparent hit areas (no painted box/border on the cat)", () => {
     for (const file of [ISO, MISSION]) {
       const src = read(file);
-      // The button itself draws nothing over the artwork.
+      // The button itself draws nothing over the artwork — it is a pure hit area.
       expect(src).toMatch(/background:\s*["']transparent["']/);
       expect(src).toMatch(/border:\s*["']none["']/);
-      // Reveal chrome is opt-in via the .fc-hot class, not always-on.
-      expect(src).toMatch(/className=\{`fc-hot /);
-      expect(src).toMatch(/className="fc-hot-ring"/);
-      expect(src).toMatch(/className="fc-hot-tip"/);
+      expect(src).toMatch(/className="fc-hot absolute"/);
+      // The cat no longer carries a ring, tooltip, or dot — feedback moved to the
+      // painted info card (see CardHighlight). Assert those are gone from the cat.
+      expect(src).not.toMatch(/className="fc-hot-ring"/);
+      expect(src).not.toMatch(/className="fc-hot-tip"/);
     }
   });
 
-  it("the ring + tooltip are hidden by default and revealed only on hover/focus/selected", () => {
+  it("interaction highlights the painted CARD, not the cat", () => {
+    for (const file of [ISO, MISSION]) {
+      const src = read(file);
+      // Each mode imports + renders the shared CardHighlight over a card rect.
+      expect(src).toMatch(/CardHighlight/);
+      // The card lights up when its agent is live (active) OR on hover/select.
+      expect(src).toMatch(/active=\{isActiveStatus\(/);
+      expect(src).toMatch(/revealed=\{hovered[Kk]ey === [\s\S]*?selectedKey ===/);
+      // The cat hit area drives a shared hovered-key, not its own decoration.
+      expect(src).toMatch(/onMouseEnter=\{\(\) => onHover\(slot\.key\)\}/);
+      expect(src).toMatch(/onMouseLeave=\{\(\) => onHover\(null\)\}/);
+    }
+  });
+
+  it("the card-highlight is hidden by default and only shown when active/revealed", () => {
     const css = read(SHARED);
-    // Default state: both reveal layers start fully transparent.
-    expect(css).toMatch(/\.fc-hot \.fc-hot-ring,[\s\S]*?\.fc-hot \.fc-hot-tip\s*\{\s*opacity:\s*0/);
-    // Revealed only via hover, keyboard focus, or the selected (.fc-hot-on) state.
-    expect(css).toMatch(/\.fc-hot:hover \.fc-hot-ring/);
-    expect(css).toMatch(/\.fc-hot:focus-visible \.fc-hot-ring/);
-    expect(css).toMatch(/\.fc-hot\.fc-hot-on \.fc-hot-tip\s*\{\s*opacity:\s*1/);
+    // CardHighlight is opacity-gated: off unless active or revealed.
+    expect(css).toMatch(/const on = active \|\| revealed/);
+    expect(css).toMatch(/opacity:\s*on \?\s*1\s*:\s*0/);
   });
 
   it("does not render an always-on nameplate/label box over the artwork", () => {
@@ -102,45 +114,43 @@ describe("FatCat modes are asset-backed (approved artwork, not placeholders)", (
     }
   });
 
-  // ── Stage 6.12.3: waiting/idle stays quiet, only live states get a marker ──
+  // ── Stage 6.12.4: feedback lives on the painted card, the cat stays clean ──
 
-  it("renders NO status dot at all for idle/waiting seats", () => {
+  it("renders NO status dot, ring, or working-glow over the cat in either mode", () => {
     for (const file of [ISO, MISSION]) {
       const src = read(file);
-      // The status dot is gated behind a not-idle guard, so a waiting cat draws
-      // nothing over the approved artwork.
-      expect(src).toMatch(/slot\.status !== "idle" &&/);
+      // None of the old cat-decoration markers survive in the modes.
+      expect(src).not.toMatch(/fc-dot-active|fc-dot-quiet/);
+      expect(src).not.toMatch(/WorkingHighlight/);
+      expect(src).not.toMatch(/fc-hot-ring|fc-hot-tip/);
     }
   });
 
-  it("only genuinely active states get a persistent dot; others are reveal-only", () => {
+  it("only genuinely active agents get a persistent card glow; others reveal-only", () => {
     for (const file of [ISO, MISSION]) {
       const src = read(file);
-      // Active = working/verifying/blocked (via isActiveStatus). The dot picks the
-      // persistent .fc-dot-active class for those and the reveal-only
-      // .fc-dot-quiet class otherwise (e.g. a settled "complete" seat).
-      expect(src).toMatch(/isActiveStatus\(slot\.status\)/);
-      expect(src).toMatch(/active \? "fc-dot-active" : "fc-dot-quiet"/);
+      // Active = working/verifying/blocked (via isActiveStatus) → persistent card
+      // glow; everything else lights up only on hover/focus/selection.
+      expect(src).toMatch(/active=\{isActiveStatus\(/);
     }
   });
 
   it("does not rely on a browser default focus outline over the art", () => {
-    // The hotspot button no longer carries focus:outline-none as its only focus
-    // handling; the outline is reset in CSS and replaced by the custom ring.
+    // The hotspot button outline is reset in CSS; focus is surfaced by lighting
+    // up the associated card instead.
     const css = read(SHARED);
     expect(css).toMatch(/\.fc-hot\s*\{[^}]*outline:\s*none/);
     for (const file of [ISO, MISSION]) {
-      expect(read(file)).toMatch(/className=\{`fc-hot group absolute /);
+      expect(read(file)).toMatch(/className="fc-hot absolute"/);
     }
   });
 
-  it("the quiet dot is hidden by default and revealed only on interaction", () => {
-    const css = read(SHARED);
-    // Quiet dots start transparent…
-    expect(css).toMatch(/\.fc-hot \.fc-dot-quiet\s*\{\s*opacity:\s*0/);
-    // …and only show on hover / keyboard focus / selected.
-    expect(css).toMatch(/\.fc-hot:hover \.fc-dot-quiet/);
-    expect(css).toMatch(/\.fc-hot\.fc-hot-on \.fc-dot-quiet/);
+  it("keyboard focus also lights the card (focus/blur drive the shared hover key)", () => {
+    for (const file of [ISO, MISSION]) {
+      const src = read(file);
+      expect(src).toMatch(/onFocus=\{\(\) => onHover\(slot\.key\)\}/);
+      expect(src).toMatch(/onBlur=\{\(\) => onHover\(null\)\}/);
+    }
   });
 
   it("keeps hotspot hit zones tight (no oversized rectangles spanning panels)", () => {
