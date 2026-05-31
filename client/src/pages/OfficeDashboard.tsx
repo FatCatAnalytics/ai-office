@@ -12,6 +12,8 @@ import {
   UserPlus, ClipboardList, CalendarPlus, FileText, Download,
 } from "lucide-react";
 import IsometricOffice from "../components/IsometricOffice";
+import IsometricOfficeMode from "../components/fatcat/IsometricOfficeMode";
+import MissionControlMode from "../components/fatcat/MissionControlMode";
 
 const ICON_MAP: Record<string, React.ElementType> = {
   Crown, Monitor, Server, Bug, Palette, Rocket, Database, BarChart3, Shield, Briefcase,
@@ -693,20 +695,38 @@ interface DashboardProps {
 }
 
 // ─── Main dashboard ─────────────────────────────────────────────────────────────
-export default function OfficeDashboard({ agents, events, project, tasks, connected, showModal, setShowModal, agentMode, setAgentMode, liveStreams }: DashboardProps) {
-  const [activeView, setActiveView] = useState<"sims" | "board">("sims");
+type OfficeView = "sims" | "board" | "iso" | "mission";
+const OFFICE_VIEWS: { key: OfficeView; label: string }[] = [
+  { key: "sims",    label: "Sims" },
+  { key: "board",   label: "Board" },
+  { key: "iso",     label: "Iso Office" },
+  { key: "mission", label: "Mission Control" },
+];
+function isOfficeView(v: string): v is OfficeView {
+  return v === "sims" || v === "board" || v === "iso" || v === "mission";
+}
 
-  // Sync agentMode from server on mount
+export default function OfficeDashboard({ agents, events, project, tasks, connected, showModal, setShowModal, agentMode, setAgentMode, liveStreams }: DashboardProps) {
+  const [activeView, setActiveView] = useState<OfficeView>("iso");
+
+  // Sync agentMode + persisted office view from server on mount
   useEffect(() => {
     apiRequest("GET", "/api/settings")
       .then(r => r.json())
       .then((s: Record<string, string>) => {
         const m = s["agent_mode"];
         if (m === "live" || m === "simulation") setAgentMode(m);
+        const v = s["office_view_mode"];
+        if (v && isOfficeView(v)) setActiveView(v);
       })
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleViewChange = (view: OfficeView) => {
+    setActiveView(view);
+    apiRequest("PATCH", "/api/settings", { office_view_mode: view }).catch(() => {});
+  };
 
   const handleModeToggle = async (mode: "simulation" | "live") => {
     setAgentMode(mode);
@@ -730,16 +750,18 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       {/* ── Top header (app nav bar) ── */}
       <header className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800 bg-slate-900/90 backdrop-blur z-10 flex-shrink-0" style={{ minHeight: 48 }}>
         <div className="flex items-center gap-3">
-          <nav className="flex gap-1">
-            {(["sims", "board"] as const).map(view => (
-              <button key={view} onClick={() => setActiveView(view)}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium capitalize transition-colors ${
-                  activeView === view
+          <nav className="flex gap-1" role="tablist" aria-label="Office view mode">
+            {OFFICE_VIEWS.map(view => (
+              <button key={view.key} onClick={() => handleViewChange(view.key)}
+                role="tab"
+                aria-selected={activeView === view.key}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors focus:outline-none focus:ring-1 focus:ring-cyan-500 ${
+                  activeView === view.key
                     ? "bg-cyan-500/15 text-cyan-400 border border-cyan-500/30"
                     : "text-slate-500 hover:text-slate-300"
                 }`}
-                data-testid={`tab-${view}`}>
-                {view === "sims" ? "Sims Mode" : "Board View"}
+                data-testid={`tab-${view.key}`}>
+                {view.label}
               </button>
             ))}
           </nav>
@@ -803,47 +825,54 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       {/* ── Top stats bar ── */}
       <TopStatsBar agents={agents} project={project} tasks={tasks} />
 
-      {/* ── Main 3-column layout ── */}
-      <div className="flex flex-1 overflow-hidden">
-
-        {/* CENTRE: canvas */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          {agents.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
-              <Loader2 size={24} className="animate-spin" />
-              <span className="text-sm">Loading agents...</span>
-            </div>
-          ) : activeView === "sims" ? (
-            <IsometricOffice agents={agents} project={project} />
-          ) : (
-            <div className="overflow-y-auto custom-scroll floor-pattern h-full p-5">
-              <div className="office-grid max-w-5xl mx-auto">
-                {agents.map(agent => <AgentDesk key={agent.id} agent={agent} />)}
+      {/* ── Main layout ── */}
+      {/* The FatCat modes (iso / mission) carry their own side panels + rails,
+          so they render full-width without the legacy right column. The legacy
+          sims / board views keep the original 3-column shell. */}
+      {activeView === "iso" || activeView === "mission" ? (
+        <div className="flex-1 overflow-hidden">
+          {activeView === "iso"
+            ? <IsometricOfficeMode agents={agents} project={project} events={events} />
+            : <MissionControlMode agents={agents} project={project} events={events} />}
+        </div>
+      ) : (
+        <div className="flex flex-1 overflow-hidden">
+          {/* CENTRE: canvas */}
+          <main className="flex-1 flex flex-col overflow-hidden">
+            {agents.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
+                <Loader2 size={24} className="animate-spin" />
+                <span className="text-sm">Loading agents...</span>
               </div>
-            </div>
-          )}
-        </main>
+            ) : activeView === "sims" ? (
+              <IsometricOffice agents={agents} project={project} />
+            ) : (
+              <div className="overflow-y-auto custom-scroll floor-pattern h-full p-5">
+                <div className="office-grid max-w-5xl mx-auto">
+                  {agents.map(agent => <AgentDesk key={agent.id} agent={agent} />)}
+                </div>
+              </div>
+            )}
+          </main>
 
-        {/* RIGHT panel */}
-        <div className="flex flex-col border-l border-slate-800 bg-slate-900/60 flex-shrink-0 overflow-hidden"
-          style={{ width: 220 }}>
-          {/* Activity feed - takes most height */}
-          <div className="flex flex-col overflow-hidden" style={{ flex: "1 1 0" }}>
-            <ActivityFeed events={events} connected={connected} liveStreams={liveStreams} />
-          </div>
-          {/* Task flow */}
-          <div className="flex flex-col overflow-hidden border-t border-slate-800" style={{ flex: "1.2 1 0" }}>
-            <TaskFlowPanel agents={agents} tasks={tasks} />
-          </div>
-          {/* Quick actions */}
-          <div className="border-t border-slate-800 flex-shrink-0">
-            <QuickActions onNewProject={() => setShowModal(true)} />
+          {/* RIGHT panel */}
+          <div className="flex flex-col border-l border-slate-800 bg-slate-900/60 flex-shrink-0 overflow-hidden"
+            style={{ width: 220 }}>
+            <div className="flex flex-col overflow-hidden" style={{ flex: "1 1 0" }}>
+              <ActivityFeed events={events} connected={connected} liveStreams={liveStreams} />
+            </div>
+            <div className="flex flex-col overflow-hidden border-t border-slate-800" style={{ flex: "1.2 1 0" }}>
+              <TaskFlowPanel agents={agents} tasks={tasks} />
+            </div>
+            <div className="border-t border-slate-800 flex-shrink-0">
+              <QuickActions onNewProject={() => setShowModal(true)} />
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* ── Bottom bar ── */}
-      <BottomBar />
+      {activeView !== "iso" && activeView !== "mission" && <BottomBar />}
 
       {/* Submit modal */}
       {showModal && (
