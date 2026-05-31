@@ -85,6 +85,24 @@ const PROVIDERS: ProviderConfig[] = [
       "deepseek-reasoner",   // legacy alias → V4-Flash
     ],
   },
+  // Stage 6.13: Perplexity Sonar. The PERPLEXITY_API_KEY is already used by
+  // the research connector; adding it here lets the model router use Sonar as
+  // the preferred backup (after Anthropic) when a provider hits a usage limit.
+  // High-tier failover uses sonar-reasoning-pro (advanced CoT reasoning).
+  {
+    key: "perplexity",
+    label: "Perplexity (Sonar)",
+    color: "#22d3ee",
+    description: "Sonar — web-grounded; preferred backup when Anthropic hits a usage limit",
+    envKey: "PERPLEXITY_API_KEY",
+    docsUrl: "https://docs.perplexity.ai/",
+    models: [
+      "sonar-reasoning-pro", // high-tier failover — advanced CoT reasoning
+      "sonar-pro",           // medium/low failover — fast, 200k context
+      "sonar-reasoning",
+      "sonar",
+    ],
+  },
 ];
 
 // ─── Stage 4.13: Tavily key card ──────────────────────────────────────────
