@@ -17,10 +17,10 @@ import missionImage from "@assets/fatcat/fatcat_mission_control.jpg";
 import type { Agent, AgentEvent, Project } from "../../types";
 import {
   buildRoster, classifyWorkflow, workflowLabel,
-  FATCAT_STATUS_META, isActiveStatus, type RosterSlot,
+  FATCAT_STATUS_META, type RosterSlot,
 } from "../../lib/fatcatRoster";
 import {
-  FatCatStyles, AgentDetailPanel, CardHighlight, useReducedMotion, useContainRect,
+  FatCatStyles, AgentDetailPanel, StatusBadge, useReducedMotion, useContainRect,
 } from "./shared";
 
 // Intrinsic aspect ratio of the approved Mission Control artwork (1536 × 1024).
@@ -51,7 +51,6 @@ const MANAGER_SEAT = { x: 50, y: 29, w: 16, h: 35 };
 export default function MissionControlMode({ agents, project, events }: Props) {
   const reduced = useReducedMotion();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRect = useContainRect(containerRef, ART_RATIO);
 
@@ -68,10 +67,10 @@ export default function MissionControlMode({ agents, project, events }: Props) {
 
   // The approved artwork IS the view. We render it object-contain (never
   // cropped) and centre it on a matching dark backdrop. The only things layered
-  // on top are: a soft working-highlight on the card whose agent is live, the
-  // invisible click hotspots, an optional floating detail panel, and a tiny
-  // mode chip. No duplicate side rails / headers / strips that would fight the
-  // panels already painted into the HUD.
+  // on top are: a small live status badge per committee card (data-bound to the
+  // agent's real status), the invisible click hotspots, an optional floating
+  // detail panel, and a tiny mode chip. There are NO hover/selection boxes,
+  // outlines, or active-area rectangles drawn over the painted cats.
   return (
     <div className="w-full h-full relative overflow-hidden" style={{ background: "#05080f" }}>
       <FatCatStyles />
@@ -94,29 +93,16 @@ export default function MissionControlMode({ agents, project, events }: Props) {
             className="absolute"
             style={{ left: imgRect.left, top: imgRect.top, width: imgRect.width, height: imgRect.height }}
           >
-            {/* Card-highlight layer: the glow lives on the painted committee
-                CARD (portrait + nameplate), not floating over the cat alone.
-                Persistent for the live agent; otherwise revealed on hover /
-                focus / selection of that card. */}
-            <CardHighlight
-              rect={MANAGER_SEAT}
-              color={manager.color}
-              status={manager.status}
-              active={isActiveStatus(manager.status)}
-              revealed={hoveredKey === manager.key || selectedKey === manager.key}
-              reduced={reduced}
-              radius={18}
-            />
+            {/* Live status layer: a small data-bound badge tucked under each
+                committee card, driven by the agent's real status. No boxes /
+                outlines / active-area rectangles are drawn over the art. */}
+            <StatusBadge rect={MANAGER_SEAT} status={manager.status} reduced={reduced} />
             {seated.map((slot, i) => (
-              <CardHighlight
-                key={`card-${slot.key}`}
+              <StatusBadge
+                key={`badge-${slot.key}`}
                 rect={SEATS[i]}
-                color={slot.color}
                 status={slot.status}
-                active={isActiveStatus(slot.status)}
-                revealed={hoveredKey === slot.key || selectedKey === slot.key}
                 reduced={reduced}
-                radius={12}
               />
             ))}
 
@@ -127,8 +113,6 @@ export default function MissionControlMode({ agents, project, events }: Props) {
               manager
               selected={selectedKey === manager.key}
               onSelect={() => setSelectedKey(manager.key)}
-              onHover={setHoveredKey}
-              reduced={reduced}
             />
 
             {/* Committee hotspots over painted cards */}
@@ -139,8 +123,6 @@ export default function MissionControlMode({ agents, project, events }: Props) {
                 seat={SEATS[i]}
                 selected={selectedKey === slot.key}
                 onSelect={() => setSelectedKey(slot.key)}
-                onHover={setHoveredKey}
-                reduced={reduced}
               />
             ))}
           </div>
@@ -166,28 +148,21 @@ export default function MissionControlMode({ agents, project, events }: Props) {
 
 // ─── Hotspot: invisible hit area over a painted committee card ───────────────
 // The button is a fully transparent hit target with NO border, box, glow, dot,
-// or tooltip drawn over the artwork. All visual feedback now lives on the
-// painted CARD (see CardHighlight): hovering / focusing / selecting a card
-// lights it up, and the live agent's card glows persistently. The resting
-// artwork stays completely clean.
+// tooltip, or hover/selection rectangle drawn over the artwork. It only opens
+// the detail panel on click; the resting artwork stays completely clean and the
+// only visible chrome is the small live status badge (see StatusBadge).
 function Hotspot({
-  slot, seat, manager, selected, onSelect, onHover,
+  slot, seat, manager, selected, onSelect,
 }: {
   slot: RosterSlot;
   seat: { x: number; y: number; w: number; h: number };
   manager?: boolean;
   selected: boolean;
   onSelect: () => void;
-  onHover: (key: string | null) => void;
-  reduced: boolean;
 }) {
   return (
     <button
       onClick={onSelect}
-      onMouseEnter={() => onHover(slot.key)}
-      onMouseLeave={() => onHover(null)}
-      onFocus={() => onHover(slot.key)}
-      onBlur={() => onHover(null)}
       aria-pressed={selected}
       aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
       className="fc-hot absolute"
