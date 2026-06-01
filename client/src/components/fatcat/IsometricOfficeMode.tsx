@@ -17,10 +17,10 @@ import officeImage from "@assets/fatcat/fatcat_isometric_office.jpg";
 import type { Agent, AgentEvent, Project } from "../../types";
 import {
   buildRoster, classifyWorkflow, workflowLabel,
-  FATCAT_STATUS_META, isActiveStatus, type RosterSlot,
+  FATCAT_STATUS_META, type RosterSlot,
 } from "../../lib/fatcatRoster";
 import {
-  FatCatStyles, AgentDetailPanel, CardHighlight, useReducedMotion, useContainRect,
+  FatCatStyles, AgentDetailPanel, StatusBadge, useReducedMotion, useContainRect,
 } from "./shared";
 
 // Intrinsic aspect ratio of the approved isometric-office artwork (1536 × 1024).
@@ -49,8 +49,8 @@ const SEATS: { x: number; y: number; w: number; h: number }[] = [
 const MANAGER_SEAT = { x: 48, y: 23, w: 13, h: 28 };
 
 // Calibrated rects of the PAINTED info card beside each cat (name + status +
-// description panel). The highlight is drawn on THIS card — not on the cat —
-// when its agent is live or the user hovers/selects the cat. Same index order
+// description panel). The live status badge is anchored to THIS card so it sits
+// with the painted nameplate rather than over the cat's face. Same index order
 // as SEATS so card[i] belongs to the cat at seat[i]; MANAGER_CARD is the top
 // centre "Manager FatCat" pill.
 const CARDS: { x: number; y: number; w: number; h: number }[] = [
@@ -66,7 +66,6 @@ const MANAGER_CARD = { x: 50, y: 8, w: 23, h: 6 };
 export default function IsometricOfficeMode({ agents, project, events }: Props) {
   const reduced = useReducedMotion();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRect = useContainRect(containerRef, ART_RATIO);
 
@@ -82,10 +81,10 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
   const selected = roster.find((r) => r.key === selectedKey) ?? null;
 
   // The approved artwork IS the view: rendered object-contain (never cropped),
-  // centred on a matching dark backdrop. The only things over it are the soft
-  // working-highlight on the cat whose agent is live, invisible click hotspots,
-  // an optional floating detail panel, and a tiny mode chip — no duplicate side
-  // rails / pipeline / header that fight the panels painted into the scene.
+  // centred on a matching dark backdrop. The only things over it are a small
+  // data-bound status badge per painted info card, invisible click hotspots, an
+  // optional floating detail panel, and a tiny mode chip. There are NO
+  // hover/selection boxes, outlines, or active-area rectangles over the cats.
   return (
     <div className="w-full h-full relative overflow-hidden" style={{ background: "#060b16" }}>
       <FatCatStyles />
@@ -104,25 +103,15 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
             className="absolute"
             style={{ left: imgRect.left, top: imgRect.top, width: imgRect.width, height: imgRect.height }}
           >
-            {/* Card-highlight layer: the glow lives on the painted INFO CARD
-                beside each cat, not on the cat. Persistent for the live agent;
-                otherwise revealed on hover / focus / selection of its cat. */}
-            <CardHighlight
-              rect={MANAGER_CARD}
-              color={manager.color}
-              status={manager.status}
-              active={isActiveStatus(manager.status)}
-              revealed={hoveredKey === manager.key || selectedKey === manager.key}
-              reduced={reduced}
-            />
+            {/* Live status layer: a small data-bound badge anchored to each
+                painted info card, driven by the agent's real status. No boxes /
+                outlines / active-area rectangles are drawn over the art. */}
+            <StatusBadge rect={MANAGER_CARD} status={manager.status} reduced={reduced} />
             {seated.map((slot, i) => (
-              <CardHighlight
-                key={`card-${slot.key}`}
+              <StatusBadge
+                key={`badge-${slot.key}`}
                 rect={CARDS[i]}
-                color={slot.color}
                 status={slot.status}
-                active={isActiveStatus(slot.status)}
-                revealed={hoveredKey === slot.key || selectedKey === slot.key}
                 reduced={reduced}
               />
             ))}
@@ -134,8 +123,6 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
               manager
               selected={selectedKey === manager.key}
               onSelect={() => setSelectedKey(manager.key)}
-              onHover={setHoveredKey}
-              reduced={reduced}
             />
 
             {/* Specialist hotspots over painted cats */}
@@ -146,8 +133,6 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
                 seat={SEATS[i]}
                 selected={selectedKey === slot.key}
                 onSelect={() => setSelectedKey(slot.key)}
-                onHover={setHoveredKey}
-                reduced={reduced}
               />
             ))}
           </div>
@@ -173,28 +158,21 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
 
 // ─── Hotspot: invisible hit area over a painted cat ──────────────────────────
 // The button is a fully transparent hit target with NO border, box, glow, dot,
-// or tooltip painted over the cat. All visual feedback now lives on the painted
-// INFO CARD beside the cat (see CardHighlight): hovering / focusing / selecting
-// a cat lights up its card, and the live agent's card glows persistently. This
-// keeps every cat's face and body completely clean.
+// tooltip, or hover/selection rectangle painted over the cat. It only opens the
+// detail panel on click; every cat's face and body stays completely clean and
+// the only visible chrome is the small live status badge (see StatusBadge).
 function Hotspot({
-  slot, seat, manager, selected, onSelect, onHover,
+  slot, seat, manager, selected, onSelect,
 }: {
   slot: RosterSlot;
   seat: { x: number; y: number; w: number; h: number };
   manager?: boolean;
   selected: boolean;
   onSelect: () => void;
-  onHover: (key: string | null) => void;
-  reduced: boolean;
 }) {
   return (
     <button
       onClick={onSelect}
-      onMouseEnter={() => onHover(slot.key)}
-      onMouseLeave={() => onHover(null)}
-      onFocus={() => onHover(slot.key)}
-      onBlur={() => onHover(null)}
       aria-pressed={selected}
       aria-label={`${slot.name}, ${slot.roleLabel}, ${FATCAT_STATUS_META[slot.status].label}`}
       className="fc-hot absolute"

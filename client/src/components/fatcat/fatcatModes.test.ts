@@ -1,20 +1,30 @@
-// Stage 6.12.2 — guards that the FatCat visual modes are asset-backed.
+// Stage 6.12.x — guards that the FatCat visual modes are asset-backed AND that
+// they render live, data-bound status with NO hover/selection boxes.
 //
-// Stage 6.12 shipped emoji/CSS placeholder cats (a generated <FatCatAvatar> SVG
-// cat head + circle auras), which was a visual miss. Stage 6.12.2 replaces them
-// with the approved FatCat artwork used as the canvas, with the roster only
-// driving overlay hotspots/labels. There is no DOM test environment configured
-// (vitest runs in node, no jsdom), so these guards assert at the source level:
+// History:
+//   • 6.12   shipped emoji/CSS placeholder cats — a visual miss.
+//   • 6.12.2 replaced them with the approved FatCat artwork as the canvas, the
+//     roster only driving overlay hotspots/labels.
+//   • 6.12.4 moved feedback onto a per-card highlight box (CardHighlight) shown
+//     on hover/selection or when an agent was live.
+//   • this stage REMOVES those hover/selection highlight boxes entirely (the
+//     founder asked for "no hovering selection boxes" and "no active areas")
+//     and replaces them with a small, always-present, data-bound StatusBadge so
+//     each cat card reflects its agent's LIVE status (Idle / Processing… /
+//     Reviewing… / Blocked / Complete).
 //
-//   1. each mode imports its approved image asset and renders it as an <img>;
-//   2. no mode (or shared primitive) references the removed placeholder avatar.
-//
-// If someone reintroduces a generated cat avatar, these tests fail loudly.
+// There is no DOM test environment configured (vitest runs in node, no jsdom),
+// so these guards assert at the source level. The StatusBadge's status→label
+// mapping is exercised directly in fatcatRoster.test.ts via the exported helper
+// data; here we assert the rendering wiring and the absence of the old chrome.
 
 import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { statusBadgeLabel } from "./shared";
+import { mapAgentStatus } from "../../lib/fatcatRoster";
+import type { Agent } from "../../types";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (rel: string) => readFileSync(resolve(here, rel), "utf8");
@@ -75,69 +85,60 @@ describe("FatCat modes are asset-backed (approved artwork, not placeholders)", (
       expect(src).toMatch(/background:\s*["']transparent["']/);
       expect(src).toMatch(/border:\s*["']none["']/);
       expect(src).toMatch(/className="fc-hot absolute"/);
-      // The cat no longer carries a ring, tooltip, or dot — feedback moved to the
-      // painted info card (see CardHighlight). Assert those are gone from the cat.
-      expect(src).not.toMatch(/className="fc-hot-ring"/);
-      expect(src).not.toMatch(/className="fc-hot-tip"/);
     }
   });
 
-  it("interaction highlights the painted CARD, not the cat", () => {
+  // ── No hover / selection / active-area boxes anywhere ─────────────────────
+  // The founder's explicit ask: "remove the hovering selection boxes, they do
+  // not add any value" and "do not have any active areas". These guard against
+  // any of the old highlight-box machinery being reintroduced.
+
+  it("the hover/selection highlight box component is gone", () => {
+    // CardHighlight (and the older WorkingHighlight) drew rectangular outline /
+    // glow boxes over the cards on hover/selection/active — fully removed.
+    expect(read(SHARED)).not.toMatch(/CardHighlight|WorkingHighlight/);
+    for (const file of [ISO, MISSION]) {
+      expect(read(file)).not.toMatch(/CardHighlight|WorkingHighlight/);
+    }
+  });
+
+  it("no mode tracks a hovered-key or reveals chrome on hover/focus", () => {
     for (const file of [ISO, MISSION]) {
       const src = read(file);
-      // Each mode imports + renders the shared CardHighlight over a card rect.
-      expect(src).toMatch(/CardHighlight/);
-      // The card lights up when its agent is live (active) OR on hover/select.
-      expect(src).toMatch(/active=\{isActiveStatus\(/);
-      expect(src).toMatch(/revealed=\{hovered[Kk]ey === [\s\S]*?selectedKey ===/);
-      // The cat hit area drives a shared hovered-key, not its own decoration.
-      expect(src).toMatch(/onMouseEnter=\{\(\) => onHover\(slot\.key\)\}/);
-      expect(src).toMatch(/onMouseLeave=\{\(\) => onHover\(null\)\}/);
+      // No hovered-key state and no mouse/focus handlers that would light up a
+      // box. Clicking a cat still works (onClick={onSelect}).
+      expect(src).not.toMatch(/hoveredKey|setHoveredKey/);
+      expect(src).not.toMatch(/onMouseEnter|onMouseLeave/);
+      expect(src).not.toMatch(/revealed=/);
+      expect(src).toMatch(/onClick=\{onSelect\}/);
     }
   });
 
-  it("the card-highlight is hidden by default and only shown when active/revealed", () => {
+  it("no reveal-on-hover ring/tooltip/dot CSS survives in shared styles", () => {
     const css = read(SHARED);
-    // CardHighlight is opacity-gated: off unless active or revealed.
-    expect(css).toMatch(/const on = active \|\| revealed/);
-    expect(css).toMatch(/opacity:\s*on \?\s*1\s*:\s*0/);
+    expect(css).not.toMatch(/fc-hot-ring|fc-hot-tip|fc-dot-quiet|fc-dot-active/);
+    // The reveal opacity gate that used hover/focus to fade chrome in is gone.
+    expect(css).not.toMatch(/:hover\s+\.fc-hot-ring|fc-hot-on/);
   });
 
-  it("does not render an always-on nameplate/label box over the artwork", () => {
+  it("renders NO status box, ring, or working-glow over the cat in either mode", () => {
     for (const file of [ISO, MISSION]) {
       const src = read(file);
-      // No persistent label class on the canvas. The previous version anchored a
-      // nameplate under each seat with opacity-90 / group-hover; that is gone —
-      // labels now live only inside the opt-in .fc-hot-tip tooltip.
-      expect(src).not.toMatch(/opacity-90 group-hover/);
-      expect(src).not.toMatch(/Name plate anchored/);
-    }
-  });
-
-  // ── Stage 6.12.4: feedback lives on the painted card, the cat stays clean ──
-
-  it("renders NO status dot, ring, or working-glow over the cat in either mode", () => {
-    for (const file of [ISO, MISSION]) {
-      const src = read(file);
-      // None of the old cat-decoration markers survive in the modes.
       expect(src).not.toMatch(/fc-dot-active|fc-dot-quiet/);
       expect(src).not.toMatch(/WorkingHighlight/);
       expect(src).not.toMatch(/fc-hot-ring|fc-hot-tip/);
     }
   });
 
-  it("only genuinely active agents get a persistent card glow; others reveal-only", () => {
+  it("does not render an always-on nameplate/label box over the artwork", () => {
     for (const file of [ISO, MISSION]) {
       const src = read(file);
-      // Active = working/verifying/blocked (via isActiveStatus) → persistent card
-      // glow; everything else lights up only on hover/focus/selection.
-      expect(src).toMatch(/active=\{isActiveStatus\(/);
+      expect(src).not.toMatch(/opacity-90 group-hover/);
+      expect(src).not.toMatch(/Name plate anchored/);
     }
   });
 
   it("does not rely on a browser default focus outline over the art", () => {
-    // The hotspot button outline is reset in CSS; focus is surfaced by lighting
-    // up the associated card instead.
     const css = read(SHARED);
     expect(css).toMatch(/\.fc-hot\s*\{[^}]*outline:\s*none/);
     for (const file of [ISO, MISSION]) {
@@ -145,17 +146,44 @@ describe("FatCat modes are asset-backed (approved artwork, not placeholders)", (
     }
   });
 
-  it("keyboard focus also lights the card (focus/blur drive the shared hover key)", () => {
+  // ── Live, data-bound status badge per cat card ────────────────────────────
+
+  it("both modes render a live StatusBadge bound to each slot's status", () => {
     for (const file of [ISO, MISSION]) {
       const src = read(file);
-      expect(src).toMatch(/onFocus=\{\(\) => onHover\(slot\.key\)\}/);
-      expect(src).toMatch(/onBlur=\{\(\) => onHover\(null\)\}/);
+      expect(src).toMatch(/StatusBadge/);
+      // The badge is driven by the slot's real (live-agent) status, not a
+      // constant or random value.
+      expect(src).toMatch(/<StatusBadge[\s\S]*?status=\{manager\.status\}/);
+      expect(src).toMatch(/status=\{slot\.status\}/);
     }
   });
 
+  it("the StatusBadge has no border-box outline and is centred on the card edge", () => {
+    const css = read(SHARED);
+    const badge = css.slice(css.indexOf("export function StatusBadge"), css.indexOf("function statusBadgeLabel"));
+    // It's a small pill, not a full-card outline: it uses a pill radius and a
+    // translate to sit just outside the card edge — never an inset:0 frame.
+    expect(badge).toMatch(/borderRadius:\s*999/);
+    expect(badge).not.toMatch(/inset:\s*0/);
+  });
+
+  it("a cat card reflects the agent's live status prop (working → Processing…)", () => {
+    // End-to-end mapping the badge uses: live Agent.status → FatCatStatus →
+    // human label. A genuinely working agent's card must read "Processing…".
+    const working: Agent["status"] = "working";
+    expect(statusBadgeLabel(mapAgentStatus(working))).toBe("Processing…");
+
+    // Other real states map to their own labels (not random/fake values).
+    expect(statusBadgeLabel(mapAgentStatus("thinking"))).toBe("Reviewing…");
+    expect(statusBadgeLabel(mapAgentStatus("blocked"))).toBe("Blocked");
+    expect(statusBadgeLabel(mapAgentStatus("done"))).toBe("Complete");
+    // An idle agent shows a calm "Idle" with no flashy state.
+    expect(statusBadgeLabel(mapAgentStatus("idle"))).toBe("Idle");
+  });
+
   it("keeps hotspot hit zones tight (no oversized rectangles spanning panels)", () => {
-    // Guard against regressing to huge seats. Every seat width/height is kept
-    // modest so a revealed ring hugs a single cat, never a whole panel.
+    // Guard against regressing to huge seats.
     for (const file of [ISO, MISSION]) {
       const src = read(file);
       const seatBlock = src.slice(src.indexOf("const SEATS"), src.indexOf("MANAGER_SEAT"));
