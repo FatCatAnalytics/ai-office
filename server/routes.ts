@@ -12,6 +12,8 @@ import { fireTemplate, recomputeNextRun, setSchedulerKickoff } from "./projectSc
 import { describeCron, validateCron, nextRun } from "./cron";
 import { registerInvestmentRoutes } from "./investment/routes";
 import { getPerplexityStatus } from "./research/perplexity";
+import { refreshProviderBalances } from "./providerBalances";
+import * as schema from "@shared/schema";
 
 // ─── WebSocket broadcast ───────────────────────────────────────────────────────
 const wsClients = new Set<WebSocket>();
@@ -952,6 +954,151 @@ export function registerRoutes(httpServer: Server, app: Express) {
     const record = storage.recordTokenUsage({ provider, modelId, agentId, projectId, tokensIn: tokensIn ?? 0, tokensOut: tokensOut ?? 0, costUsd: costUsd ?? 0 });
     broadcast({ type: "budget_update", summary: storage.getBudgetSummary() });
     res.json(record);
+  });
+
+  // ── Provider balances (Stage 5.x.12) ──────────────────────────────────────
+  // Live + tracked credit balances per provider, plus operator-set caps
+  // and fallback chains. Same row schema for both data sources — the UI
+  // doesn't need to special-case the live-vs-tracked distinction.
+
+  // Hydrate a balance row for the wire: parse fallbackChain JSON and add
+  // a `pctUsed` convenience number so the UI can render bars without doing
+  // its own division (and so the cap === 0 case stays out of NaN-land).
+  const hydrateBalance = (b: schema.ProviderBalance) => {
+    let chain: string[] = [];
+    try {
+      const parsed = JSON.parse(b.fallbackChain);
+      if (Array.isArray(parsed)) chain = parsed.filter((x): x is string => typeof x === "string");
+    } catch { /* leave empty */ }
+    const pctUsed = b.capUsd > 0 ? Math.min(1, b.usedUsd / b.capUsd) : 0;
+    return { ...b, fallbackChain: chain, pctUsed };
+  };
+
+  app.get("/api/budget/balances", (_req, res) => {
+    res.json(storage.getProviderBalances().map(hydrateBalance));
+  });
+
+  app.post("/api/budget/balances/refresh", async (_req, res) => {
+    try {
+      const result = await refreshProviderBalances();
+      broadcast({ type: "balances_update", balances: result });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Upsert. Used by Settings to set a cap, change failoverMode, or edit the
+  // fallbackChain. Body shape:
+  //   { provider, modelId?, capUsd?, alertThreshold?, failoverMode?, fallbackChain?: string[] }
+  app.post("/api/budget/balances", (req, res) => {
+    const body = req.body ?? {};
+    if (!body.provider || typeof body.provider !== "string") {
+      return res.status(400).json({ error: "provider is required" });
+    }
+    const modelId = typeof body.modelId === "string" && body.modelId.length > 0 ? body.modelId : "*";
+    const id = `${body.provider}:${modelId}`;
+    const existing = storage.getProviderBalance(id);
+    const fallbackChain = Array.isArray(body.fallbackChain)
+      ? JSON.stringify(body.fallbackChain.filter((x: unknown) => typeof x === "string"))
+      : (existing?.fallbackChain ?? "[]");
+    if (typeof body.failoverMode === "string" && !["ask", "auto", "block"].includes(body.failoverMode)) {
+      return res.status(400).json({ error: "failoverMode must be ask|auto|block" });
+    }
+    const updated = storage.upsertProviderBalance({
+      id,
+      provider: body.provider,
+      modelId,
+      capUsd: typeof body.capUsd === "number" ? body.capUsd : (existing?.capUsd ?? 0),
+      balanceUsd: existing?.balanceUsd ?? 0,
+      usedUsd: existing?.usedUsd ?? 0,
+      source: existing?.source ?? "tracked",
+      alertThreshold: typeof body.alertThreshold === "number" ? body.alertThreshold : (existing?.alertThreshold ?? 0.85),
+      failoverMode: typeof body.failoverMode === "string" ? body.failoverMode : (existing?.failoverMode ?? "ask"),
+      fallbackChain,
+      lastFetchedAt: existing?.lastFetchedAt ?? null,
+      fetchError: existing?.fetchError ?? null,
+    });
+    broadcast({ type: "balances_update", balances: storage.getProviderBalances().map(hydrateBalance) });
+    res.json(hydrateBalance(updated));
+  });
+
+  app.delete("/api/budget/balances/:id", (req, res) => {
+    const id = decodeURIComponent(req.params.id);
+    storage.deleteProviderBalance(id);
+    broadcast({ type: "balances_update", balances: storage.getProviderBalances().map(hydrateBalance) });
+    res.json({ ok: true });
+  });
+
+  // Operator-driven failover: pick a model after seeing the modal. Resumes
+  // the project (via the same hook the resume button uses) once the
+  // override is recorded. The actual model switch is applied by the
+  // orchestrator on the next worker pickup — this endpoint just records the
+  // operator's choice + nudges the project.
+  app.post("/api/projects/:id/failover", (req, res) => {
+    const projectId = parseInt(req.params.id, 10);
+    if (Number.isNaN(projectId)) return res.status(400).json({ error: "invalid project id" });
+    const project = storage.getProject(projectId);
+    if (!project) return res.status(404).json({ error: "project not found" });
+    const { provider, modelId, mode, cappedProvider } = req.body ?? {};
+    if (mode && !["ask", "auto", "block"].includes(mode)) {
+      return res.status(400).json({ error: "mode must be ask|auto|block" });
+    }
+    if (mode) {
+      storage.updateProject(projectId, { failoverMode: mode });
+    }
+    // Stage 5.x.26: write fallbackChain to the *capped* provider's row (the
+    // one that actually failed), not the substitute's. The modal forwards
+    // `cappedProvider`; we look up its row, create one if missing (runtime
+    // credit-exhaust without a configured cap won't have one yet), prepend
+    // the operator's pick to fallbackChain, and flip forceFailover so the
+    // router treats this provider as unusable until the operator clears it.
+    if (provider && modelId && typeof cappedProvider === "string" && cappedProvider) {
+      let cappedRow = storage.getProviderBalances().find((b) => b.provider === cappedProvider);
+      if (!cappedRow) {
+        cappedRow = storage.upsertProviderBalance({
+          id: `${cappedProvider}:*`,
+          provider: cappedProvider,
+          modelId: "*",
+          capUsd: 0,
+          balanceUsd: 0,
+          usedUsd: 0,
+          source: "manual",
+          failoverMode: "ask",
+          fallbackChain: "[]",
+          forceFailover: false,
+        });
+      }
+      let chain: string[] = [];
+      try {
+        const parsed = JSON.parse(cappedRow.fallbackChain);
+        if (Array.isArray(parsed)) chain = parsed.filter((x): x is string => typeof x === "string");
+      } catch { /* default empty */ }
+      const tag = `${provider}:${modelId}`;
+      if (!chain.includes(tag)) chain = [tag, ...chain];
+      storage.setProviderBalanceFailover(cappedRow.id, cappedRow.failoverMode, chain);
+      storage.setProviderBalanceForceFailover(cappedRow.id, true);
+    }
+    // Resume the orchestrator if it's currently paused on this project. We
+    // re-build the same deps the regular /resume endpoint uses so the
+    // resumed run keeps emitting events on the same websocket channel.
+    if (project.status === "blocked") {
+      setImmediate(() => {
+        resumeLiveOrchestration(projectId, {
+          broadcast,
+          emitEvent,
+          setAgentStatus,
+          generateSimulatedFiles,
+        }).catch((e) => {
+          const manager = storage.getAgent("manager");
+          emitEvent(projectId, "manager", manager?.name ?? "Manager Agent", "failover resume error",
+            `${(e as Error).message ?? e}`, "error");
+          setAgentStatus("manager", "idle", null);
+        });
+      });
+    }
+    broadcast({ type: "failover_resolved", projectId, provider, modelId, mode });
+    res.json({ ok: true });
   });
 
   // ── Models registry (latest-models checker) ───────────────────────────────────

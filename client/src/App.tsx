@@ -22,6 +22,7 @@ import WatchlistsPage from "./pages/WatchlistsPage";
 import MarketSignalsPage from "./pages/MarketSignalsPage";
 import DataSourcesPage from "./pages/DataSourcesPage";
 import { useWebSocket } from "./hooks/useWebSocket";
+import FailoverModal from "./components/FailoverModal";
 import {
   LayoutDashboard, Users, LayoutGrid, Settings, Send, DollarSign, FolderOpen,
   Wifi, WifiOff, Crown, Monitor, Server, Bug, Palette, Rocket,
@@ -238,6 +239,10 @@ function AppShell() {
           <Route path="/settings" component={SettingsPage}/>
         </Switch>
       </div>
+
+      {/* Stage 5.x.12 — operator-driven failover dialog. Listens for the
+          aioffice:failover_required window event fanned out by useWebSocket. */}
+      <FailoverModal />
     </div>
   );
 }

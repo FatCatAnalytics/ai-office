@@ -142,6 +142,24 @@ export function useWebSocket() {
               window.dispatchEvent(new CustomEvent("aioffice:models_refreshed", { detail: msg }));
               break;
 
+            // Stage 5.x.12 — operator-driven failover. The orchestrator pauses
+            // a project when a provider goes unusable in "ask" mode; the modal
+            // listens for failover_required and posts the operator's pick.
+            // failover_resolved dismisses the modal once the run resumes.
+            case "failover_required":
+              window.dispatchEvent(new CustomEvent("aioffice:failover_required", { detail: msg }));
+              break;
+
+            case "failover_resolved":
+              window.dispatchEvent(new CustomEvent("aioffice:failover_resolved", { detail: msg }));
+              break;
+
+            // Provider-balance refresh / upsert / delete — fan out to Budget +
+            // Settings pages which re-render their cap/balance controls.
+            case "balances_update":
+              window.dispatchEvent(new CustomEvent("aioffice:balances_update", { detail: msg }));
+              break;
+
             // Live token streaming — accumulate per-agent buffer for the activity feed
             case "stream":
               if (msg.agentId && typeof msg.delta === "string") {

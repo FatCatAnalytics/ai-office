@@ -35,9 +35,11 @@ import {
   normaliseComplexity,
   routeForComplexityChain,
   routeForCriticalCallChain,
+  isProviderUnusable,
   type Complexity,
   type RoutedModel,
 } from "./modelRouter";
+import { isProviderOverCap } from "./providerBalances";
 import { reviewProjectQA } from "./qaReviewer";
 import { resolveTools, tavilyConfigured, perplexityConfigured } from "./tools";
 import {
@@ -1599,6 +1601,63 @@ async function runWorkerTask(
     throw new Error(
       `No API key configured for any ${effectiveComplexity}-tier model — ` +
       `tried ${chain.length} provider${chain.length === 1 ? "" : "s"}`,
+    );
+  }
+
+  // Stage 5.x.26 — operator-driven failover gate. COMPLEMENTS the Stage 6.11
+  // auto-failover chain: routeForComplexityChain already pruned unusable
+  // providers and surfaced any operator substitute at the head. If the only
+  // model left to call is itself flagged unusable (cap exhausted OR
+  // forceFailover set after a runtime credit-exhaust) we must NOT spend on it
+  // silently. Behaviour depends on the project's failoverMode:
+  //   ask   — pause + emit `failover_required` so the operator picks a
+  //           substitute in the FailoverModal (the route resumes the run).
+  //   auto  — let the chain proceed; the operator opted into silent re-route
+  //           and the chain builder will already have prepended any prior pick.
+  //   block — pause without a modal; operator unblocks manually.
+  if (isProviderUnusable(firstWithKey.provider)) {
+    const projectFailoverMode = (project.failoverMode as string) ?? "ask";
+    if (projectFailoverMode === "ask" || projectFailoverMode === "block") {
+      const cap = isProviderOverCap(firstWithKey.provider);
+      const suggested = chain.find(
+        (c) => c.provider !== firstWithKey.provider && !isProviderUnusable(c.provider),
+      );
+      if (projectFailoverMode === "ask") {
+        deps.broadcast({
+          type: "failover_required",
+          projectId: project.id,
+          taskId: task.id,
+          agentId: agent.id,
+          agentName: agent.name,
+          provider: firstWithKey.provider,
+          modelId: firstWithKey.modelId,
+          capUsd: cap.capUsd,
+          usedUsd: cap.usedUsd,
+          reason: cap.overCap ? "monthly cap exhausted" : "provider out of credit",
+          suggestedFallback: suggested
+            ? { provider: suggested.provider, modelId: suggested.modelId, reason: suggested.reason }
+            : null,
+        });
+      }
+      deps.emitEvent(
+        project.id, agent.id, agent.name,
+        projectFailoverMode === "ask" ? "failover required" : "provider blocked",
+        `${firstWithKey.provider}/${firstWithKey.modelId} is unusable (${cap.overCap ? "cap exhausted" : "out of credit"}). ` +
+          (projectFailoverMode === "ask"
+            ? "Paused — pick a substitute model in the failover dialog."
+            : "Project blocked — unblock the provider manually."),
+        "warning",
+      );
+      throw new Error(
+        `Provider ${firstWithKey.provider} is unusable for project #${project.id} (failoverMode=${projectFailoverMode})`,
+      );
+    }
+    // auto — fall through and let callWithFallback walk the (already
+    // failover-aware) chain silently.
+    deps.emitEvent(
+      project.id, agent.id, agent.name, "auto-failover",
+      `${firstWithKey.provider} flagged unusable — auto-routing through the failover-aware chain.`,
+      "info",
     );
   }
 
