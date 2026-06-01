@@ -199,4 +199,5 @@ export const PROVIDER_COLORS: Record<string, string> = {
   google: "#4285f4",
   kimi: "#7c3aed",
   deepseek: "#2563eb",
+  perplexity: "#20808d",
 };

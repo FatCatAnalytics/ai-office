@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Settings, Key, CheckCircle2, AlertTriangle, Save, Eye, EyeOff, Loader2, Zap, Globe, Sparkles, RefreshCw, Boxes, Star } from "lucide-react";
+import { Settings, Key, CheckCircle2, AlertTriangle, Save, Eye, EyeOff, Loader2, Zap, Globe, Sparkles, RefreshCw, Boxes, Star, DollarSign } from "lucide-react";
+import { PROVIDER_COLORS } from "../types";
 import type { Model } from "../types";
 
 interface ProviderConfig {
@@ -694,6 +695,14 @@ export default function SettingsPage() {
         {/* Models registry */}
         <ModelsPanel />
 
+        {/* Stage 5.x.12: Budget Caps & Failover */}
+        <div>
+          <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+            <DollarSign size={11}/> Budget Caps &amp; Failover
+          </h3>
+          <BudgetCapsPanel/>
+        </div>
+
         {/* Info */}
         <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-xs text-slate-500 leading-relaxed space-y-1">
           <div className="font-semibold text-slate-400 mb-2">About Stages</div>
@@ -702,6 +711,229 @@ export default function SettingsPage() {
           <div>• <span className="text-slate-300">Stage 3</span> — Live AI calls via API keys, real agent thinking, OpenClaw integration</div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Stage 5.x.12: Budget Caps panel ──────────────────────────────────
+// Lets the operator pick a per-provider USD cap, an alert threshold (0–1),
+// the failover mode (ask/auto/block), and an optional fallback chain. Posts
+// to /api/budget/balances which upserts the row keyed by
+// `<provider>:<modelId='*'>` (whole-provider bucket).
+
+interface BalanceRow {
+  id: string;
+  provider: string;
+  modelId: string;
+  capUsd: number;
+  balanceUsd: number;
+  usedUsd: number;
+  source: string;
+  alertThreshold: number;
+  failoverMode: "ask" | "auto" | "block" | string;
+  fallbackChain: string[];
+  pctUsed: number;
+}
+
+const FAILOVER_QUICK_PICKS: Array<{ id: string; label: string }> = [
+  { id: "anthropic:claude-opus-4-7",    label: "Opus 4.7" },
+  { id: "anthropic:claude-sonnet-4-6",  label: "Sonnet 4.6" },
+  { id: "openai:gpt-5.5",               label: "GPT-5.5" },
+  { id: "openai:gpt-4.1",               label: "GPT-4.1" },
+  { id: "google:gemini-3-pro",          label: "Gemini 3 Pro" },
+  { id: "google:gemini-2.5-pro",        label: "Gemini 2.5 Pro" },
+  { id: "deepseek:deepseek-v4-pro",     label: "DeepSeek V4-Pro" },
+  { id: "deepseek:deepseek-v4-flash",   label: "DeepSeek V4-Flash" },
+  { id: "kimi:moonshot-v1-128k",        label: "Kimi 128K" },
+];
+
+function BudgetCapsPanel() {
+  const { data: balances = [], refetch } = useQuery<BalanceRow[]>({
+    queryKey: ["/api/budget/balances"],
+    queryFn: () => apiRequest("GET", "/api/budget/balances").then(r => r.json()),
+  });
+
+  // Live updates from the websocket fan-out so two operators editing in
+  // parallel see each other's changes without a manual refresh.
+  useEffect(() => {
+    const onUpdate = () => queryClient.invalidateQueries({ queryKey: ["/api/budget/balances"] });
+    window.addEventListener("aioffice:balances_update", onUpdate);
+    return () => window.removeEventListener("aioffice:balances_update", onUpdate);
+  }, []);
+
+  // Build a row for every known provider, even if no cap row exists yet, so
+  // the user can set a fresh cap from a clean form.
+  const rowsByProvider = new Map<string, BalanceRow | null>();
+  for (const p of PROVIDERS) rowsByProvider.set(p.key, null);
+  for (const b of balances) {
+    if (b.modelId === "*") rowsByProvider.set(b.provider, b);
+  }
+
+  return (
+    <div className="space-y-2">
+      {Array.from(rowsByProvider.entries()).map(([providerKey, row]) => (
+        <BudgetCapRow
+          key={providerKey}
+          provider={providerKey}
+          row={row}
+          onSaved={() => refetch()}
+        />
+      ))}
+    </div>
+  );
+}
+
+function BudgetCapRow({ provider, row, onSaved }: {
+  provider: string;
+  row: BalanceRow | null;
+  onSaved: () => void;
+}) {
+  const providerLabel = PROVIDERS.find(p => p.key === provider)?.label ?? provider;
+  const color = PROVIDER_COLORS[provider] ?? "#64748b";
+
+  const [capUsd, setCapUsd] = useState<string>(row ? String(row.capUsd) : "");
+  const [alertThreshold, setAlertThreshold] = useState<number>(row?.alertThreshold ?? 0.85);
+  const [failoverMode, setFailoverMode] = useState<"ask" | "auto" | "block">(
+    (row?.failoverMode as "ask" | "auto" | "block") ?? "ask",
+  );
+  const [chain, setChain] = useState<string[]>(row?.fallbackChain ?? []);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  // Re-sync local state when the server-side row changes (e.g. after a usage
+  // update or another tab edits the same row). We only overwrite when the
+  // form isn't dirty so we don't trample on the user's in-flight edit.
+  useEffect(() => {
+    if (dirty) return;
+    setCapUsd(row ? String(row.capUsd) : "");
+    setAlertThreshold(row?.alertThreshold ?? 0.85);
+    setFailoverMode((row?.failoverMode as "ask" | "auto" | "block") ?? "ask");
+    setChain(row?.fallbackChain ?? []);
+  }, [row, dirty]);
+
+  const toggleChain = (id: string) => {
+    setDirty(true);
+    setChain((prev) => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const capNum = parseFloat(capUsd);
+      await apiRequest("POST", "/api/budget/balances", {
+        provider,
+        modelId: "*",
+        capUsd: Number.isFinite(capNum) ? capNum : 0,
+        alertThreshold,
+        failoverMode,
+        fallbackChain: chain,
+      });
+      setDirty(false);
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const usedUsd = row?.usedUsd ?? 0;
+  const pct = row && row.capUsd > 0 ? Math.min(1, row.usedUsd / row.capUsd) : 0;
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3" data-testid={`cap-row-${provider}`}>
+      <div className="flex items-center gap-2 mb-2">
+        <span
+          className="text-xs font-semibold px-2 py-0.5 rounded-full"
+          style={{ background: `${color}22`, color, border: `1px solid ${color}44` }}>
+          {providerLabel}
+        </span>
+        <span className="text-[10px] text-slate-600">whole-provider bucket</span>
+        {row && row.capUsd > 0 && (
+          <div className="flex items-center gap-1.5 ml-auto text-[10px] text-slate-500">
+            <div className="w-20 h-1 bg-slate-800 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${pct * 100}%`, background: pct >= 1 ? "#ef4444" : pct >= alertThreshold ? "#f59e0b" : color }}
+              />
+            </div>
+            <span className="font-mono">${usedUsd.toFixed(2)} / ${row.capUsd.toFixed(2)}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider">Monthly cap (USD)</span>
+          <input
+            type="number" min="0" step="0.01"
+            value={capUsd}
+            onChange={e => { setCapUsd(e.target.value); setDirty(true); }}
+            placeholder="0 = no cap"
+            className="text-xs px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-800 focus:border-cyan-500/50 focus:outline-none text-slate-200 font-mono"
+            data-testid={`cap-input-${provider}`}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider">Alert at {(alertThreshold * 100).toFixed(0)}%</span>
+          <input
+            type="range" min="0.5" max="1" step="0.05"
+            value={alertThreshold}
+            onChange={e => { setAlertThreshold(parseFloat(e.target.value)); setDirty(true); }}
+            className="accent-cyan-500"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider">When capped</span>
+          <select
+            value={failoverMode}
+            onChange={e => { setFailoverMode(e.target.value as "ask" | "auto" | "block"); setDirty(true); }}
+            className="text-xs px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-800 focus:border-cyan-500/50 focus:outline-none text-slate-200"
+            data-testid={`failover-mode-${provider}`}>
+            <option value="ask">Ask operator</option>
+            <option value="auto">Auto-failover</option>
+            <option value="block">Block (error)</option>
+          </select>
+        </label>
+      </div>
+
+      <div>
+        <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Fallback chain (in order)</div>
+        <div className="flex flex-wrap gap-1.5">
+          {FAILOVER_QUICK_PICKS.filter(p => !p.id.startsWith(`${provider}:`)).map(p => {
+            const idx = chain.indexOf(p.id);
+            const selected = idx >= 0;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => toggleChain(p.id)}
+                className={`text-[11px] px-2 py-1 rounded-lg border transition-all ${
+                  selected
+                    ? "border-cyan-500 bg-cyan-500/10 text-cyan-300"
+                    : "border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700"
+                }`}
+                data-testid={`chain-pick-${provider}-${p.id}`}>
+                {selected && <span className="font-mono mr-1">{idx + 1}.</span>}
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {dirty && (
+        <div className="flex items-center justify-end gap-2 mt-2">
+          <button
+            type="button"
+            disabled={saving}
+            onClick={save}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white disabled:opacity-50 transition-all"
+            style={{ background: "linear-gradient(135deg, #06b6d4, #8b5cf6)" }}
+            data-testid={`save-cap-${provider}`}>
+            {saving ? <Loader2 size={11} className="animate-spin"/> : <Save size={11}/>}
+            Save
+          </button>
+        </div>
+      )}
     </div>
   );
 }

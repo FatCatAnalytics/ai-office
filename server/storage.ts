@@ -26,6 +26,7 @@ import type {
   Model, InsertModel,
   QaReview, InsertQaReview,
   ProjectTemplate, InsertProjectTemplate,
+  ProviderBalance, InsertProviderBalance,
 } from "@shared/schema";
 
 const sqlite = new Database("data.db");
@@ -133,9 +134,40 @@ sqlite.exec(`
     description TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
   );
+  CREATE TABLE IF NOT EXISTS provider_balances (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL DEFAULT '*',
+    cap_usd REAL NOT NULL DEFAULT 0,
+    balance_usd REAL NOT NULL DEFAULT 0,
+    used_usd REAL NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'tracked',
+    alert_threshold REAL NOT NULL DEFAULT 0.85,
+    failover_mode TEXT NOT NULL DEFAULT 'ask',
+    fallback_chain TEXT NOT NULL DEFAULT '[]',
+    force_failover INTEGER NOT NULL DEFAULT 0,
+    last_fetched_at INTEGER,
+    fetch_error TEXT,
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
   -- Add output_formats column to projects if it doesn't exist (safe migration)
   PRAGMA table_info(projects);
 `);
+
+// Stage 5.x.12 safe migration: per-project failover mode (ask | auto | block).
+// Pre-existing rows default to 'ask' so behaviour is unchanged until the
+// operator opts a project into auto-failover from Settings.
+try {
+  sqlite.exec(`ALTER TABLE projects ADD COLUMN failover_mode TEXT NOT NULL DEFAULT 'ask'`);
+} catch { /* column already exists */ }
+
+// Stage 5.x.26 safe migration: forceFailover bit on provider_balances. Set by
+// the failover modal when the operator picks a substitute after a runtime
+// credit-exhaust error — marks the provider as unusable until cleared so the
+// router consults the row's fallbackChain instead of routing back to it.
+try {
+  sqlite.exec(`ALTER TABLE provider_balances ADD COLUMN force_failover INTEGER NOT NULL DEFAULT 0`);
+} catch { /* column already exists */ }
 
 // Safe migration: add output_formats column if missing
 try {
@@ -1013,6 +1045,16 @@ export interface IStorage {
   getLatestQaReview(projectId: number): QaReview | undefined;
   createQaReview(data: InsertQaReview): QaReview;
 
+  // Provider balances (Stage 5.x.12)
+  getProviderBalances(): ProviderBalance[];
+  getProviderBalance(id: string): ProviderBalance | undefined;
+  upsertProviderBalance(data: InsertProviderBalance): ProviderBalance;
+  setProviderBalanceCap(id: string, capUsd: number): ProviderBalance | undefined;
+  setProviderBalanceFailover(id: string, failoverMode: string, fallbackChain: string[]): ProviderBalance | undefined;
+  setProviderBalanceForceFailover(id: string, forceFailover: boolean): ProviderBalance | undefined;
+  recordProviderBalanceFetch(id: string, balanceUsd: number, source: string, error?: string | null): ProviderBalance | undefined;
+  deleteProviderBalance(id: string): void;
+
   // Project templates (Stage 5.1)
   getProjectTemplates(): ProjectTemplate[];
   getProjectTemplate(id: number): ProjectTemplate | undefined;
@@ -1590,6 +1632,110 @@ class SQLiteStorage implements IStorage {
 
   createQaReview(data: InsertQaReview): QaReview {
     return db.insert(schema.qaReviews).values({ ...data, createdAt: Date.now() }).returning().get()!;
+  }
+
+  // ── Provider balances (Stage 5.x.12) ──
+  // The id is canonical "<provider>:<modelId>". Use modelId === "*" for the
+  // whole-provider bucket (most providers cap at the account level, not
+  // per-model). The fetcher (server/providerBalances.ts) keeps `balanceUsd`
+  // in sync with the live API where available, otherwise falls back to
+  // capUsd − usedUsd computed from the token_usage table.
+  getProviderBalances(): ProviderBalance[] {
+    return db.select().from(schema.providerBalances)
+      .orderBy(desc(schema.providerBalances.updatedAt))
+      .all();
+  }
+
+  getProviderBalance(id: string): ProviderBalance | undefined {
+    return db.select().from(schema.providerBalances)
+      .where(eq(schema.providerBalances.id, id))
+      .get();
+  }
+
+  upsertProviderBalance(data: InsertProviderBalance): ProviderBalance {
+    const id = data.id || `${data.provider}:${data.modelId ?? "*"}`;
+    const existing = db.select().from(schema.providerBalances)
+      .where(eq(schema.providerBalances.id, id))
+      .get();
+    const now = Date.now();
+    if (existing) {
+      // Only overwrite fields that were explicitly provided so callers can
+      // do partial updates without clobbering operator-set values like
+      // capUsd or fallbackChain.
+      const next = {
+        provider: data.provider ?? existing.provider,
+        modelId: data.modelId ?? existing.modelId,
+        capUsd: data.capUsd ?? existing.capUsd,
+        balanceUsd: data.balanceUsd ?? existing.balanceUsd,
+        usedUsd: data.usedUsd ?? existing.usedUsd,
+        source: data.source ?? existing.source,
+        alertThreshold: data.alertThreshold ?? existing.alertThreshold,
+        failoverMode: data.failoverMode ?? existing.failoverMode,
+        fallbackChain: data.fallbackChain ?? existing.fallbackChain,
+        // Stage 5.x.26: preserve forceFailover across partial updates so a
+        // balance refresh doesn't accidentally clear an operator-set
+        // failover state.
+        forceFailover: data.forceFailover ?? existing.forceFailover,
+        lastFetchedAt: data.lastFetchedAt ?? existing.lastFetchedAt,
+        fetchError: data.fetchError ?? existing.fetchError,
+        updatedAt: now,
+      };
+      return db.update(schema.providerBalances).set(next)
+        .where(eq(schema.providerBalances.id, id)).returning().get()!;
+    }
+    return db.insert(schema.providerBalances).values({
+      ...data,
+      id,
+      updatedAt: now,
+    }).returning().get()!;
+  }
+
+  setProviderBalanceCap(id: string, capUsd: number): ProviderBalance | undefined {
+    return db.update(schema.providerBalances)
+      .set({ capUsd, updatedAt: Date.now() })
+      .where(eq(schema.providerBalances.id, id))
+      .returning().get();
+  }
+
+  setProviderBalanceFailover(id: string, failoverMode: string, fallbackChain: string[]): ProviderBalance | undefined {
+    return db.update(schema.providerBalances)
+      .set({
+        failoverMode,
+        fallbackChain: JSON.stringify(fallbackChain),
+        updatedAt: Date.now(),
+      })
+      .where(eq(schema.providerBalances.id, id))
+      .returning().get();
+  }
+
+  // Stage 5.x.26: toggle the forceFailover bit. Set to true by the failover
+  // modal when the operator picks a substitute after a runtime credit-exhaust
+  // error. Cleared when the operator manually unblocks the provider in the
+  // budget UI or after a successful balance refresh shows positive credit.
+  setProviderBalanceForceFailover(id: string, forceFailover: boolean): ProviderBalance | undefined {
+    return db.update(schema.providerBalances)
+      .set({ forceFailover, updatedAt: Date.now() })
+      .where(eq(schema.providerBalances.id, id))
+      .returning().get();
+  }
+
+  recordProviderBalanceFetch(id: string, balanceUsd: number, source: string, error?: string | null): ProviderBalance | undefined {
+    return db.update(schema.providerBalances)
+      .set({
+        balanceUsd,
+        source,
+        lastFetchedAt: Date.now(),
+        fetchError: error ?? null,
+        updatedAt: Date.now(),
+      })
+      .where(eq(schema.providerBalances.id, id))
+      .returning().get();
+  }
+
+  deleteProviderBalance(id: string): void {
+    db.delete(schema.providerBalances)
+      .where(eq(schema.providerBalances.id, id))
+      .run();
   }
 
   // ── Project templates (Stage 5.1) ──

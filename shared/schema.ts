@@ -43,6 +43,13 @@ export const projects = sqliteTable("projects", {
   // links back to the project_templates row that produced it. NULL for
   // user-created (one-shot) projects — the existing 100% case before 5.1.
   templateId: integer("template_id"),
+  // Stage 5.x.12: per-project failover behaviour when a model hits its cap.
+  //   ask   — pause the project and emit a `failover_required` ws event so
+  //           the operator picks the substitute model (default).
+  //   auto  — silently pick the next entry in the model's fallbackChain that
+  //           still has budget + a configured API key.
+  //   block — error out the task and leave the project blocked.
+  failoverMode: text("failover_mode").notNull().default("ask"),
   createdAt: integer("created_at").notNull().$defaultFn(() => Date.now()),
 });
 
@@ -460,3 +467,48 @@ export const CLAIM_STATUSES = [
   "outdated",
 ] as const;
 export type ClaimStatus = (typeof CLAIM_STATUSES)[number];
+
+// ─── Provider balances table (Stage 5.x.12) ──────────────────────────────────
+// Per-provider credit/budget tracking so the dashboard can warn before a run
+// hits the wall and the orchestrator can fail over. Three sources:
+//   live    — provider exposes a real-time balance API (DeepSeek today).
+//   tracked — computed locally from token_usage × cost vs. the configured cap.
+//   manual  — operator typed the balance in by hand.
+//
+// `balanceUsd` is the credit/budget REMAINING in USD. `capUsd` is the period
+// budget. `usedUsd` is what we've spent in the current period. The fetcher
+// (server/providerBalances.ts) keeps these in sync and broadcasts updates
+// over websocket so the UI stays live.
+export const providerBalances = sqliteTable("provider_balances", {
+  id: text("id").primaryKey(),                          // canonical "<provider>:<modelId>"
+  provider: text("provider").notNull(),                 // anthropic | openai | google | kimi | deepseek
+  modelId: text("model_id").notNull().default("*"),     // "*" = whole-provider bucket; otherwise a specific model id
+  capUsd: real("cap_usd").notNull().default(0),         // operator-set monthly USD cap; 0 = no cap
+  balanceUsd: real("balance_usd").notNull().default(0), // remaining balance (live or computed)
+  usedUsd: real("used_usd").notNull().default(0),       // spent this period
+  source: text("source").notNull().default("tracked"),  // live | tracked | manual
+  alertThreshold: real("alert_threshold").notNull().default(0.85), // 0–1; warn when usedUsd/capUsd > threshold
+  failoverMode: text("failover_mode").notNull().default("ask"),    // ask | auto | block
+  // JSON array of fallback models in preference order, e.g.
+  //   ["openai:gpt-5.5", "google:gemini-3-pro", "deepseek:deepseek-v4-pro"]
+  // When the cap is hit and failoverMode === 'auto', the orchestrator picks
+  // the first chain entry whose provider key is configured AND has remaining
+  // budget. Empty "[]" means "use the default tier chain".
+  fallbackChain: text("fallback_chain").notNull().default("[]"),
+  // Stage 5.x.26: when 1, the router treats this provider as unusable
+  // regardless of cap state — set by the failover modal when the operator
+  // picks a substitute after a runtime credit-exhaust error (where the
+  // provider hasn't actually hit a configured monthly cap, so usedUsd >=
+  // capUsd is false but Anthropic/OpenAI/etc still rejected the call).
+  // The router consults fallbackChain on rows where forceFailover is set.
+  // Cleared by the operator in the budget UI or by a successful balance
+  // refresh that returns positive credit.
+  forceFailover: integer("force_failover", { mode: "boolean" }).notNull().default(false),
+  lastFetchedAt: integer("last_fetched_at"),
+  fetchError: text("fetch_error"),                      // last fetch error message, if any
+  updatedAt: integer("updated_at").notNull().$defaultFn(() => Date.now()),
+});
+
+export const insertProviderBalanceSchema = createInsertSchema(providerBalances).omit({ updatedAt: true });
+export type InsertProviderBalance = z.infer<typeof insertProviderBalanceSchema>;
+export type ProviderBalance = typeof providerBalances.$inferSelect;
