@@ -182,6 +182,29 @@ describe("FatCat modes are asset-backed (approved artwork, not placeholders)", (
     expect(statusBadgeLabel(mapAgentStatus("idle"))).toBe("Idle");
   });
 
+  // ── Dynamic per-archetype × status CAT sprites ────────────────────────────
+
+  it("both modes render a FatCatSprite bound to each slot's archetype + status", () => {
+    for (const file of [ISO, MISSION]) {
+      const src = read(file);
+      expect(src).toMatch(/FatCatSprite/);
+      // The manager and committee/specialist sprites are data-bound, not constant.
+      expect(src).toMatch(/<FatCatSprite[\s\S]*?archetype=\{manager\.archetype\}[\s\S]*?status=\{manager\.status\}/);
+      expect(src).toMatch(/archetype=\{slot\.archetype\}/);
+      expect(src).toMatch(/status=\{slot\.status\}/);
+    }
+  });
+
+  it("the sprite is an object-contain transparent figure, not a box/frame", () => {
+    const css = read(SHARED);
+    const sprite = css.slice(css.indexOf("export function FatCatSprite"), css.indexOf("export function StatusPill"));
+    expect(sprite).toMatch(/objectFit:\s*["']contain["']/);
+    expect(sprite).toMatch(/background:\s*["']transparent["']/);
+    // No border/outline frame is drawn around the cat.
+    expect(sprite).not.toMatch(/border:\s*[`"']?\d/);
+    expect(sprite).not.toMatch(/inset:\s*0/);
+  });
+
   it("keeps hotspot hit zones tight (no oversized rectangles spanning panels)", () => {
     // Guard against regressing to huge seats.
     for (const file of [ISO, MISSION]) {

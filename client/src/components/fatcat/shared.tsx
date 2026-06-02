@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import type { AgentEvent } from "../../types";
 import {
-  FATCAT_STATUS_META, isActiveStatus, type RosterSlot,
+  FATCAT_STATUS_META, isActiveStatus, type FatCatArchetype, type FatCatStatus, type RosterSlot,
 } from "../../lib/fatcatRoster";
+import { fatcatSprite } from "../../lib/fatcatSprites";
 
 /**
  * Given a container ref and the artwork's intrinsic aspect ratio, returns the
@@ -71,8 +72,12 @@ export function FatCatStyles() {
       /* Pulsing status dot for a card whose agent is actively working. Subtle —
          it draws the eye to the live worker without boxing the approved art. */
       @keyframes fcDot { 0%,100% { transform: scale(1); opacity: 1 } 50% { transform: scale(1.55); opacity: .55 } }
+      /* Crossfade a freshly-swapped sprite in so a status change reads as a calm
+         dissolve rather than a hard cut. No movement/scale — just opacity. */
+      @keyframes fcSpriteIn { from { opacity: 0 } to { opacity: 1 } }
       @media (prefers-reduced-motion: reduce) {
         .fc-motion { animation: none !important; }
+        .fc-sprite { animation: none !important; }
       }
       /* Hotspot buttons stay invisible: no border, no box, no browser focus
          outline drawn over the artwork. They are pure click/hit targets. */
@@ -164,6 +169,56 @@ export function statusBadgeLabel(status: RosterSlot["status"]): string {
     case "complete":  return "Complete";
     default:          return "Idle";
   }
+}
+
+/**
+ * The per-agent CAT figure. Renders the transparent, per-archetype × per-status
+ * sprite (resolved via {@link fatcatSprite}) positioned over its seat in the
+ * scene. The sprite swaps automatically when the slot's status changes; we key
+ * the <img> on its resolved URL so React remounts it and the crossfade replays,
+ * giving a calm opacity dissolve on swap (no bounce/flash, respects
+ * prefers-reduced-motion). Purely visual — the clickable Hotspot sits above it.
+ */
+export function FatCatSprite({
+  archetype, status, rect, reduced, alt,
+}: {
+  archetype: FatCatArchetype;
+  status: FatCatStatus;
+  rect: { x: number; y: number; w: number; h: number };
+  reduced: boolean;
+  alt: string;
+}) {
+  const url = fatcatSprite(archetype, status);
+  if (!url) return null;
+  const active = isActiveStatus(status);
+  return (
+    <img
+      key={url}
+      src={url}
+      alt={alt}
+      draggable={false}
+      className={reduced ? undefined : "fc-sprite"}
+      style={{
+        position: "absolute",
+        left: `${rect.x}%`,
+        top: `${rect.y}%`,
+        width: `${rect.w}%`,
+        height: `${rect.h}%`,
+        transform: "translate(-50%,-50%)",
+        objectFit: "contain",
+        background: "transparent",
+        pointerEvents: "none",
+        userSelect: "none",
+        // Live cats sit fully opaque; settled (idle/complete) cats are a touch
+        // softer so the active worker reads as the focal point — but every cat
+        // stays clearly visible. No box/frame is ever drawn.
+        opacity: active ? 1 : 0.92,
+        transition: "opacity 220ms ease",
+        animation: reduced ? undefined : "fcSpriteIn 260ms ease",
+        zIndex: 4,
+      }}
+    />
+  );
 }
 
 export function StatusPill({ status, small }: { status: RosterSlot["status"]; small?: boolean }) {

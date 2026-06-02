@@ -20,7 +20,7 @@ import {
   FATCAT_STATUS_META, type RosterSlot,
 } from "../../lib/fatcatRoster";
 import {
-  FatCatStyles, AgentDetailPanel, StatusBadge, useReducedMotion, useContainRect,
+  FatCatStyles, AgentDetailPanel, FatCatSprite, StatusBadge, useReducedMotion, useContainRect,
 } from "./shared";
 
 // Intrinsic aspect ratio of the approved Mission Control artwork (1536 × 1024).
@@ -93,6 +93,27 @@ export default function MissionControlMode({ agents, project, events }: Props) {
             className="absolute"
             style={{ left: imgRect.left, top: imgRect.top, width: imgRect.width, height: imgRect.height }}
           >
+            {/* Per-agent CAT figures: transparent per-archetype × per-status
+                sprites layered onto the painted HUD at each seat. These swap
+                live as the agent's status changes (crossfade, no box/frame). */}
+            <FatCatSprite
+              archetype={manager.archetype}
+              status={manager.status}
+              rect={MANAGER_SEAT}
+              reduced={reduced}
+              alt={`${manager.name} — ${FATCAT_STATUS_META[manager.status].label}`}
+            />
+            {seated.map((slot, i) => (
+              <FatCatSprite
+                key={`sprite-${slot.key}`}
+                archetype={slot.archetype}
+                status={slot.status}
+                rect={SEATS[i]}
+                reduced={reduced}
+                alt={`${slot.name} — ${FATCAT_STATUS_META[slot.status].label}`}
+              />
+            ))}
+
             {/* Live status layer: a small data-bound badge tucked under each
                 committee card, driven by the agent's real status. No boxes /
                 outlines / active-area rectangles are drawn over the art. */}
