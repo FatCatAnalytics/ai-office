@@ -20,7 +20,7 @@ import {
   FATCAT_STATUS_META, type RosterSlot,
 } from "../../lib/fatcatRoster";
 import {
-  FatCatStyles, AgentDetailPanel, FatCatSprite, StatusBadge, useReducedMotion, useContainRect,
+  FatCatStyles, AgentDetailPanel, FatCatSprite, GroundShadow, StatusBadge, useReducedMotion, useContainRect,
 } from "./shared";
 
 // Intrinsic aspect ratio of the approved Mission Control artwork (1536 × 1024).
@@ -32,21 +32,36 @@ interface Props {
   events: AgentEvent[];
 }
 
-// Calibrated against the approved Mission Control artwork by overlaying these
-// boxes onto the image and tightening each one to its painted committee *card*
-// (portrait + name plate). Highlighting the whole card — not just the cat head
-// — is intentional: the user asked the active worker's card to light up. Left
-// column then right column, top-to-bottom — the order specialists are assigned.
+// Re-calibrated against the NEW clean, character-free Mission Control backdrop
+// (commit d183f02). The painted committee cards are gone, so these seats place
+// the LIVE sprites in a balanced arc around the cyan holographic ring platform
+// (rings span ~y58–85%, centre ~y72%): a back pair high on each side, mid pair
+// on each flank, and a front pair standing on the ring's front edge. Front
+// cats (on the ring) are sized slightly LARGER and back cats SMALLER for depth.
+// Each seat is centred via translate(-50%,-50%); feet sit ~y + h/2 so cats land
+// on the ring/floor rather than float. Order matches buildRoster assignment.
 const SEATS: { x: number; y: number; w: number; h: number }[] = [
-  { x: 29.5, y: 21,   w: 13, h: 18 }, // committee upper-left (Prof. Whiskerton)
-  { x: 29.5, y: 38.5, w: 13, h: 18 }, // committee mid-left (Data Purrson)
-  { x: 29.5, y: 55,   w: 13, h: 18 }, // committee lower-left (Agent Clawrence)
-  { x: 70.5, y: 21,   w: 13, h: 18 }, // committee upper-right (Counsel Pawsley)
-  { x: 70.5, y: 38.5, w: 13, h: 18 }, // committee mid-right (SecureCat)
-  { x: 70.5, y: 54,   w: 13, h: 18 }, // committee lower-right (Mktg. Meowdison)
+  { x: 22, y: 44, w: 9,    h: 22 }, // back-left (smaller)
+  { x: 22, y: 62, w: 10,   h: 24 }, // mid-left
+  { x: 35, y: 73, w: 11,   h: 26 }, // front-left, on ring (larger)
+  { x: 65, y: 73, w: 11,   h: 26 }, // front-right, on ring (larger)
+  { x: 78, y: 44, w: 9,    h: 22 }, // back-right (smaller)
+  { x: 78, y: 62, w: 10,   h: 24 }, // mid-right
 ];
-// Central FatCat Manager — sized to the painted body on the central dais.
-const MANAGER_SEAT = { x: 50, y: 29, w: 16, h: 35 };
+// Central FatCat Manager — large, standing prominently on the holographic
+// platform. Feet on the ring (~y60%): centre y + h/2 ≈ 59.
+const MANAGER_SEAT = { x: 50, y: 42, w: 14, h: 34 };
+
+// Badge anchors: each badge is centred horizontally on its cat and tucked just
+// ABOVE the cat's head (anchor="top") so it never covers the face or lands in
+// empty floor. y is the cat's head line (seat.y − seat.h/2). Same index order
+// as SEATS; MANAGER_BADGE sits above the central manager.
+const BADGES: { x: number; y: number; w: number; h: number }[] = SEATS.map((s) => ({
+  x: s.x, y: s.y - s.h / 2, w: s.w, h: 4,
+}));
+const MANAGER_BADGE = {
+  x: MANAGER_SEAT.x, y: MANAGER_SEAT.y - MANAGER_SEAT.h / 2, w: MANAGER_SEAT.w, h: 4,
+};
 
 export default function MissionControlMode({ agents, project, events }: Props) {
   const reduced = useReducedMotion();
@@ -93,9 +108,16 @@ export default function MissionControlMode({ agents, project, events }: Props) {
             className="absolute"
             style={{ left: imgRect.left, top: imgRect.top, width: imgRect.width, height: imgRect.height }}
           >
+            {/* Soft contact shadow under each cat's feet so the sprites read as
+                planted on the ring/floor instead of floating. Behind sprites. */}
+            <GroundShadow rect={MANAGER_SEAT} />
+            {seated.map((slot, i) => (
+              <GroundShadow key={`shadow-${slot.key}`} rect={SEATS[i]} />
+            ))}
+
             {/* Per-agent CAT figures: transparent per-archetype × per-status
-                sprites layered onto the painted HUD at each seat. These swap
-                live as the agent's status changes (crossfade, no box/frame). */}
+                sprites grounded around the holographic ring at each seat. These
+                swap live as the agent's status changes (crossfade, no box/frame). */}
             <FatCatSprite
               archetype={manager.archetype}
               status={manager.status}
@@ -114,16 +136,17 @@ export default function MissionControlMode({ agents, project, events }: Props) {
               />
             ))}
 
-            {/* Live status layer: a small data-bound badge tucked under each
-                committee card, driven by the agent's real status. No boxes /
+            {/* Live status layer: a small data-bound badge tucked just above each
+                cat's head, driven by the agent's real status. No boxes /
                 outlines / active-area rectangles are drawn over the art. */}
-            <StatusBadge rect={MANAGER_SEAT} status={manager.status} reduced={reduced} />
+            <StatusBadge rect={MANAGER_BADGE} status={manager.status} reduced={reduced} anchor="top" />
             {seated.map((slot, i) => (
               <StatusBadge
                 key={`badge-${slot.key}`}
-                rect={SEATS[i]}
+                rect={BADGES[i]}
                 status={slot.status}
                 reduced={reduced}
+                anchor="top"
               />
             ))}
 

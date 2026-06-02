@@ -172,6 +172,34 @@ export function statusBadgeLabel(status: RosterSlot["status"]): string {
 }
 
 /**
+ * A subtle soft contact shadow under a cat's feet so the sprite reads as planted
+ * on the stage rather than floating. Purely decorative: a low, blurred dark
+ * radial ellipse centred on the sprite's foot line (seat.y + seat.h/2) and
+ * scaled to the sprite width. Sits BEHIND the sprite (lower z-index) and never
+ * draws a box/frame. Honours prefers-reduced-motion implicitly (it's static).
+ */
+export function GroundShadow({ rect }: { rect: { x: number; y: number; w: number; h: number } }) {
+  const footY = rect.y + rect.h / 2;
+  return (
+    <span
+      aria-hidden
+      style={{
+        position: "absolute",
+        left: `${rect.x}%`,
+        top: `${footY}%`,
+        width: `${rect.w * 0.85}%`,
+        height: `${rect.w * 0.22}%`,
+        transform: "translate(-50%,-65%)",
+        borderRadius: "50%",
+        background: "radial-gradient(ellipse at center, rgba(0,0,0,0.42) 0%, rgba(0,0,0,0.22) 45%, rgba(0,0,0,0) 72%)",
+        pointerEvents: "none",
+        zIndex: 3,
+      }}
+    />
+  );
+}
+
+/**
  * The per-agent CAT figure. Renders the transparent, per-archetype × per-status
  * sprite (resolved via {@link fatcatSprite}) positioned over its seat in the
  * scene. The sprite swaps automatically when the slot's status changes; we key

@@ -20,7 +20,7 @@ import {
   FATCAT_STATUS_META, type RosterSlot,
 } from "../../lib/fatcatRoster";
 import {
-  FatCatStyles, AgentDetailPanel, FatCatSprite, StatusBadge, useReducedMotion, useContainRect,
+  FatCatStyles, AgentDetailPanel, FatCatSprite, GroundShadow, StatusBadge, useReducedMotion, useContainRect,
 } from "./shared";
 
 // Intrinsic aspect ratio of the approved isometric-office artwork (1536 × 1024).
@@ -32,36 +32,37 @@ interface Props {
   events: AgentEvent[];
 }
 
-// Calibrated against the approved isometric-office artwork by overlaying these
-// boxes onto the image and tightening each one to hug the painted cat (head +
-// torso) rather than the info card beside it, so a working-highlight / ring
-// lands on the character. Ordered so the roster's specialists (after the
-// manager) land on sensible seats.
+// Re-calibrated against the NEW clean, character-free isometric-office backdrop
+// (commit d183f02). The painted cats are gone, so these seats now place the
+// LIVE sprites grounded on the empty stage: a loose semicircle around the
+// glowing central platform (top edge ~y60%, bottom ~y82%) and out toward the
+// desks, evenly spaced with no overlap. Front cats (nearer the platform front
+// edge) are sized slightly LARGER and back cats SMALLER so the arc reads with
+// depth. Each seat is centred via translate(-50%,-50%); the cat's feet sit at
+// roughly y + h/2, tuned to land on the platform / floor rather than float.
+// Order matches how buildRoster assigns specialists (after the manager).
 const SEATS: { x: number; y: number; w: number; h: number }[] = [
-  { x: 28.5, y: 33, w: 11, h: 24 }, // research (upper-left, magnifier cat)
-  { x: 63,   y: 33, w: 10, h: 24 }, // qa (upper-right, clipboard cat)
-  { x: 70,   y: 52, w: 11, h: 26 }, // engineering (far-right, headphones cat)
-  { x: 57.5, y: 55, w: 11, h: 27 }, // data (centre-right, tablet cat)
-  { x: 42.5, y: 57, w: 11, h: 25 }, // investment (centre, document/chart cat)
-  { x: 25,   y: 54, w: 11, h: 26 }, // writing (lower-left, writing-at-desk cat)
+  { x: 30, y: 56, w: 10,   h: 24 }, // left of platform, by left desks (mid)
+  { x: 42, y: 62, w: 10.5, h: 25 }, // front-left of platform (larger)
+  { x: 55, y: 68, w: 11,   h: 26 }, // front-centre, on platform front edge (largest)
+  { x: 68, y: 62, w: 10.5, h: 25 }, // front-right of platform (larger)
+  { x: 80, y: 56, w: 10,   h: 24 }, // right, by right desks (mid)
+  { x: 21, y: 44, w: 9,    h: 22 }, // back-left, by back desks (smallest)
 ];
-// The manager seat — the large central FatCat standing on the dais near the top.
-const MANAGER_SEAT = { x: 48, y: 23, w: 13, h: 28 };
+// The manager seat — the large FatCat standing prominently on the central
+// platform. Feet rest on the platform top (~y60%): centre y + h/2 ≈ 62.
+const MANAGER_SEAT = { x: 55, y: 49, w: 12, h: 30 };
 
-// Calibrated rects of the PAINTED info card beside each cat (name + status +
-// description panel). The live status badge is anchored to THIS card so it sits
-// with the painted nameplate rather than over the cat's face. Same index order
-// as SEATS so card[i] belongs to the cat at seat[i]; MANAGER_CARD is the top
-// centre "Manager FatCat" pill.
-const CARDS: { x: number; y: number; w: number; h: number }[] = [
-  { x: 13, y: 33, w: 13, h: 11 }, // research card (top-left)
-  { x: 83, y: 32, w: 13, h: 11 }, // qa card (upper-right)
-  { x: 86, y: 49, w: 14, h: 11 }, // engineering card (right)
-  { x: 68, y: 71, w: 9,  h: 11 }, // data card (centre-right-low)
-  { x: 34, y: 68, w: 13, h: 11 }, // investment card (centre-low)
-  { x: 12, y: 53, w: 13, h: 11 }, // writing card (left)
-];
-const MANAGER_CARD = { x: 50, y: 8, w: 23, h: 6 };
+// Badge anchors: each badge is centred horizontally on its cat and sits just
+// ABOVE the cat's head (anchor="top") so it never covers the face or lands in
+// empty floor. y is the cat's head line (seat.y − seat.h/2) and h is a small
+// pill height the StatusBadge nudges the badge above. Same index order as SEATS.
+const BADGES: { x: number; y: number; w: number; h: number }[] = SEATS.map((s) => ({
+  x: s.x, y: s.y - s.h / 2, w: s.w, h: 4,
+}));
+const MANAGER_BADGE = {
+  x: MANAGER_SEAT.x, y: MANAGER_SEAT.y - MANAGER_SEAT.h / 2, w: MANAGER_SEAT.w, h: 4,
+};
 
 export default function IsometricOfficeMode({ agents, project, events }: Props) {
   const reduced = useReducedMotion();
@@ -103,8 +104,15 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
             className="absolute"
             style={{ left: imgRect.left, top: imgRect.top, width: imgRect.width, height: imgRect.height }}
           >
+            {/* Soft contact shadow under each cat's feet so the sprites read as
+                planted on the stage instead of floating. Drawn behind sprites. */}
+            <GroundShadow rect={MANAGER_SEAT} />
+            {seated.map((slot, i) => (
+              <GroundShadow key={`shadow-${slot.key}`} rect={SEATS[i]} />
+            ))}
+
             {/* Per-agent CAT figures: transparent per-archetype × per-status
-                sprites layered onto the painted office at each seat. These swap
+                sprites grounded on the empty stage at each seat. These swap
                 live as the agent's status changes (crossfade, no box/frame). */}
             <FatCatSprite
               archetype={manager.archetype}
@@ -124,16 +132,17 @@ export default function IsometricOfficeMode({ agents, project, events }: Props) 
               />
             ))}
 
-            {/* Live status layer: a small data-bound badge anchored to each
-                painted info card, driven by the agent's real status. No boxes /
+            {/* Live status layer: a small data-bound badge tucked just above each
+                cat's head, driven by the agent's real status. No boxes /
                 outlines / active-area rectangles are drawn over the art. */}
-            <StatusBadge rect={MANAGER_CARD} status={manager.status} reduced={reduced} />
+            <StatusBadge rect={MANAGER_BADGE} status={manager.status} reduced={reduced} anchor="top" />
             {seated.map((slot, i) => (
               <StatusBadge
                 key={`badge-${slot.key}`}
-                rect={CARDS[i]}
+                rect={BADGES[i]}
                 status={slot.status}
                 reduced={reduced}
+                anchor="top"
               />
             ))}
 
