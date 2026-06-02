@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import type { AgentEvent } from "../../types";
 import {
-  FATCAT_STATUS_META, type RosterSlot,
+  FATCAT_STATUS_META, isActiveStatus, type FatCatArchetype, type FatCatStatus, type RosterSlot,
 } from "../../lib/fatcatRoster";
+import { fatcatSprite } from "../../lib/fatcatSprites";
 
 /**
  * Given a container ref and the artwork's intrinsic aspect ratio, returns the
@@ -67,122 +68,182 @@ export function FatCatStyles() {
   return (
     <style>{`
       @keyframes fcPulse { 0%,100% { transform: scale(1); opacity: .85 } 50% { transform: scale(1.06); opacity: 1 } }
-      @keyframes fcDash  { to { stroke-dashoffset: -32 } }
       @keyframes fcFloat { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-4px) } }
-      @keyframes fcScan  { 0% { opacity:.2 } 50% { opacity:.7 } 100% { opacity:.2 } }
-      /* Working-highlight breathing glow for the cat/card that is actively
-         doing the work. Subtle so it reads as "this one is live" without
-         covering or boxing the approved artwork. */
-      @keyframes fcWork { 0%,100% { opacity:.7 } 50% { opacity:1 } }
+      /* Pulsing status dot for a card whose agent is actively working. Subtle —
+         it draws the eye to the live worker without boxing the approved art. */
+      @keyframes fcDot { 0%,100% { transform: scale(1); opacity: 1 } 50% { transform: scale(1.55); opacity: .55 } }
+      /* Crossfade a freshly-swapped sprite in so a status change reads as a calm
+         dissolve rather than a hard cut. No movement/scale — just opacity. */
+      @keyframes fcSpriteIn { from { opacity: 0 } to { opacity: 1 } }
       @media (prefers-reduced-motion: reduce) {
         .fc-motion { animation: none !important; }
+        .fc-sprite { animation: none !important; }
       }
-      /* Hotspot buttons never draw a browser default focus outline over the art;
-         the only focus affordance is the custom ring revealed below. */
+      /* Hotspot buttons stay invisible: no border, no box, no browser focus
+         outline drawn over the artwork. They are pure click/hit targets. */
       .fc-hot { outline: none; -webkit-tap-highlight-color: transparent; }
       .fc-hot::-moz-focus-inner { border: 0; }
-
-      /* Hotspot reveal: ring + tooltip are invisible by default so the approved
-         artwork stays clean. They fade in only on hover, keyboard focus, or when
-         the seat is selected (.fc-hot-on). */
-      .fc-hot .fc-hot-ring,
-      .fc-hot .fc-hot-tip { opacity: 0; transition: opacity 160ms ease; }
-      .fc-hot:hover .fc-hot-ring,
-      .fc-hot:focus-visible .fc-hot-ring,
-      .fc-hot.fc-hot-on .fc-hot-ring,
-      .fc-hot:hover .fc-hot-tip,
-      .fc-hot:focus-visible .fc-hot-tip,
-      .fc-hot.fc-hot-on .fc-hot-tip { opacity: 1; }
-
-      /* The tiny status dot is persistent ONLY for live/active seats (it carries
-         the .fc-dot-active marker). Quiet seats (idle/waiting/complete) that do
-         render a dot keep it hidden until the seat is hovered/focused/selected,
-         so waiting cats never get a persistent highlight. */
-      .fc-hot .fc-dot-quiet { opacity: 0; transition: opacity 160ms ease; }
-      .fc-hot:hover .fc-dot-quiet,
-      .fc-hot:focus-visible .fc-dot-quiet,
-      .fc-hot.fc-hot-on .fc-dot-quiet { opacity: 1; }
     `}</style>
   );
 }
 
 /**
- * Working-highlight: a soft glow drawn on the painted element (a committee card
- * in Mission Control, a cat in the Iso office) when its slot is actively doing
- * the work. Shown for live states only (working / verifying / blocked) so idle
- * and settled cats keep the approved artwork completely clean. It is purely
- * decorative — the clickable Hotspot sits above it.
+ * Live status badge anchored over a painted card position. This is the ONLY
+ * thing layered on the approved artwork: a tiny pill carrying a status dot +
+ * label that is data-bound to the slot's live agent status. There is NO box,
+ * outline, frame, or hover/selection rectangle drawn over the art — the badge
+ * is the entire visual chrome.
+ *
+ * Resting (idle / complete) cards stay calm: a dim, static dot and a quiet
+ * label. Genuinely live cards (working / verifying / blocked) get a coloured,
+ * gently pulsing dot so the eye is drawn to whoever is actually doing work.
+ * Purely informational; the clickable Hotspot sits above it.
  */
-export function WorkingHighlight({
-  status, color, radius = 16, reduced,
+export function StatusBadge({
+  rect, status, reduced, anchor = "bottom",
 }: {
+  rect: { x: number; y: number; w: number; h: number };
   status: RosterSlot["status"];
-  color: string;
-  radius?: number;
   reduced: boolean;
+  /** Where the badge sits relative to the card rect. */
+  anchor?: "top" | "bottom";
 }) {
-  const statusColor = FATCAT_STATUS_META[status].color;
-  const animated = status === "working" || status === "verifying";
+  const meta = FATCAT_STATUS_META[status];
+  const active = isActiveStatus(status);
+  // Working/verifying read as in-flight ("Processing…"); blocked is live but not
+  // animated; idle/complete are settled and calm.
+  const animated = !reduced && (status === "working" || status === "verifying");
+  // The badge is centred horizontally on the card and tucked just outside its
+  // top or bottom edge so it never covers the painted face/nameplate.
+  const top = anchor === "bottom" ? rect.y + rect.h / 2 + 1 : rect.y - rect.h / 2 - 1;
+  return (
+    <span
+      data-fc-status={status}
+      style={{
+        position: "absolute",
+        left: `${rect.x}%`,
+        top: `${top}%`,
+        transform: anchor === "bottom" ? "translate(-50%,0)" : "translate(-50%,-100%)",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "2px 8px",
+        borderRadius: 999,
+        background: "rgba(5,8,15,0.78)",
+        border: `1px solid ${meta.color}${active ? "88" : "44"}`,
+        color: meta.color,
+        fontSize: 9.5,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+        whiteSpace: "nowrap",
+        pointerEvents: "none",
+        backdropFilter: "blur(3px)",
+        boxShadow: active ? `0 0 10px ${meta.color}55` : "none",
+        zIndex: 6,
+      }}
+    >
+      <span
+        aria-hidden
+        className={animated ? "fc-motion" : undefined}
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          flexShrink: 0,
+          background: meta.color,
+          opacity: active ? 1 : 0.65,
+          animation: animated ? "fcDot 1.4s ease-in-out infinite" : undefined,
+        }}
+      />
+      {statusBadgeLabel(status)}
+    </span>
+  );
+}
+
+/** Human label for the live badge — in-flight states read as a "…" progress. */
+export function statusBadgeLabel(status: RosterSlot["status"]): string {
+  switch (status) {
+    case "working":   return "Processing…";
+    case "verifying": return "Reviewing…";
+    case "blocked":   return "Blocked";
+    case "complete":  return "Complete";
+    default:          return "Idle";
+  }
+}
+
+/**
+ * A subtle soft contact shadow under a cat's feet so the sprite reads as planted
+ * on the stage rather than floating. Purely decorative: a low, blurred dark
+ * radial ellipse centred on the sprite's foot line (seat.y + seat.h/2) and
+ * scaled to the sprite width. Sits BEHIND the sprite (lower z-index) and never
+ * draws a box/frame. Honours prefers-reduced-motion implicitly (it's static).
+ */
+export function GroundShadow({ rect }: { rect: { x: number; y: number; w: number; h: number } }) {
+  const footY = rect.y + rect.h / 2;
   return (
     <span
       aria-hidden
-      className={!reduced && animated ? "fc-motion" : undefined}
       style={{
         position: "absolute",
-        inset: 0,
-        borderRadius: radius,
-        border: `2px solid ${statusColor}`,
-        background: `radial-gradient(ellipse at center, ${statusColor}33 0%, ${statusColor}00 72%)`,
-        boxShadow: `0 0 30px ${statusColor}aa, 0 0 12px ${statusColor}cc, inset 0 0 26px ${statusColor}3a`,
+        left: `${rect.x}%`,
+        top: `${footY}%`,
+        width: `${rect.w * 0.85}%`,
+        height: `${rect.w * 0.22}%`,
+        transform: "translate(-50%,-65%)",
+        borderRadius: "50%",
+        background: "radial-gradient(ellipse at center, rgba(0,0,0,0.42) 0%, rgba(0,0,0,0.22) 45%, rgba(0,0,0,0) 72%)",
         pointerEvents: "none",
-        animation: !reduced && animated ? "fcWork 2.6s ease-in-out infinite" : undefined,
+        zIndex: 3,
       }}
     />
   );
 }
 
 /**
- * Card-highlight: a soft glowing outline drawn over a PAINTED info card (the
- * labelled panel beside a cat in the Iso office, or the portrait card in Mission
- * Control). Used instead of ringing the cat itself. It is shown when:
- *   - `active`  → the card's agent is live (persistent breathing glow), or
- *   - `revealed` → the user is hovering / focusing / has selected that agent.
- * Quiet, non-active, non-revealed cards stay completely clean so the resting
- * artwork is untouched. Purely decorative (pointer-events: none).
+ * The per-agent CAT figure. Renders the transparent, per-archetype × per-status
+ * sprite (resolved via {@link fatcatSprite}) positioned over its seat in the
+ * scene. The sprite swaps automatically when the slot's status changes; we key
+ * the <img> on its resolved URL so React remounts it and the crossfade replays,
+ * giving a calm opacity dissolve on swap (no bounce/flash, respects
+ * prefers-reduced-motion). Purely visual — the clickable Hotspot sits above it.
  */
-export function CardHighlight({
-  rect, color, status, active, revealed, reduced, radius = 14,
+export function FatCatSprite({
+  archetype, status, rect, reduced, alt,
 }: {
+  archetype: FatCatArchetype;
+  status: FatCatStatus;
   rect: { x: number; y: number; w: number; h: number };
-  color: string;
-  status: RosterSlot["status"];
-  active: boolean;
-  revealed: boolean;
   reduced: boolean;
-  radius?: number;
+  alt: string;
 }) {
-  const on = active || revealed;
-  const glow = active ? FATCAT_STATUS_META[status].color : color;
-  const animated = active && (status === "working" || status === "verifying");
+  const url = fatcatSprite(archetype, status);
+  if (!url) return null;
+  const active = isActiveStatus(status);
   return (
-    <span
-      aria-hidden
-      className={!reduced && animated ? "fc-motion" : undefined}
+    <img
+      key={url}
+      src={url}
+      alt={alt}
+      draggable={false}
+      className={reduced ? undefined : "fc-sprite"}
       style={{
         position: "absolute",
-        left: `${rect.x - rect.w / 2}%`,
-        top: `${rect.y - rect.h / 2}%`,
+        left: `${rect.x}%`,
+        top: `${rect.y}%`,
         width: `${rect.w}%`,
         height: `${rect.h}%`,
-        borderRadius: radius,
-        border: `2px solid ${glow}`,
-        background: `radial-gradient(ellipse at center, ${glow}26 0%, ${glow}00 75%)`,
-        boxShadow: `0 0 26px ${glow}99, inset 0 0 22px ${glow}33`,
+        transform: "translate(-50%,-50%)",
+        objectFit: "contain",
+        background: "transparent",
         pointerEvents: "none",
-        opacity: on ? 1 : 0,
-        transition: "opacity 180ms ease",
-        animation: !reduced && animated && on ? "fcWork 2.6s ease-in-out infinite" : undefined,
-        zIndex: 5,
+        userSelect: "none",
+        // Live cats sit fully opaque; settled (idle/complete) cats are a touch
+        // softer so the active worker reads as the focal point — but every cat
+        // stays clearly visible. No box/frame is ever drawn.
+        opacity: active ? 1 : 0.92,
+        transition: "opacity 220ms ease",
+        animation: reduced ? undefined : "fcSpriteIn 260ms ease",
+        zIndex: 4,
       }}
     />
   );
