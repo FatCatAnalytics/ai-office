@@ -24,6 +24,9 @@ import {
   WEEKLY_SME_ANALYTICS_PROMPT,
   WEEKLY_SME_ANALYTICS_REFERENCE_PLAN,
   WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN,
+  EDITORIAL_LEAD_PROMPT,
+  OPENER_VARIETY_GUIDANCE,
+  BRAND_FINGERPRINT,
 } from "../server/voiceLab";
 import {
   isIssueFilename,
@@ -370,6 +373,81 @@ truthy(
 falsy(
   "Banker final task does NOT reference sme-issue-{{week}}.md",
   bankerFinal.includes("sme-issue-{{week}}.md"),
+);
+
+// ── 7) Opener variety guidance (Stage 6.13) ──────────────────────────────
+//
+// Both weekly newsletters kept opening with near-identical "here's a quick
+// exercise" / "think about the last time" hooks. The OPENER_VARIETY_GUIDANCE
+// block demotes that shape to a rare fallback and offers a menu of
+// alternatives. It must be folded into the editorial-lead prompt and both
+// draft task descriptions, and the brand fingerprint must no longer present
+// the exercise opener as a co-equal default.
+
+// The guidance lists the alternative opener shapes the brief asks for.
+for (const shape of [
+  "Scene",
+  "Sourced fact",
+  "Operator pain moment",
+  "Contrarian observation",
+  "Meeting question",
+  "Recent event hook",
+  "Data plumbing failure",
+  "Confession",
+  "Mini-dialogue",
+]) {
+  truthy(
+    `OPENER_VARIETY_GUIDANCE offers the '${shape}' opener shape`,
+    OPENER_VARIETY_GUIDANCE.includes(shape),
+  );
+}
+
+truthy(
+  "OPENER_VARIETY_GUIDANCE marks quick-exercise openers as a rare fallback",
+  /rare fallback/i.test(OPENER_VARIETY_GUIDANCE),
+);
+truthy(
+  "OPENER_VARIETY_GUIDANCE forbids repeating the opener shape back-to-back",
+  /do not (repeat|reuse).*(opener|shape)/is.test(OPENER_VARIETY_GUIDANCE),
+);
+
+truthy(
+  "EDITORIAL_LEAD_PROMPT embeds the opener-variety guidance",
+  EDITORIAL_LEAD_PROMPT.includes(OPENER_VARIETY_GUIDANCE),
+);
+
+// The brand fingerprint must no longer present "a small exercise" as a
+// co-equal default opener.
+falsy(
+  "BRAND_FINGERPRINT no longer offers 'a small exercise' as a default opener",
+  /open with a concrete moment\s+or a small exercise/i.test(BRAND_FINGERPRINT),
+);
+truthy(
+  "BRAND_FINGERPRINT flags quick-exercise openers as a rare fallback",
+  /rare fallback/i.test(BRAND_FINGERPRINT),
+);
+
+// Both draft tasks must carry the opener-variety guidance.
+const smeDraftDesc = smePlan.find(t => t.key === "draft")?.description ?? "";
+truthy(
+  "SME draft task embeds the opener-variety guidance",
+  smeDraftDesc.includes(OPENER_VARIETY_GUIDANCE),
+);
+
+const bankerDraftDesc =
+  (JSON.parse(WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN) as Array<{
+    key: string; description: string;
+  }>).find(t => t.key === "draft")?.description ?? "";
+truthy(
+  "Banker draft task embeds the opener-variety guidance",
+  bankerDraftDesc.includes(OPENER_VARIETY_GUIDANCE),
+);
+
+// Output contracts are preserved — the SME draft still forbids <file> blocks
+// at the draft stage and the file-block contract is unchanged downstream.
+truthy(
+  "SME draft task still defers <file> blocks to the final task",
+  /no <file> blocks at this stage/i.test(smeDraftDesc),
 );
 
 // ── Report ────────────────────────────────────────────────────────────────

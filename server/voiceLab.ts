@@ -36,8 +36,10 @@ make data, analytics, and AI work in production — not strategists, not
 journalists, not vendors.
 
 Voice rules (non-negotiable):
-  • First-person and grounded in real experience. Open with a concrete moment
-    or a small exercise the reader can run in their head, not a thesis.
+  • First-person and grounded in real experience. Open with a concrete moment,
+    not a thesis — vary the opener shape issue to issue (see the opener-variety
+    guidance in the editorial brief). A "here's a quick exercise" / "think about
+    the last time…" opener is a rare fallback, not the default.
   • Anti-hype, anti-vendor, production-focused. The frame is always "what
     would a competent person actually do about this on Monday morning?"
   • Specific over abstract. Use real numbers (£200k, 8%, 2,000 entities,
@@ -78,6 +80,55 @@ ${"```"}
 **The Analytical Banker** is a weekly note on data, analytics, and AI inside corporate banking — written for finance leaders who actually have to make this stuff work. Reply to this email if something here resonates, or forward it to a colleague who'd benefit.
 ${"```"}
 `.trim();
+
+// ── Opener variety guidance (single source of truth) ────────────────────────
+//
+// Why this exists: across recent issues the draft kept opening with a near-
+// identical "here's a quick exercise" / "here's a small exercise" / "think
+// about the last time you…" hook. One of the two published samples (Issue
+// #002) genuinely opens that way, so the model over-pattern-matches on it and
+// reuses the shape almost every week. That repetition reads like a template
+// and is the single fastest tell that a human didn't write it. This block is
+// folded into both the editorial-lead system prompt and each weekly draft
+// task so the opener rotates instead of calcifying.
+
+export const OPENER_VARIETY_GUIDANCE = `
+OPENER VARIETY (read before drafting the first line)
+
+The first 1–2 sentences are the highest-leverage part of the issue. Pick the
+opener shape that the chosen angle actually wants, drawing from this menu —
+NOT the same shape every week:
+
+  • Scene — drop the reader into a specific moment ("It was 6pm on a Friday
+    and the reconciliation still hadn't finished.").
+  • Sourced fact — lead with one concrete, cited number that reframes the week
+    ("The BoE credit-conditions survey landed on Friday; the net balance moved
+    again.").
+  • Operator pain moment — name the recurring frustration the reader lives
+    ("You asked for one number and got three, all slightly different.").
+  • Contrarian observation — open against the consensus ("Everyone's worried
+    about the wrong half of this.").
+  • Meeting question — the question that actually gets asked in the room
+    ("Someone on the credit committee asks: are we sure that's net?").
+  • Recent event hook — anchor to the week's news without summarising it.
+  • Data plumbing failure — start at the broken join / stale link / silent
+    null that nobody owns.
+  • Confession — admit a mistake you made ("I shipped this with the wrong
+    parent entity for a month before anyone noticed.").
+  • Mini-dialogue — two lines of remembered conversation that set up the point.
+
+QUICK-EXERCISE OPENERS ARE A RARE FALLBACK. Openers built on "here's a quick
+exercise", "here's a small exercise", "try this", or "think about the last
+time you…" must NOT be the default. Use one only when the angle genuinely
+needs the reader to run a calculation in their own head, and even then no more
+than occasionally. (Voice sample Issue #002 opens this way — pattern-match its
+register, NOT its opener shape.)
+
+DO NOT REPEAT THE OPENER SHAPE BACK-TO-BACK. If a "RECENT ISSUES" block is
+appended to this brief, scan the opening lines of those issues. Do not reuse
+the same opener shape as the most recent issue — and never use a quick-exercise
+opener if a recent issue already used one. When in doubt, pick a different
+shape from the menu above.`.trim();
 
 // ── Voice samples (few-shot examples for the editorial agent) ───────────────
 //
@@ -371,8 +422,10 @@ VOICE RULES (these are Aksel's own words — follow them literally)
 
 ### 2. Structural pattern
 Every issue follows roughly this shape:
-  • Open with a small concrete hook — a moment, a story, a question to
-    ask the reader. Not a definition. Not a stat. A scene.
+  • Open with a small concrete hook — and VARY the opener shape issue to
+    issue per the OPENER VARIETY section below. Not a definition. A "here's
+    a quick exercise" / "think about the last time…" opener is a rare
+    fallback, never the default.
   • Pivot to the actual point being made (one or two sentences).
   • Develop the point with evidence — specific numbers, dates, sources
     where possible, anonymised stories from real work where useful.
@@ -559,6 +612,12 @@ Different tasks in the pipeline call for different outputs:
       One paragraph on why this angle lost. Optionally a 2–3 sentence
       skeleton for next week.
       </file>
+
+══════════════════════════════════════════════════════════════════════════
+OPENER VARIETY
+══════════════════════════════════════════════════════════════════════════
+
+${OPENER_VARIETY_GUIDANCE}
 
 ══════════════════════════════════════════════════════════════════════════
 BRAND FINGERPRINT (additional production notes)
@@ -900,6 +959,7 @@ export const WEEKLY_ANALYTICAL_BANKER_REFERENCE_PLAN = JSON.stringify([
       "'GLEIF'), prefer concrete examples over public datasets. If 'bank', " +
       "keep the existing register — datasets, regulatory context, plumbing. " +
       "If 'universal', write so both readers nod along.\n\n" +
+      OPENER_VARIETY_GUIDANCE + "\n\n" +
       "No <file> blocks at this stage — just the markdown article. The QA " +
       "task will review this output and the final task will produce the " +
       "publish-ready files.",
@@ -1280,6 +1340,7 @@ export const WEEKLY_SME_ANALYTICS_REFERENCE_PLAN = JSON.stringify([
       "pain point that creates for SME leaders right now, and how a small " +
       "analytics team (or FatCat Analytics) can help — without becoming a " +
       "vendor pitch.\n\n" +
+      OPENER_VARIETY_GUIDANCE + "\n\n" +
       "No <file> blocks at this stage — just the markdown article. The QA " +
       "task will review this output and the final task will produce the " +
       "publish-ready files.",
