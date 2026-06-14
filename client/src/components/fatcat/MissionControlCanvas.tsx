@@ -122,10 +122,23 @@ export default function MissionControlCanvas({
           ))}
 
           {/* Live name/role/status labels in the cleared nameplate bands. */}
+          {/* Stage 6.15.3: lower-row seats (indices 2 and 5 in the SEATS array)
+              flip their label pill above the sprite so it doesn't drape into
+              the painted task-stream panel that sits immediately below. */}
           <SeatLabel slot={manager} seat={managerSeat} kind="manager" />
-          {filledSeats.map(({ slot, seat }) => (
-            <SeatLabel key={`lbl-${slot.key}`} slot={slot} seat={seat} kind="committee" />
-          ))}
+          {filledSeats.map(({ slot, seat }, i) => {
+            const seatIdx = seats.indexOf(seat);
+            const isBottomRow = seatIdx === 2 || seatIdx === 5;
+            return (
+              <SeatLabel
+                key={`lbl-${slot.key}`}
+                slot={slot}
+                seat={seat}
+                kind="committee"
+                placement={isBottomRow ? "above" : "below"}
+              />
+            );
+          })}
         </>
       )}
 
@@ -206,8 +219,8 @@ function SeatSprite({
 // ─── SeatLabel: live name + role + status pill in the cleared nameplate band ───
 
 function SeatLabel({
-  slot, seat, kind,
-}: { slot: RosterSlot; seat: SeatRect; kind: "manager" | "committee" }) {
+  slot, seat, kind, placement = "below",
+}: { slot: RosterSlot; seat: SeatRect; kind: "manager" | "committee"; placement?: "below" | "above" }) {
   const meta = FATCAT_STATUS_META[slot.status];
   // Painted nameplate bands sit just below each portrait, halfway between
   // adjacent row centres. Anchor the pill *centre* (not top) to that band so the
@@ -220,8 +233,15 @@ function SeatLabel({
   // and fully inside its own seat band — never touching the head of the sprite
   // in the row below (rows are 17.5pp apart, sprite half-h is ~6.4pp, so 17.5 -
   // 6.4 = 11.1pp of clear vertical space below each sprite for the pill).
+  //
+  // Stage 6.15.3: bottom-row seats use placement="above" so the pill flips to
+  // sit just above the sprite — the painted task-stream panel begins immediately
+  // beneath the lower seats, leaving no room for a below-pill without intruding
+  // into the panel chrome.
   const halfSpriteH   = kind === "manager" ? seat.h * 0.575 : seat.h * 0.425; // (heightScale/2)
-  const bandCenterPct = seat.y + halfSpriteH + 1.0;
+  const bandCenterPct = placement === "above"
+    ? seat.y - halfSpriteH - 1.0
+    : seat.y + halfSpriteH + 1.0;
 
   return (
     <div
