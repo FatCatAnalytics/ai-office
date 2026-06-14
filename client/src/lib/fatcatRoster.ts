@@ -132,7 +132,11 @@ export const ARCHETYPE_SPRITE_SLUG: Record<FatCatArchetype, string> = {
   research:     "research",
   editor:       "editor",
   writer:       "writer",
-  analyst:      "writer",
+  // Stage 6.15.4: in the generic workflow plan, analyst + engineer used to share
+  // sprites with writer + market respectively, producing visible duplicates in
+  // the 6-seat office (“two Data Purrson”). Re-map them to unused unique sprites
+  // so every seat in the generic plan gets its own face.
+  analyst:      "financial", // was "writer" — duplicate of slot 3
   qa:           "qa",
   factcheck:    "qa",
   publish:      "market",
@@ -145,7 +149,7 @@ export const ARCHETYPE_SPRITE_SLUG: Record<FatCatArchetype, string> = {
   cio:          "cio",
   valuation:    "financial",
   contrarian:   "risk",
-  engineer:     "market",
+  engineer:     "cio", // was "market" — duplicate of slot 7 in editorial plans
 };
 
 // Static sprite imports — let Vite handle URL hashing + dev-server serving.
