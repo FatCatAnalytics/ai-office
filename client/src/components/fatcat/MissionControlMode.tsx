@@ -9,7 +9,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { Radar } from "lucide-react";
-import type { Agent, AgentEvent, Project } from "../../types";
+import type { Agent, AgentEvent, Project, Task } from "../../types";
 import {
   buildRoster, classifyWorkflow, workflowLabel,
   FATCAT_STATUS_META, isActiveStatus, type RosterSlot,
@@ -26,6 +26,10 @@ interface Props {
   agents: Agent[];
   project: Project | null;
   events: AgentEvent[];
+  /** Stage 6.15.1 — forwarded to the live WORKFLOW OVERVIEW + TASK STREAM panels
+   *  inside MissionControlCanvas. Already plumbed from server via WebSocket task
+   *  broadcasts, so we just pass the array down. */
+  tasks: Task[];
 }
 
 // Calibrated against the approved Mission Control artwork by overlaying these
@@ -44,7 +48,7 @@ const SEATS: { x: number; y: number; w: number; h: number }[] = [
 // Central FatCat Manager — sized to the painted body on the central dais.
 const MANAGER_SEAT = { x: 50, y: 29, w: 16, h: 35 };
 
-export default function MissionControlMode({ agents, project, events }: Props) {
+export default function MissionControlMode({ agents, project, events, tasks }: Props) {
   const reduced = useReducedMotion();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
@@ -92,6 +96,8 @@ export default function MissionControlMode({ agents, project, events }: Props) {
               seated={seated}
               seats={SEATS}
               managerSeat={MANAGER_SEAT}
+              tasks={tasks}
+              agents={agents}
             />
 
             {/* Card-highlight layer: the glow lives on the painted committee
