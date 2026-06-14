@@ -101,26 +101,56 @@ const ARCHETYPE_COLOR: Record<FatCatArchetype, string> = {
   engineer:     "#14b8a6",
 };
 
+// Cat-pun display names. Painted seats locked to MissionControlMode.tsx;
+// secondary archetypes share a personality with the primary that owns the sprite
+// (e.g. analyst → Data Purrson, factcheck → Agent Clawrence, valuation → Sir Tabby Calcuclaw).
 const ARCHETYPE_FALLBACK_NAME: Record<FatCatArchetype, string> = {
-  manager:      "Manager FatCat",
-  research:     "Research FatCat",
-  editor:       "Editor FatCat",
-  writer:       "Writer FatCat",
-  analyst:      "Analyst FatCat",
-  qa:           "QA FatCat",
-  factcheck:    "Fact-Check FatCat",
-  publish:      "Publishing FatCat",
-  diligence:    "Diligence FatCat",
-  sourceverify: "Source-Verify FatCat",
-  financial:    "Financial Model FatCat",
-  risk:         "Risk FatCat",
-  market:       "Market Signal FatCat",
-  memo:         "Memo FatCat",
-  cio:          "CIO FatCat",
-  valuation:    "Valuation FatCat",
-  contrarian:   "Contrarian FatCat",
-  engineer:     "Engineer FatCat",
+  manager:      "Boss Tabbington",
+  research:     "Prof. Whiskerton",
+  editor:       "SecureCat",
+  writer:       "Data Purrson",
+  analyst:      "Data Purrson",
+  qa:           "Agent Clawrence",
+  factcheck:    "Agent Clawrence",
+  publish:      "Mktg. Meowdison",
+  diligence:    "Prof. Whiskerton",
+  sourceverify: "SecureCat",
+  financial:    "Sir Tabby Calcuclaw",
+  risk:         "Counsel Pawsley",
+  market:       "Mktg. Meowdison",
+  memo:         "Data Purrson",
+  cio:          "CIO Whiskerstone",
+  valuation:    "Sir Tabby Calcuclaw",
+  contrarian:   "Counsel Pawsley",
+  engineer:     "Mktg. Meowdison",
 };
+
+// Maps each archetype to the sprite file slug (under attached_assets/fatcat/sprites/).
+// Secondary archetypes reuse the primary's sprite — same personality, different role label.
+export const ARCHETYPE_SPRITE_SLUG: Record<FatCatArchetype, string> = {
+  manager:      "manager",
+  research:     "research",
+  editor:       "editor",
+  writer:       "writer",
+  analyst:      "writer",
+  qa:           "qa",
+  factcheck:    "qa",
+  publish:      "market",
+  diligence:    "research",
+  sourceverify: "editor",
+  financial:    "financial",
+  risk:         "risk",
+  market:       "market",
+  memo:         "writer",
+  cio:          "cio",
+  valuation:    "financial",
+  contrarian:   "risk",
+  engineer:     "market",
+};
+
+export function archetypeSpriteUrl(a: FatCatArchetype): string {
+  return `/attached_assets/fatcat/sprites/${ARCHETYPE_SPRITE_SLUG[a]}.png`;
+}
 
 export function archetypeColor(a: FatCatArchetype): string {
   return ARCHETYPE_COLOR[a] ?? "#64748b";
