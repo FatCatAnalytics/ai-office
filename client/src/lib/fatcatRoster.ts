@@ -148,8 +148,32 @@ export const ARCHETYPE_SPRITE_SLUG: Record<FatCatArchetype, string> = {
   engineer:     "market",
 };
 
+// Static sprite imports — let Vite handle URL hashing + dev-server serving.
+// Using a slug-keyed map lets every archetype reuse its primary's sprite.
+import spriteManager   from "@assets/fatcat/sprites/manager.png";
+import spriteResearch  from "@assets/fatcat/sprites/research.png";
+import spriteEditor    from "@assets/fatcat/sprites/editor.png";
+import spriteWriter    from "@assets/fatcat/sprites/writer.png";
+import spriteQa        from "@assets/fatcat/sprites/qa.png";
+import spriteFinancial from "@assets/fatcat/sprites/financial.png";
+import spriteRisk      from "@assets/fatcat/sprites/risk.png";
+import spriteMarket    from "@assets/fatcat/sprites/market.png";
+import spriteCio       from "@assets/fatcat/sprites/cio.png";
+
+const SPRITE_URL_BY_SLUG: Record<string, string> = {
+  manager:   spriteManager,
+  research:  spriteResearch,
+  editor:    spriteEditor,
+  writer:    spriteWriter,
+  qa:        spriteQa,
+  financial: spriteFinancial,
+  risk:      spriteRisk,
+  market:    spriteMarket,
+  cio:       spriteCio,
+};
+
 export function archetypeSpriteUrl(a: FatCatArchetype): string {
-  return `/attached_assets/fatcat/sprites/${ARCHETYPE_SPRITE_SLUG[a]}.png`;
+  return SPRITE_URL_BY_SLUG[ARCHETYPE_SPRITE_SLUG[a]];
 }
 
 export function archetypeColor(a: FatCatArchetype): string {

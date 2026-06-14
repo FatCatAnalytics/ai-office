@@ -1,19 +1,14 @@
 // Stage 6.12.2 — FatCat Mission Control mode (approved asset-backed).
-//
-// The mode renders the approved FatCat "Mission Control" HUD artwork as the
-// visual canvas. The painted scene shows the central FatCat Manager flanked by
-// the AI committee of specialist FatCats inside a command-center HUD. We overlay
-// the live app on top: a command header, transparent clickable hotspots over
-// each painted committee FatCat (driven by the dynamic roster), a live task
-// stream, a selected-agent detail panel, and a bottom health strip. Roster
-// roles beyond the painted committee seats fall into a "bench" list.
-//
-// No generated emoji/circle avatars are used — the cats come entirely from the
-// approved artwork; the roster only drives labels/status/hotspots over it.
+// Stage 6.14.2 — composite renderer: the painted HUD chrome is now empty_frame.png
+// (cat interiors + nameplate bands cleared) and per-archetype sprite portraits
+// are layered on top via <MissionControlCanvas/>. Sprites cross-dissolve when
+// the roster's archetype for a seat changes, and live name/role/status pills
+// render in the cleared nameplate bands. Card highlights and hotspots still
+// use the same percentage seat rectangles so the live click/focus/select
+// affordances align exactly with the new sprite layer.
 
 import { useMemo, useRef, useState } from "react";
 import { Radar } from "lucide-react";
-import missionImage from "@assets/fatcat/fatcat_mission_control.jpg";
 import type { Agent, AgentEvent, Project } from "../../types";
 import {
   buildRoster, classifyWorkflow, workflowLabel,
@@ -22,6 +17,7 @@ import {
 import {
   FatCatStyles, AgentDetailPanel, CardHighlight, useReducedMotion, useContainRect,
 } from "./shared";
+import MissionControlCanvas from "./MissionControlCanvas";
 
 // Intrinsic aspect ratio of the approved Mission Control artwork (1536 × 1024).
 const ART_RATIO = 1536 / 1024;
@@ -82,18 +78,22 @@ export default function MissionControlMode({ agents, project, events }: Props) {
           container shape. */}
       <div ref={containerRef} className="absolute inset-0 p-2 sm:p-4">
         <div className="relative w-full h-full">
-          <img
-            src={missionImage}
-            alt="FatCat Mission Control HUD: the central FatCat Manager flanked by the AI committee of specialist FatCats inside a command center."
-            className="absolute inset-0 w-full h-full object-contain select-none"
-            draggable={false}
-          />
-
-          {/* Hotspot layer aligned to the rendered image box */}
+          {/* Composite canvas: empty HUD frame + per-archetype sprites + live
+              nameplate labels. Sized to match the letterboxed image box so the
+              same percentage seat coordinates land correctly. */}
           <div
             className="absolute"
             style={{ left: imgRect.left, top: imgRect.top, width: imgRect.width, height: imgRect.height }}
+            role="img"
+            aria-label="FatCat Mission Control HUD: the central FatCat Manager flanked by the AI committee of specialist FatCats inside a command center."
           >
+            <MissionControlCanvas
+              manager={manager}
+              seated={seated}
+              seats={SEATS}
+              managerSeat={MANAGER_SEAT}
+            />
+
             {/* Card-highlight layer: the glow lives on the painted committee
                 CARD (portrait + nameplate), not floating over the cat alone.
                 Persistent for the live agent; otherwise revealed on hover /

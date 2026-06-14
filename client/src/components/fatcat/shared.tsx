@@ -74,8 +74,14 @@ export function FatCatStyles() {
          doing the work. Subtle so it reads as "this one is live" without
          covering or boxing the approved artwork. */
       @keyframes fcWork { 0%,100% { opacity:.7 } 50% { opacity:1 } }
+      /* Cross-dissolve when a seat's archetype swaps. The <img key={archetype}>
+         remount triggers this 320ms fade-in; the previous image is removed
+         immediately, so the perceived effect is a soft fade-replace. */
+      @keyframes fcSpriteFadeIn { from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+      .fc-sprite { animation: fcSpriteFadeIn 320ms ease-out both; }
       @media (prefers-reduced-motion: reduce) {
         .fc-motion { animation: none !important; }
+        .fc-sprite { animation: none !important; }
       }
       /* Hotspot buttons never draw a browser default focus outline over the art;
          the only focus affordance is the custom ring revealed below. */
