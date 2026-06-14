@@ -134,19 +134,28 @@ function SeatLabel({
   slot, seat, kind,
 }: { slot: RosterSlot; seat: SeatRect; kind: "manager" | "committee" }) {
   const meta = FATCAT_STATUS_META[slot.status];
-  // Nameplate band y = seat centre + (h * 0.58). Manager has a wider band painted
-  // beneath the dais ("FATCAT MANAGER / Task Orchestrator") so we widen it.
-  const bandWidthPct = kind === "manager" ? seat.w * 1.9 : seat.w * 1.0;
-  const bandTopPct   = seat.y + seat.h * 0.50;
+  // Painted nameplate bands sit just below each portrait, halfway between
+  // adjacent row centres. Anchor the pill *centre* (not top) to that band so the
+  // pill stays inside its own seat and doesn't overflow into the head of the
+  // sprite in the row below. Manager has a wider painted band beneath the dais
+  // ("FATCAT MANAGER / Task Orchestrator") so we widen the pill there.
+  const bandWidthPct  = kind === "manager" ? seat.w * 1.9 : seat.w * 1.0;
+  // Sprite visible bottom is roughly seat.y + (seat.h * heightScale / 2). Pill
+  // centre sits ~1pp below that so the pill is fully outside the sprite silhouette
+  // and fully inside its own seat band — never touching the head of the sprite
+  // in the row below (rows are 17.5pp apart, sprite half-h is ~6.4pp, so 17.5 -
+  // 6.4 = 11.1pp of clear vertical space below each sprite for the pill).
+  const halfSpriteH   = kind === "manager" ? seat.h * 0.575 : seat.h * 0.425; // (heightScale/2)
+  const bandCenterPct = seat.y + halfSpriteH + 1.0;
 
   return (
     <div
       className="fc-seat-label absolute pointer-events-none"
       style={{
         left: `${seat.x}%`,
-        top: `${bandTopPct}%`,
+        top: `${bandCenterPct}%`,
         width: `${bandWidthPct}%`,
-        transform: "translateX(-50%)",
+        transform: "translate(-50%, -50%)",
         zIndex: 8,
       }}
     >
