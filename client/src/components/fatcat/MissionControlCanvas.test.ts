@@ -40,8 +40,9 @@ describe("MissionControlCanvas — composite renderer", () => {
     const src = read(CANVAS);
     expect(src).toMatch(/<SeatSprite\s+slot=\{manager\}/);
     expect(src).toMatch(/filledSeats\.map/);
-    // Manager and committee branches diverge on heightScale.
-    expect(src).toMatch(/kind === "manager" \? 1\.15 : 1\.0/);
+    // Manager and committee branches diverge on heightScale. Manager is upscaled,
+    // committee is downscaled to leave breathing room between adjacent painted rows.
+    expect(src).toMatch(/kind === "manager" \? 1\.15 : 0\.85/);
   });
 
   it("overlays live name + role + status in the cleared nameplate band", () => {

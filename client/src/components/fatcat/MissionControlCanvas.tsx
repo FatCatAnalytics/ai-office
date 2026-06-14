@@ -91,10 +91,14 @@ function SeatSprite({
   slot, seat, kind,
 }: { slot: RosterSlot; seat: SeatRect; kind: "manager" | "committee" }) {
   const src = archetypeSpriteUrl(slot.archetype);
-  // Manager is painted larger and shifted slightly down vs the seat rect; the
-  // ratios below match the empty_frame.png mask used to clear the painted figure.
-  const heightScale = kind === "manager" ? 1.15 : 1.0;
-  const yOffsetPct = kind === "manager" ? 1 : 1; // both nudge ~1% down so paws sit on the painted glow
+  // Painted row centres in empty_frame.png (measured from alpha mask) sit ~17.5pp
+  // apart; with sprite h=18pp the rows visibly overlap when all 6 seats are filled
+  // (e.g. the diligence workflow). We shrink committee sprites to 15pp tall so
+  // adjacent rows leave ~2pp of breathing room while still filling the painted
+  // seat band. Manager keeps its larger silhouette (center column has no neighbours).
+  const heightScale = kind === "manager" ? 1.15 : 0.85;
+  const widthScale  = kind === "manager" ? 1.05 : 0.95;
+  const yOffsetPct  = kind === "manager" ? 1   : 1; // nudge ~1% down so paws sit on the painted glow
 
   return (
     <img
@@ -107,7 +111,7 @@ function SeatSprite({
       style={{
         left: `${seat.x}%`,
         top: `${seat.y + yOffsetPct}%`,
-        width: `${seat.w * 1.05}%`,
+        width: `${seat.w * widthScale}%`,
         height: `${seat.h * heightScale}%`,
         transform: "translate(-50%, -50%)",
         objectFit: "contain",
