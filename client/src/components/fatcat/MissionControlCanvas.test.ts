@@ -57,14 +57,59 @@ describe("MissionControlCanvas — composite renderer", () => {
   it("?calibrate=1 toggles a seat-outline overlay (read from window.location.search)", () => {
     const src = read(CANVAS);
     expect(src).toMatch(/URLSearchParams/);
-    expect(src).toMatch(/get\("calibrate"\) === "1"/);
+    // Stage 6.15.1: calibrate mode is now tri-state (false | "seats" | "panels").
+    // ?calibrate=1 still resolves to "seats" for backwards-compatibility.
+    expect(src).toMatch(/if \(v === "1"\) return "seats"/);
     expect(src).toMatch(/CalibrationOverlay/);
   });
 
   it("exposes a `calibrate` prop override so tests/storybook can force the overlay without window", () => {
     const src = read(CANVAS);
-    expect(src).toMatch(/calibrate\?: boolean/);
+    // Stage 6.15.1: prop is `CalibrateMode` (false | "seats" | "panels").
+    expect(src).toMatch(/calibrate\?: CalibrateMode/);
     expect(src).toMatch(/calibrate \?\? readCalibrateParam\(\)/);
+  });
+
+  // ─── Stage 6.15.1 ──────────────────────────────────────────────────
+
+  it("exports PANEL_ZONES_PCT mirroring the alpha-mask coords in make_emptied_frame.py", () => {
+    const src = read(CANVAS);
+    expect(src).toMatch(/export const PANEL_ZONES_PCT/);
+    expect(src).toMatch(/workflowOverview:\s*\{\s*l:\s*2\.4,\s*t:\s*11\.5,\s*r:\s*22\.8,\s*b:\s*39\.0\s*\}/);
+    expect(src).toMatch(/taskStream:\s*\{\s*l:\s*25\.2,\s*t:\s*60\.5,\s*r:\s*74\.8,\s*b:\s*86\.0\s*\}/);
+  });
+
+  it("renders WorkflowOverviewPanel and TaskStreamPanel inside PanelSlots", () => {
+    const src = read(CANVAS);
+    expect(src).toMatch(/import WorkflowOverviewPanel from "\.\/WorkflowOverviewPanel"/);
+    expect(src).toMatch(/import TaskStreamPanel from "\.\/TaskStreamPanel"/);
+    expect(src).toMatch(/<PanelSlot zone=\{PANEL_ZONES_PCT\.workflowOverview\}>/);
+    expect(src).toMatch(/<PanelSlot zone=\{PANEL_ZONES_PCT\.taskStream\}>/);
+    expect(src).toMatch(/<WorkflowOverviewPanel tasks=\{tasks\}/);
+    expect(src).toMatch(/<TaskStreamPanel tasks=\{tasks\} agents=\{agents\}/);
+  });
+
+  it("passes pointer-events: none on PanelSlot so hotspots stay clickable through the panel", () => {
+    const src = read(CANVAS);
+    // The PanelSlot wrapper must NOT trap pointer events — sprite hotspots sit
+    // partly under the painted task-stream panel, and they must stay clickable.
+    expect(src).toMatch(/pointerEvents:\s*"none"/);
+  });
+
+  it("?calibrate=panels renders the PanelCalibrationOverlay (sprites stay visible)", () => {
+    const src = read(CANVAS);
+    expect(src).toMatch(/if \(v === "panels"\) return "panels"/);
+    expect(src).toMatch(/isPanelCal && <PanelCalibrationOverlay/);
+    // PanelCalibrationOverlay is gated by isPanelCal, NOT isSeatCal, so sprites
+    // remain rendered for the live-composite preview the designer is tuning.
+    expect(src).toMatch(/function PanelCalibrationOverlay/);
+  });
+
+  it("hides sprites + live labels + panels only in seat-calibration mode (?calibrate=1)", () => {
+    const src = read(CANVAS);
+    // Both the sprite block and the panel block must be gated by `!isSeatCal`.
+    const seatGuards = src.match(/\{!isSeatCal && \(/g) ?? [];
+    expect(seatGuards.length).toBeGreaterThanOrEqual(2);
   });
 
   it("the fcSpriteFadeIn keyframe is defined in shared FatCatStyles", () => {

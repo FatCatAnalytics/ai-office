@@ -1,4 +1,9 @@
 // Stage 6.14.2 — Mission Control composite renderer.
+// Stage 6.15.1 — Adds the live <WorkflowOverviewPanel/> and <TaskStreamPanel/>
+// inside the cleared panel interiors of empty_frame.png. The painted panel
+// border + header label ("WORKFLOW OVERVIEW" / "CURRENT TASK STREAM") in the
+// JPG art still show — only the interiors are transparent, so the React panels
+// render against the painted chrome at a sharp seam.
 //
 // Renders the painted HUD with the cat interiors and nameplate bands cleared
 // (empty_frame.png) and composites per-archetype sprite portraits + live HTML
@@ -8,41 +13,67 @@
 // percentage rectangles MissionControlMode.tsx already uses, so hotspots and
 // card highlights line up exactly with the sprites.
 //
-// A `?calibrate=1` URL parameter shows the seat rectangles and their coords for
-// visual tuning — never used in production but kept in the bundle so designers
-// can flip it on without a rebuild.
+// URL params for live tuning (never used in production but kept in the bundle):
+//   ?calibrate=1       — show seat rectangles + coords (sprites + panels hidden)
+//   ?calibrate=panels  — show only the panel-zone outlines (sprites visible)
 
 import { useMemo } from "react";
 import emptyFrame from "@assets/fatcat/sprites/empty_frame.png";
 import {
   archetypeSpriteUrl, FATCAT_STATUS_META, type RosterSlot,
 } from "../../lib/fatcatRoster";
+import type { Agent, Task } from "../../types";
+import WorkflowOverviewPanel from "./WorkflowOverviewPanel";
+import TaskStreamPanel from "./TaskStreamPanel";
 
 export interface SeatRect { x: number; y: number; w: number; h: number; }
+
+/**
+ * Panel zone rectangles — % of 1536×1024, in `{l,t,r,b}` (left/top/right/bottom)
+ * form so they exactly mirror the mask coords in `make_emptied_frame.py`. The
+ * React panels render INSIDE these rects, against the painted border + header.
+ *
+ * If you change these, also update `PANEL_INTERIORS_PCT` in
+ * `make_emptied_frame.py` and regenerate `empty_frame.png` so the alpha holes
+ * line up.
+ */
+export const PANEL_ZONES_PCT = {
+  workflowOverview: { l:  2.4, t: 11.5, r: 22.8, b: 39.0 },
+  taskStream:       { l: 25.2, t: 60.5, r: 74.8, b: 86.0 },
+} as const;
+
+export type CalibrateMode = false | "seats" | "panels";
 
 interface Props {
   manager: RosterSlot;
   seated: RosterSlot[];
   seats: SeatRect[];
   managerSeat: SeatRect;
-  /** Optional explicit override (test/storybook). Falls back to URL ?calibrate=1. */
-  calibrate?: boolean;
+  tasks: Task[];
+  agents: Agent[];
+  /** Override calibrate mode (test/storybook). Falls back to URL `?calibrate=`. */
+  calibrate?: CalibrateMode;
 }
 
-/** Read ?calibrate=1 once per render — cheap, no router dependency. */
-function readCalibrateParam(): boolean {
+/** Read `?calibrate=...` once per render — cheap, no router dependency. */
+function readCalibrateParam(): CalibrateMode {
   if (typeof window === "undefined") return false;
   try {
-    return new URLSearchParams(window.location.search).get("calibrate") === "1";
+    const v = new URLSearchParams(window.location.search).get("calibrate");
+    if (v === "1") return "seats";
+    if (v === "panels") return "panels";
+    return false;
   } catch {
     return false;
   }
 }
 
 export default function MissionControlCanvas({
-  manager, seated, seats, managerSeat, calibrate,
+  manager, seated, seats, managerSeat, tasks, agents, calibrate,
 }: Props) {
-  const isCalibrate = calibrate ?? readCalibrateParam();
+  const calMode: CalibrateMode = calibrate ?? readCalibrateParam();
+  const isSeatCal = calMode === "seats";
+  const isPanelCal = calMode === "panels";
 
   // Pair each seat with its slot (skip empties so we don't render a default sprite
   // when the workflow uses fewer than 6 specialists).
@@ -53,7 +84,8 @@ export default function MissionControlCanvas({
 
   return (
     <>
-      {/* Background: HUD chrome with cleared seat interiors + nameplate bands. */}
+      {/* Background: HUD chrome with cleared seat interiors + nameplate bands
+          + cleared panel interiors (WORKFLOW OVERVIEW + CURRENT TASK STREAM). */}
       <img
         src={emptyFrame}
         alt=""
@@ -62,10 +94,24 @@ export default function MissionControlCanvas({
         draggable={false}
       />
 
+      {/* Live data panels — render in both normal mode AND ?calibrate=panels so
+          designers can position them against the painted chrome. They are
+          hidden only in full seat-calibration mode (?calibrate=1). */}
+      {!isSeatCal && (
+        <>
+          <PanelSlot zone={PANEL_ZONES_PCT.workflowOverview}>
+            <WorkflowOverviewPanel tasks={tasks} />
+          </PanelSlot>
+          <PanelSlot zone={PANEL_ZONES_PCT.taskStream}>
+            <TaskStreamPanel tasks={tasks} agents={agents} />
+          </PanelSlot>
+        </>
+      )}
+
       {/* In ?calibrate=1 mode we hide sprites and labels so the dashed seat rects
           + coord labels read cleanly. Sprite/label placement is validated via the
           idle and diligence screenshots instead. */}
-      {!isCalibrate && (
+      {!isSeatCal && (
         <>
           {/* Manager sprite (center seat, taller than committee seats). */}
           <SeatSprite slot={manager} seat={managerSeat} kind="manager" />
@@ -83,9 +129,38 @@ export default function MissionControlCanvas({
         </>
       )}
 
-      {/* Calibration overlay — only when ?calibrate=1 */}
-      {isCalibrate && <CalibrationOverlay seats={seats} managerSeat={managerSeat} />}
+      {/* Calibration overlays */}
+      {isSeatCal && <CalibrationOverlay seats={seats} managerSeat={managerSeat} />}
+      {isPanelCal && <PanelCalibrationOverlay />}
     </>
+  );
+}
+
+// ─── PanelSlot: position a child inside a {l,t,r,b}% rect of the canvas ───────
+//
+// The parent <div> in MissionControlMode is already sized to the letterboxed
+// image rect, so we just position absolutely as percentages. We DON'T use the
+// translate(-50%, -50%) pattern the seats use — these rects are already in
+// edge-anchored {l,t,r,b}% form.
+
+function PanelSlot({
+  zone, children,
+}: { zone: { l: number; t: number; r: number; b: number }; children: React.ReactNode }) {
+  return (
+    <div
+      className="absolute"
+      style={{
+        left: `${zone.l}%`,
+        top: `${zone.t}%`,
+        width: `${zone.r - zone.l}%`,
+        height: `${zone.b - zone.t}%`,
+        zIndex: 7, // above sprites (3/5), below seat labels (8) and hotspots (10/20)
+        pointerEvents: "none", // hotspots stay clickable through the panel area
+        overflow: "hidden",
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -191,6 +266,43 @@ function SeatLabel({
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── PanelCalibrationOverlay: dashed panel-zone outlines (?calibrate=panels) ──
+//
+// Renders ONLY the panel zone rects — sprites + cards + hotspots stay visible
+// underneath so designers can tune panel boundaries against the live composite.
+
+function PanelCalibrationOverlay() {
+  const entries: { key: string; zone: { l: number; t: number; r: number; b: number }; label: string }[] = [
+    { key: "wf", zone: PANEL_ZONES_PCT.workflowOverview, label: "WORKFLOW OVERVIEW" },
+    { key: "ts", zone: PANEL_ZONES_PCT.taskStream,       label: "TASK STREAM" },
+  ];
+  return (
+    <>
+      {entries.map(({ key, zone, label }) => (
+        <div
+          key={`panel-cal-${key}`}
+          className="absolute pointer-events-none"
+          style={{
+            left: `${zone.l}%`,
+            top: `${zone.t}%`,
+            width: `${zone.r - zone.l}%`,
+            height: `${zone.b - zone.t}%`,
+            border: "1px dashed rgba(125, 211, 252, 0.85)",
+            background: "rgba(125, 211, 252, 0.05)",
+            zIndex: 60,
+            fontFamily: "monospace",
+            fontSize: 10,
+            color: "rgba(125, 211, 252, 0.95)",
+            padding: 4,
+          }}
+        >
+          {label} · l{zone.l}/t{zone.t} · r{zone.r}/b{zone.b}
+        </div>
+      ))}
+    </>
   );
 }
 

@@ -872,7 +872,7 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
         <div className="flex-1 min-h-0 overflow-hidden">
           {safeView === "iso"
             ? <IsometricOfficeMode agents={agents} project={project} events={events} />
-            : <MissionControlMode agents={agents} project={project} events={events} />}
+            : <MissionControlMode agents={agents} project={project} events={events} tasks={tasks} />}
         </div>
       ) : (
         <div className="flex flex-1 overflow-hidden">
