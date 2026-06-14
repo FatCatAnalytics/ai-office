@@ -62,19 +62,26 @@ export default function MissionControlCanvas({
         draggable={false}
       />
 
-      {/* Manager sprite (center seat, taller than committee seats). */}
-      <SeatSprite slot={manager} seat={managerSeat} kind="manager" />
+      {/* In ?calibrate=1 mode we hide sprites and labels so the dashed seat rects
+          + coord labels read cleanly. Sprite/label placement is validated via the
+          idle and diligence screenshots instead. */}
+      {!isCalibrate && (
+        <>
+          {/* Manager sprite (center seat, taller than committee seats). */}
+          <SeatSprite slot={manager} seat={managerSeat} kind="manager" />
 
-      {/* Committee sprites (6 seats around the manager). */}
-      {filledSeats.map(({ slot, seat }) => (
-        <SeatSprite key={slot.key} slot={slot} seat={seat} kind="committee" />
-      ))}
+          {/* Committee sprites (6 seats around the manager). */}
+          {filledSeats.map(({ slot, seat }) => (
+            <SeatSprite key={slot.key} slot={slot} seat={seat} kind="committee" />
+          ))}
 
-      {/* Live name/role/status labels in the cleared nameplate bands. */}
-      <SeatLabel slot={manager} seat={managerSeat} kind="manager" />
-      {filledSeats.map(({ slot, seat }) => (
-        <SeatLabel key={`lbl-${slot.key}`} slot={slot} seat={seat} kind="committee" />
-      ))}
+          {/* Live name/role/status labels in the cleared nameplate bands. */}
+          <SeatLabel slot={manager} seat={managerSeat} kind="manager" />
+          {filledSeats.map(({ slot, seat }) => (
+            <SeatLabel key={`lbl-${slot.key}`} slot={slot} seat={seat} kind="committee" />
+          ))}
+        </>
+      )}
 
       {/* Calibration overlay — only when ?calibrate=1 */}
       {isCalibrate && <CalibrationOverlay seats={seats} managerSeat={managerSeat} />}
