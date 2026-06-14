@@ -126,6 +126,40 @@ describe("buildRoster — plan shapes", () => {
     );
   });
 
+  // Stage 6.15.4 regression guard: the 6-seat generic plan must paint a unique
+  // sprite at every seat. This was the "two Data Purrson" bug — analyst was
+  // sharing the writer sprite, so slots 3 and 4 wore the same face.
+  it("generic plan renders unique sprites at every seat", async () => {
+    const { ARCHETYPE_SPRITE_SLUG } = await import("./fatcatRoster");
+    const roster = buildRoster(empty(mkProject({ name: "Build a mobile app" })));
+    const slugs = roster.map((r) => ARCHETYPE_SPRITE_SLUG[r.archetype]);
+    const unique = new Set(slugs);
+    expect(unique.size, `duplicates: ${slugs.join(",")}`).toBe(slugs.length);
+  });
+
+  // Other plans (7-8 seats) may legitimately re-use a sprite once because we
+  // only have 9 unique sprite files; but no sprite should appear three or more
+  // times in a single roster.
+  it("no plan shows the same sprite three or more times", async () => {
+    const { ARCHETYPE_SPRITE_SLUG } = await import("./fatcatRoster");
+    const plans = [
+      "Weekly Analytical Banker",
+      "Weekly SME Analytics",
+      "Startup Due Diligence — Acme",
+      "Public Company Thesis Review: NVDA",
+      "Build a mobile app",
+    ];
+    for (const name of plans) {
+      const roster = buildRoster(empty(mkProject({ name })));
+      const slugs = roster.map((r) => ARCHETYPE_SPRITE_SLUG[r.archetype]);
+      const counts = new Map<string, number>();
+      for (const s of slugs) counts.set(s, (counts.get(s) ?? 0) + 1);
+      for (const [s, c] of counts) {
+        expect(c, `sprite "${s}" used ${c}x in plan "${name}"`).toBeLessThanOrEqual(2);
+      }
+    }
+  });
+
   it("manager is always central (first slot)", () => {
     for (const name of [
       "Weekly Analytical Banker",
