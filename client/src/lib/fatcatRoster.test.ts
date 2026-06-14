@@ -171,7 +171,8 @@ describe("buildRoster — live agent matching", () => {
   it("fills unmatched slots with derived (non-live) FatCats", () => {
     const roster = buildRoster({ project: mkProject({ name: "Startup Due Diligence" }), agents: [] });
     expect(roster.every((r) => !r.live)).toBe(true);
-    expect(roster.find((r) => r.archetype === "cio")?.name).toContain("FatCat");
+    // CIO archetype now uses the pun-name "CIO Whiskerstone" from ARCHETYPE_FALLBACK_NAME
+    expect(roster.find((r) => r.archetype === "cio")?.name).toBe("CIO Whiskerstone");
   });
 
   it("derives a working frontier from project progress when no live agents", () => {
