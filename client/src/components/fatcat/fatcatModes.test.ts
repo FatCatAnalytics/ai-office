@@ -36,10 +36,17 @@ describe("FatCat modes are asset-backed (approved artwork, not placeholders)", (
     expect(src).toMatch(/<img[\s\S]*src=\{officeImage\}/);
   });
 
-  it("Mission Control imports and renders the approved image as the canvas", () => {
+  it("Mission Control composites the approved HUD frame as the canvas", () => {
+    // Stage 6.14.2: the canvas is now <MissionControlCanvas/> which internally
+    // imports the emptied HUD frame (cat interiors + nameplate bands cleared).
+    // The mode delegates rendering to the canvas component.
     const src = read(MISSION);
-    expect(src).toMatch(/import\s+missionImage\s+from\s+["']@assets\/fatcat\/fatcat_mission_control\.jpg["']/);
-    expect(src).toMatch(/<img[\s\S]*src=\{missionImage\}/);
+    expect(src).toMatch(/import\s+MissionControlCanvas\s+from\s+["']\.\/MissionControlCanvas["']/);
+    expect(src).toMatch(/<MissionControlCanvas[\s\S]*?managerSeat=\{MANAGER_SEAT\}/);
+    // And the canvas itself uses the approved emptied frame as background.
+    const canvasSrc = read(resolve(here, "MissionControlCanvas.tsx"));
+    expect(canvasSrc).toMatch(/import\s+emptyFrame\s+from\s+["']@assets\/fatcat\/sprites\/empty_frame\.png["']/);
+    expect(canvasSrc).toMatch(/<img[\s\S]*src=\{emptyFrame\}/);
   });
 
   it("no mode reintroduces the removed placeholder FatCatAvatar", () => {

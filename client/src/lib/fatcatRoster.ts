@@ -101,26 +101,80 @@ const ARCHETYPE_COLOR: Record<FatCatArchetype, string> = {
   engineer:     "#14b8a6",
 };
 
+// Cat-pun display names. Painted seats locked to MissionControlMode.tsx;
+// secondary archetypes share a personality with the primary that owns the sprite
+// (e.g. analyst → Data Purrson, factcheck → Agent Clawrence, valuation → Sir Tabby Calcuclaw).
 const ARCHETYPE_FALLBACK_NAME: Record<FatCatArchetype, string> = {
-  manager:      "Manager FatCat",
-  research:     "Research FatCat",
-  editor:       "Editor FatCat",
-  writer:       "Writer FatCat",
-  analyst:      "Analyst FatCat",
-  qa:           "QA FatCat",
-  factcheck:    "Fact-Check FatCat",
-  publish:      "Publishing FatCat",
-  diligence:    "Diligence FatCat",
-  sourceverify: "Source-Verify FatCat",
-  financial:    "Financial Model FatCat",
-  risk:         "Risk FatCat",
-  market:       "Market Signal FatCat",
-  memo:         "Memo FatCat",
-  cio:          "CIO FatCat",
-  valuation:    "Valuation FatCat",
-  contrarian:   "Contrarian FatCat",
-  engineer:     "Engineer FatCat",
+  manager:      "Boss Tabbington",
+  research:     "Prof. Whiskerton",
+  editor:       "SecureCat",
+  writer:       "Data Purrson",
+  analyst:      "Data Purrson",
+  qa:           "Agent Clawrence",
+  factcheck:    "Agent Clawrence",
+  publish:      "Mktg. Meowdison",
+  diligence:    "Prof. Whiskerton",
+  sourceverify: "SecureCat",
+  financial:    "Sir Tabby Calcuclaw",
+  risk:         "Counsel Pawsley",
+  market:       "Mktg. Meowdison",
+  memo:         "Data Purrson",
+  cio:          "CIO Whiskerstone",
+  valuation:    "Sir Tabby Calcuclaw",
+  contrarian:   "Counsel Pawsley",
+  engineer:     "Mktg. Meowdison",
 };
+
+// Maps each archetype to the sprite file slug (under attached_assets/fatcat/sprites/).
+// Secondary archetypes reuse the primary's sprite — same personality, different role label.
+export const ARCHETYPE_SPRITE_SLUG: Record<FatCatArchetype, string> = {
+  manager:      "manager",
+  research:     "research",
+  editor:       "editor",
+  writer:       "writer",
+  analyst:      "writer",
+  qa:           "qa",
+  factcheck:    "qa",
+  publish:      "market",
+  diligence:    "research",
+  sourceverify: "editor",
+  financial:    "financial",
+  risk:         "risk",
+  market:       "market",
+  memo:         "writer",
+  cio:          "cio",
+  valuation:    "financial",
+  contrarian:   "risk",
+  engineer:     "market",
+};
+
+// Static sprite imports — let Vite handle URL hashing + dev-server serving.
+// Using a slug-keyed map lets every archetype reuse its primary's sprite.
+import spriteManager   from "@assets/fatcat/sprites/manager.png";
+import spriteResearch  from "@assets/fatcat/sprites/research.png";
+import spriteEditor    from "@assets/fatcat/sprites/editor.png";
+import spriteWriter    from "@assets/fatcat/sprites/writer.png";
+import spriteQa        from "@assets/fatcat/sprites/qa.png";
+import spriteFinancial from "@assets/fatcat/sprites/financial.png";
+import spriteRisk      from "@assets/fatcat/sprites/risk.png";
+import spriteMarket    from "@assets/fatcat/sprites/market.png";
+import spriteCio       from "@assets/fatcat/sprites/cio.png";
+
+const SPRITE_URL_BY_SLUG: Record<string, string> = {
+  manager:   spriteManager,
+  research:  spriteResearch,
+  editor:    spriteEditor,
+  writer:    spriteWriter,
+  qa:        spriteQa,
+  financial: spriteFinancial,
+  risk:      spriteRisk,
+  market:    spriteMarket,
+  cio:       spriteCio,
+};
+
+export function archetypeSpriteUrl(a: FatCatArchetype): string {
+  return SPRITE_URL_BY_SLUG[ARCHETYPE_SPRITE_SLUG[a]];
+}
 
 export function archetypeColor(a: FatCatArchetype): string {
   return ARCHETYPE_COLOR[a] ?? "#64748b";

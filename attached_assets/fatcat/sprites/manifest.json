@@ -1,0 +1,26 @@
+{
+  "$schema": "./manifest.schema.json",
+  "version": 1,
+  "generated": "2026-06-13",
+  "description": "FatCat sprite library. Each entry maps an archetype slug (used by the workflow planner) to a portrait file, a cat-pun display name, and the painted seat it occupies (or 'bench' for swap-ins).",
+  "seats": {
+    "center":      "manager",
+    "upper_left":  "research",
+    "mid_left":    "writer",
+    "lower_left":  "qa",
+    "upper_right": "risk",
+    "mid_right":   "editor",
+    "lower_right": "market"
+  },
+  "sprites": {
+    "manager":   { "name": "Boss Tabbington",      "role": "Manager",                "file": "manager.png",   "seat": "center" },
+    "research":  { "name": "Prof. Whiskerton",     "role": "Research / Diligence",   "file": "research.png",  "seat": "upper_left" },
+    "writer":    { "name": "Data Purrson",         "role": "Writer / Analyst",       "file": "writer.png",    "seat": "mid_left" },
+    "qa":        { "name": "Agent Clawrence",      "role": "QA / Fact-Check",        "file": "qa.png",        "seat": "lower_left" },
+    "risk":      { "name": "Counsel Pawsley",      "role": "Risk / Counsel",         "file": "risk.png",      "seat": "upper_right" },
+    "editor":    { "name": "SecureCat",            "role": "Editor / Source-Verify", "file": "editor.png",    "seat": "mid_right" },
+    "market":    { "name": "Mktg. Meowdison",      "role": "Market / Publish",       "file": "market.png",    "seat": "lower_right" },
+    "financial": { "name": "Sir Tabby Calcuclaw",  "role": "Financial Model",        "file": "financial.png", "seat": "bench" },
+    "cio":       { "name": "CIO Whiskerstone",     "role": "CIO Sign-off",           "file": "cio.png",       "seat": "bench" }
+  }
+}
