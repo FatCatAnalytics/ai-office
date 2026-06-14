@@ -40,10 +40,10 @@ interface Props {
 const SEATS: { x: number; y: number; w: number; h: number }[] = [
   { x: 29.5, y: 21,   w: 13, h: 18 }, // committee upper-left (Prof. Whiskerton)
   { x: 29.5, y: 38.5, w: 13, h: 18 }, // committee mid-left (Data Purrson)
-  { x: 29.5, y: 55,   w: 13, h: 18 }, // committee lower-left (Agent Clawrence)
+  { x: 29.5, y: 50,   w: 13, h: 18 }, // committee lower-left (Agent Clawrence) — Stage 6.15.2: nudged up 5pp so the label pill (centre at seat.y + h*0.425 + 1 ≈ 59) sits above the task-stream panel top (y 60.5).
   { x: 70.5, y: 21,   w: 13, h: 18 }, // committee upper-right (Counsel Pawsley)
   { x: 70.5, y: 38.5, w: 13, h: 18 }, // committee mid-right (SecureCat)
-  { x: 70.5, y: 54,   w: 13, h: 18 }, // committee lower-right (Mktg. Meowdison)
+  { x: 70.5, y: 50,   w: 13, h: 18 }, // committee lower-right (Mktg. Meowdison) — Stage 6.15.2: nudged up to match lower-left and clear the task-stream panel top edge.
 ];
 // Central FatCat Manager — sized to the painted body on the central dais.
 const MANAGER_SEAT = { x: 50, y: 29, w: 16, h: 35 };
