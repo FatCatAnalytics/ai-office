@@ -75,10 +75,8 @@ describe("MissionControlCanvas — composite renderer", () => {
   it("exports PANEL_ZONES_PCT mirroring the alpha-mask coords in make_emptied_frame.py", () => {
     const src = read(CANVAS);
     expect(src).toMatch(/export const PANEL_ZONES_PCT/);
-    // Stage 6.15.5: tightened to match the new empty_frame punch zones so the
-    // painted header + outer border survive the alpha mask.
-    expect(src).toMatch(/workflowOverview:\s*\{\s*l:\s*3\.0,\s*t:\s*12\.0,\s*r:\s*22\.2,\s*b:\s*38\.0\s*\}/);
-    expect(src).toMatch(/taskStream:\s*\{\s*l:\s*25\.0,\s*t:\s*62\.5,\s*r:\s*70\.3,\s*b:\s*75\.5\s*\}/);
+    expect(src).toMatch(/workflowOverview:\s*\{\s*l:\s*2\.4,\s*t:\s*11\.5,\s*r:\s*22\.8,\s*b:\s*39\.0\s*\}/);
+    expect(src).toMatch(/taskStream:\s*\{\s*l:\s*25\.2,\s*t:\s*60\.5,\s*r:\s*74\.8,\s*b:\s*86\.0\s*\}/);
   });
 
   it("renders WorkflowOverviewPanel and TaskStreamPanel inside PanelSlots", () => {
