@@ -83,7 +83,16 @@ export default function TaskStreamPanel({ tasks, agents, nowMs }: Props) {
         fontFamily: "Inter, system-ui, sans-serif",
         color: "rgba(220, 230, 240, 0.85)",
         padding: "8px 14px",
-        background: "transparent",
+        // Stage 6.15.5: panel draws its own border + glow so the live rows
+        // are framed even though the empty_frame mask clears the painted
+        // border (the painted rows in the source overflow the border so we
+        // must clear past it). Color/glow matches the painted Workflow
+        // Overview / Source Verification chrome (#1e293b border, cyan inner glow).
+        background: "rgba(6, 13, 24, 0.55)",
+        border: "1px solid rgba(56, 189, 248, 0.18)",
+        borderRadius: 8,
+        boxShadow:
+          "inset 0 0 16px rgba(56, 189, 248, 0.05), 0 0 12px rgba(0, 0, 0, 0.35)",
       }}
     >
       {rows.length === 0 && (
