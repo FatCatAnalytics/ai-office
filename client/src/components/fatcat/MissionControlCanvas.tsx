@@ -37,18 +37,9 @@ export interface SeatRect { x: number; y: number; w: number; h: number; }
  * `make_emptied_frame.py` and regenerate `empty_frame.png` so the alpha holes
  * line up.
  */
-// Stage 6.15.5: tightened to overlay only the cleared interior. The painted
-// main header ("WORKFLOW OVERVIEW" / "CURRENT TASK STREAM") at the top of each
-// panel survives the mask and is shown by the empty_frame.png underneath.
-//
-// Task Stream zone: visual width matches the painted panel border (l=25, r=70.3),
-// even though the alpha-mask punch clears further right (to r=75.8) to remove
-// painted "Xm ago" timestamps that overflow past the border. The cleared
-// negative space beyond r=70.3 stays empty — React renders a tidy bordered
-// panel inside the painted frame.
 export const PANEL_ZONES_PCT = {
-  workflowOverview: { l:  3.0, t: 12.0, r: 22.2, b: 38.0 },
-  taskStream:       { l: 25.0, t: 62.5, r: 70.3, b: 75.5 },
+  workflowOverview: { l:  2.4, t: 11.5, r: 22.8, b: 39.0 },
+  taskStream:       { l: 25.2, t: 60.5, r: 74.8, b: 86.0 },
 } as const;
 
 export type CalibrateMode = false | "seats" | "panels";
