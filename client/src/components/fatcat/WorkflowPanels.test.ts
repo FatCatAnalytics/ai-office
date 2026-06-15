@@ -234,9 +234,13 @@ describe("TaskStreamPanel — source shape", () => {
     expect(src).toMatch(/import \{ classifyPhase[\s\S]*from\s+"\.\/WorkflowOverviewPanel"/);
   });
 
-  it("uses transparent background so the painted panel chrome shows through", () => {
+  // Stage 6.15.5: TaskStreamPanel now draws its OWN border + glow because the
+  // painted task-stream border in the source overflows past the panel — to clear
+  // the painted rows we have to punch past the border, so React supplies one.
+  it("draws its own border + glow (stage 6.15.5)", () => {
     const src = read(TS_PANEL);
-    expect(src).toMatch(/background:\s*"transparent"/);
+    expect(src).toMatch(/border:\s*"1px solid rgba\(56,\s*189,\s*248/);
+    expect(src).toMatch(/borderRadius:\s*8/);
   });
 
   it("renders a verb chip + agent name + progress bar + relative time per row", () => {
