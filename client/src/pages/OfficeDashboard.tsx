@@ -14,6 +14,7 @@ import {
 import IsometricOffice from "../components/IsometricOffice";
 import IsometricOfficeMode from "../components/fatcat/IsometricOfficeMode";
 import MissionControlMode from "../components/fatcat/MissionControlMode";
+import SpriteOfficeMode from "../components/fatcat/SpriteOfficeMode";
 import {
   type OfficeView, DEFAULT_OFFICE_VIEW, OFFICE_VIEW_META,
   isOfficeView, isExperimentalView, selectableViews, resolveOfficeView,
@@ -868,11 +869,13 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       {/* The FatCat modes (iso / mission) carry their own side panels + rails,
           so they render full-width without the legacy right column. The legacy
           sims / board views keep the original 3-column shell. */}
-      {safeView === "iso" || safeView === "mission" ? (
+      {safeView === "iso" || safeView === "mission" || safeView === "sprite" ? (
         <div className="flex-1 min-h-0 overflow-hidden">
           {safeView === "iso"
             ? <IsometricOfficeMode agents={agents} project={project} events={events} />
-            : <MissionControlMode agents={agents} project={project} events={events} tasks={tasks} />}
+            : safeView === "mission"
+            ? <MissionControlMode agents={agents} project={project} events={events} tasks={tasks} />
+            : <SpriteOfficeMode agents={agents} project={project} events={events} tasks={tasks} />}
         </div>
       ) : (
         <div className="flex flex-1 overflow-hidden">
@@ -911,7 +914,7 @@ export default function OfficeDashboard({ agents, events, project, tasks, connec
       )}
 
       {/* ── Bottom bar ── */}
-      {safeView !== "iso" && safeView !== "mission" && <BottomBar />}
+      {safeView !== "iso" && safeView !== "mission" && safeView !== "sprite" && <BottomBar />}
 
       {/* Submit modal */}
       {showModal && (
