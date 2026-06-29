@@ -10,6 +10,7 @@ export interface Agent {
   reportsTo: string | null;
   status: "idle" | "working" | "thinking" | "blocked" | "done";
   currentTask: string | null;
+  progress?: number;
   color: string;
   icon: string;
   createdAt: number;
@@ -90,6 +91,7 @@ export interface Task {
   projectId: number;
   assignedTo: string;
   assignedBy: string;
+  progress?: number;
   status: "todo" | "in_progress" | "blocked" | "done";
   priority: "critical" | "high" | "normal" | "low";
   deadline: number | null;

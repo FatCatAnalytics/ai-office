@@ -9,7 +9,7 @@
 // broken/hidden view: anything not currently selectable falls back to the
 // default.
 
-export type OfficeView = "sims" | "board" | "iso" | "mission";
+export type OfficeView = "sims" | "board" | "iso" | "mission" | "sprite";
 
 export const DEFAULT_OFFICE_VIEW: OfficeView = "board";
 
@@ -17,17 +17,18 @@ export const DEFAULT_OFFICE_VIEW: OfficeView = "board";
 export const STABLE_VIEWS: readonly OfficeView[] = ["sims", "board"];
 
 /** Views still being rebuilt; only shown when the user opts into the preview. */
-export const EXPERIMENTAL_VIEWS: readonly OfficeView[] = ["iso", "mission"];
+export const EXPERIMENTAL_VIEWS: readonly OfficeView[] = ["iso", "mission", "sprite"];
 
 export const OFFICE_VIEW_META: Record<OfficeView, { label: string; experimental?: boolean }> = {
   sims:    { label: "Sims" },
   board:   { label: "Board" },
   iso:     { label: "Iso Office", experimental: true },
   mission: { label: "Mission Control", experimental: true },
+  sprite:  { label: "Sprite Office", experimental: true },
 };
 
 export function isOfficeView(v: unknown): v is OfficeView {
-  return v === "sims" || v === "board" || v === "iso" || v === "mission";
+  return v === "sims" || v === "board" || v === "iso" || v === "mission" || v === "sprite";
 }
 
 export function isExperimentalView(v: OfficeView): boolean {
