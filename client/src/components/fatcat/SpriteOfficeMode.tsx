@@ -3,7 +3,7 @@
 // independent clickable sprite driven by the live project roster.
 
 import { useMemo, useState, type CSSProperties } from "react";
-import { Activity, CheckCircle2, Clock, ExternalLink, Layers, Sparkles, X } from "lucide-react";
+import { Activity, CheckCircle2, ExternalLink, Layers, Sparkles, X } from "lucide-react";
 import type { Agent, AgentEvent, Project, Task } from "../../types";
 import {
   archetypeSpriteUrl,
@@ -37,14 +37,17 @@ interface SeatConfig {
   cardDy: number;
 }
 
+// Seat y-values are tuned so sprites feel grounded on the office floor rather
+// than pasted over the wall. Cards are separate overlays and no longer scale
+// with the sprite itself.
 const SEATS: Record<SeatKey, SeatConfig> = {
-  manager:     { x: 50, y: 48, scale: 1.18, z: 42, labelSide: "right", cardDx: 11, cardDy: -36 },
-  research:    { x: 26, y: 57, scale: 0.72, z: 31, labelSide: "right", cardDx: 8,  cardDy: -25 },
-  qa:          { x: 71, y: 56, scale: 0.72, z: 32, labelSide: "right", cardDx: 8,  cardDy: -24 },
-  writing:     { x: 25, y: 80, scale: 0.76, z: 45, labelSide: "right", cardDx: 8,  cardDy: -22 },
-  investment:  { x: 42, y: 82, scale: 0.74, z: 46, labelSide: "left",  cardDx: -9, cardDy: -19 },
-  data:        { x: 58, y: 82, scale: 0.74, z: 47, labelSide: "right", cardDx: 8,  cardDy: -19 },
-  engineering: { x: 76, y: 78, scale: 0.78, z: 48, labelSide: "left",  cardDx: -9, cardDy: -23 },
+  manager:     { x: 50, y: 61, scale: 0.96, z: 44, labelSide: "right", cardDx: 8,  cardDy: -19 },
+  research:    { x: 26, y: 58, scale: 0.62, z: 31, labelSide: "right", cardDx: 6,  cardDy: -13 },
+  qa:          { x: 71, y: 57, scale: 0.62, z: 32, labelSide: "right", cardDx: 5,  cardDy: -13 },
+  writing:     { x: 25, y: 81, scale: 0.66, z: 45, labelSide: "right", cardDx: 5,  cardDy: -12 },
+  investment:  { x: 42, y: 84, scale: 0.65, z: 46, labelSide: "left",  cardDx: -5, cardDy: -12 },
+  data:        { x: 58, y: 84, scale: 0.65, z: 47, labelSide: "right", cardDx: 5,  cardDy: -12 },
+  engineering: { x: 76, y: 80, scale: 0.68, z: 48, labelSide: "left",  cardDx: -5, cardDy: -12 },
 };
 
 const SPECIALIST_SEATS: SpecialistSeatKey[] = ["research", "qa", "writing", "investment", "data", "engineering"];
@@ -226,11 +229,12 @@ function AgentSpriteButton({
   const progress = pct(slot.agent?.progress, active ? 64 : slot.status === "complete" ? 100 : 0);
   const cardLeft = seat.x + seat.cardDx;
   const cardTop = seat.y + seat.cardDy;
+  const expanded = selected || active || slot.status === "blocked";
 
   return (
     <>
       <button
-        className={`sprite-agent ${slot.status} ${selected ? "selected" : ""} ${reduced ? "reduced" : ""}`}
+        className={`sprite-agent ${seatKey} ${slot.status} ${selected ? "selected" : ""} ${reduced ? "reduced" : ""}`}
         onClick={onSelect}
         style={{
           left: `${seat.x}%`,
@@ -247,7 +251,7 @@ function AgentSpriteButton({
       </button>
 
       <button
-        className={`sprite-agent-card ${seat.labelSide} ${selected ? "selected" : ""}`}
+        className={`sprite-agent-card ${seat.labelSide} ${seatKey} ${expanded ? "expanded" : "compact"} ${selected ? "selected" : ""}`}
         onClick={onSelect}
         style={{
           left: `${cardLeft}%`,
@@ -257,7 +261,7 @@ function AgentSpriteButton({
         } as CSSProperties}
         aria-label={`Open ${slot.name} details`}
       >
-        <strong>{slot.name}</strong>
+        <strong>{slot.roleLabel}</strong>
         <StatusPill status={slot.status} small />
         <span>{slot.task ?? STATUS_TO_COPY[slot.status]}</span>
         <i><b style={{ width: `${progress}%` }} /> <em>{progress}%</em></i>
@@ -282,7 +286,7 @@ function ProjectStatusCard({ project, progress, agents, tasks }: { project: Proj
         <span><b>{active}</b> active</span>
         <span><b>{agents.length}</b> agents</span>
       </div>
-      <p>{project?.description ? project.description.slice(0, 86) : "Manager is ready to delegate work to the FatCat team."}</p>
+      <p>{project?.description ? project.description.slice(0, 74) : "Manager is ready to delegate work to the FatCat team."}</p>
     </div>
   );
 }
@@ -318,12 +322,18 @@ function OfficeBackground() {
   return (
     <div className="sprite-bg" aria-hidden>
       <div className="sprite-bg-wall" />
+      <div className="sprite-bg-window window-left" />
+      <div className="sprite-bg-window window-right" />
+      <div className="sprite-bg-shelf shelf-left" />
+      <div className="sprite-bg-shelf shelf-right" />
       <div className="sprite-bg-logo"><Sparkles size={16} /> Axl.ai</div>
       <div className="sprite-bg-platform" />
       <div className="sprite-bg-dais" />
       <div className="sprite-desk desk-left" />
       <div className="sprite-desk desk-right" />
       <div className="sprite-desk desk-front" />
+      <div className="sprite-lamp lamp-left" />
+      <div className="sprite-lamp lamp-right" />
       <div className="sprite-holo holo-left" />
       <div className="sprite-holo holo-right" />
       <div className="sprite-holo holo-centre" />
@@ -339,11 +349,12 @@ function OfficeBackground() {
 function SpriteOfficeStyles() {
   return (
     <style>{`
-      @keyframes fatcat-breathe { 0%,100% { transform: translate(-50%, -100%) scale(var(--scale)); } 50% { transform: translate(-50%, calc(-100% - 5px)) scale(var(--scale)); } }
-      @keyframes fatcat-working { 0%,100% { transform: translate(-50%, -100%) rotate(-0.6deg) scale(var(--scale)); } 50% { transform: translate(-50%, calc(-100% - 7px)) rotate(0.6deg) scale(var(--scale)); } }
+      @keyframes fatcat-breathe { 0%,100% { transform: translate(-50%, -100%) scale(var(--scale)); } 50% { transform: translate(-50%, calc(-100% - 4px)) scale(var(--scale)); } }
+      @keyframes fatcat-working { 0%,100% { transform: translate(-50%, -100%) rotate(-0.5deg) scale(var(--scale)); } 50% { transform: translate(-50%, calc(-100% - 7px)) rotate(0.5deg) scale(var(--scale)); } }
       .sprite-office-root { height: 100%; min-height: 0; display: flex; flex-direction: column; background: #030712; color: #e5edf8; overflow: hidden; }
       .sprite-office-main { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 306px; border-bottom: 1px solid rgba(148,163,184,.12); }
-      .sprite-office-canvas { position: relative; min-height: 0; overflow: hidden; background: radial-gradient(circle at 50% 42%, #15213b 0%, #07111f 43%, #030712 100%); }
+      .sprite-office-canvas { position: relative; min-height: 0; overflow: hidden; background: radial-gradient(circle at 50% 38%, #17223d 0%, #07111f 46%, #030712 100%); }
+      .sprite-office-canvas:after { content: ''; position: absolute; inset: auto 0 0 0; height: 18%; pointer-events: none; background: linear-gradient(180deg, transparent, rgba(3,7,18,.55)); z-index: 12; }
       .sprite-office-side { border-left: 1px solid rgba(148,163,184,.12); background: rgba(6,10,22,.78); backdrop-filter: blur(18px); padding: 14px; overflow-y: auto; }
       .sprite-office-topline { position: absolute; top: 18px; left: 24px; right: 24px; z-index: 90; display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
       .sprite-office-breadcrumb { font-size: 13px; font-weight: 700; color: #eef4ff; text-shadow: 0 2px 10px rgba(0,0,0,.5); }
@@ -351,48 +362,59 @@ function SpriteOfficeStyles() {
       .sprite-office-live { color: #94a3b8; font-size: 11px; }
       .sprite-office-live span { display: inline-block; width: 6px; height: 6px; border-radius: 999px; background: #10b981; box-shadow: 0 0 10px #10b981; margin-right: 5px; }
       .sprite-bg { position: absolute; inset: 0; overflow: hidden; }
-      .sprite-bg:before { content: ''; position: absolute; inset: 0; background-image: linear-gradient(rgba(59,130,246,.10) 1px, transparent 1px), linear-gradient(90deg, rgba(59,130,246,.08) 1px, transparent 1px); background-size: 42px 42px; transform: perspective(730px) rotateX(58deg) translateY(33%); transform-origin: 50% 100%; opacity: .55; }
-      .sprite-bg-wall { position: absolute; left: 19%; right: 16%; top: 8%; height: 25%; border: 1px solid rgba(148,163,184,.12); border-radius: 22px; background: linear-gradient(180deg, rgba(15,23,42,.84), rgba(15,23,42,.16)); box-shadow: inset 0 0 60px rgba(139,92,246,.12); }
-      .sprite-bg-logo { position: absolute; left: 34%; top: 15%; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 16px 28px; border-radius: 18px; border: 1px solid rgba(139,92,246,.56); background: rgba(8,12,24,.72); color: #c4b5fd; font-size: 27px; font-weight: 800; box-shadow: 0 0 36px rgba(139,92,246,.5), inset 0 0 20px rgba(139,92,246,.18); }
-      .sprite-bg-platform { position: absolute; left: 8%; right: 8%; bottom: 8%; height: 60%; border-radius: 38px; background: linear-gradient(140deg, rgba(15,23,42,.78), rgba(2,6,23,.92)); transform: skewX(-8deg); box-shadow: 0 30px 80px rgba(0,0,0,.65), inset 0 0 0 1px rgba(148,163,184,.10); }
-      .sprite-bg-dais { position: absolute; left: 41%; top: 49%; width: 18%; height: 10%; border-radius: 50%; border: 2px solid rgba(99,102,241,.9); background: radial-gradient(circle, rgba(30,41,59,.92), rgba(2,6,23,.88)); box-shadow: 0 0 28px rgba(99,102,241,.95), inset 0 0 28px rgba(59,130,246,.20); }
+      .sprite-bg:before { content: ''; position: absolute; inset: 0; background-image: linear-gradient(rgba(59,130,246,.10) 1px, transparent 1px), linear-gradient(90deg, rgba(59,130,246,.08) 1px, transparent 1px); background-size: 42px 42px; transform: perspective(730px) rotateX(58deg) translateY(34%); transform-origin: 50% 100%; opacity: .48; }
+      .sprite-bg-wall { position: absolute; left: 16%; right: 14%; top: 7%; height: 31%; border: 1px solid rgba(148,163,184,.12); border-radius: 26px; background: linear-gradient(180deg, rgba(15,23,42,.86), rgba(15,23,42,.22)); box-shadow: inset 0 0 70px rgba(139,92,246,.13), 0 24px 70px rgba(0,0,0,.24); }
+      .sprite-bg-window { position: absolute; top: 13%; width: 10%; height: 13%; border-radius: 16px; border: 1px solid rgba(34,211,238,.28); background: linear-gradient(180deg, rgba(34,211,238,.10), rgba(34,211,238,.02)); box-shadow: 0 0 28px rgba(34,211,238,.10), inset 0 0 18px rgba(34,211,238,.08); }
+      .window-left { left: 23%; } .window-right { right: 22%; }
+      .sprite-bg-shelf { position: absolute; top: 29%; width: 15%; height: 3%; border-radius: 999px; background: linear-gradient(90deg, rgba(148,163,184,.20), rgba(148,163,184,.04)); box-shadow: 0 10px 18px rgba(0,0,0,.26); }
+      .shelf-left { left: 22%; } .shelf-right { right: 20%; }
+      .sprite-bg-logo { position: absolute; left: 39%; top: 15%; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 13px 24px; border-radius: 18px; border: 1px solid rgba(139,92,246,.56); background: rgba(8,12,24,.74); color: #c4b5fd; font-size: 24px; font-weight: 800; box-shadow: 0 0 36px rgba(139,92,246,.38), inset 0 0 20px rgba(139,92,246,.16); }
+      .sprite-bg-platform { position: absolute; left: 8%; right: 8%; bottom: 8%; height: 62%; border-radius: 40px; background: linear-gradient(140deg, rgba(15,23,42,.78), rgba(2,6,23,.92)); transform: skewX(-8deg); box-shadow: 0 30px 80px rgba(0,0,0,.65), inset 0 0 0 1px rgba(148,163,184,.10); }
+      .sprite-bg-dais { position: absolute; left: 39%; top: 61%; width: 22%; height: 11%; border-radius: 50%; border: 2px solid rgba(99,102,241,.86); background: radial-gradient(circle, rgba(30,41,59,.92), rgba(2,6,23,.88)); box-shadow: 0 0 28px rgba(99,102,241,.70), inset 0 0 28px rgba(59,130,246,.20); }
       .sprite-desk { position: absolute; z-index: 2; border-radius: 14px; background: linear-gradient(135deg, #1f2937, #0f172a); border: 1px solid rgba(148,163,184,.13); box-shadow: 0 20px 40px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.03); }
       .desk-left { left: 12%; bottom: 17%; width: 25%; height: 14%; transform: skewX(-10deg); }
       .desk-right { right: 9%; bottom: 17%; width: 26%; height: 15%; transform: skewX(10deg); }
       .desk-front { left: 38%; bottom: 7%; width: 24%; height: 11%; transform: skewX(-7deg); }
+      .sprite-lamp { position: absolute; z-index: 8; width: 4%; height: 8%; border-radius: 999px; background: radial-gradient(circle, rgba(245,158,11,.55), rgba(245,158,11,.08) 52%, transparent 70%); filter: blur(.2px); }
+      .lamp-left { left: 31%; top: 47%; } .lamp-right { right: 28%; top: 48%; }
       .sprite-holo { position: absolute; z-index: 4; border-radius: 10px; border: 1px solid rgba(34,211,238,.4); background: linear-gradient(180deg, rgba(14,165,233,.12), rgba(8,47,73,.04)); box-shadow: 0 0 24px rgba(34,211,238,.18); }
       .sprite-holo:after { content: ''; position: absolute; inset: 18% 16%; border-top: 2px solid rgba(34,211,238,.5); border-bottom: 2px solid rgba(139,92,246,.5); opacity: .75; }
-      .holo-left { left: 18%; top: 35%; width: 10%; height: 18%; }
-      .holo-right { right: 25%; top: 36%; width: 8%; height: 16%; }
-      .holo-centre { left: 48%; bottom: 22%; width: 11%; height: 17%; }
-      .sprite-plant { position: absolute; z-index: 5; width: 5%; aspect-ratio: 1; border-radius: 50% 50% 10% 10%; background: radial-gradient(circle at 50% 30%, #22c55e, #14532d 58%, #0f172a 60%); filter: drop-shadow(0 12px 16px rgba(0,0,0,.45)); opacity: .75; }
-      .plant-left { left: 9%; top: 42%; } .plant-right { right: 13%; top: 29%; }
-      .sprite-neon-route { position: absolute; z-index: 6; height: 2px; border-radius: 999px; opacity: .65; filter: drop-shadow(0 0 7px currentColor); }
-      .route-a { left: 32%; top: 63%; width: 19%; background: linear-gradient(90deg, transparent, #22d3ee, transparent); transform: rotate(-12deg); color: #22d3ee; }
-      .route-b { left: 50%; top: 64%; width: 21%; background: linear-gradient(90deg, transparent, #8b5cf6, transparent); transform: rotate(16deg); color: #8b5cf6; }
-      .route-c { left: 40%; top: 75%; width: 18%; background: linear-gradient(90deg, transparent, #34d399, transparent); transform: rotate(42deg); color: #34d399; }
+      .holo-left { left: 18%; top: 39%; width: 10%; height: 17%; }
+      .holo-right { right: 24%; top: 39%; width: 8%; height: 15%; }
+      .holo-centre { left: 51%; bottom: 22%; width: 10%; height: 15%; }
+      .sprite-plant { position: absolute; z-index: 5; width: 5%; aspect-ratio: 1; border-radius: 50% 50% 10% 10%; background: radial-gradient(circle at 50% 30%, #22c55e, #14532d 58%, #0f172a 60%); filter: drop-shadow(0 12px 16px rgba(0,0,0,.45)); opacity: .65; }
+      .plant-left { left: 9%; top: 44%; } .plant-right { right: 13%; top: 34%; }
+      .sprite-neon-route { position: absolute; z-index: 6; height: 2px; border-radius: 999px; opacity: .48; filter: drop-shadow(0 0 7px currentColor); }
+      .route-a { left: 31%; top: 66%; width: 18%; background: linear-gradient(90deg, transparent, #22d3ee, transparent); transform: rotate(-12deg); color: #22d3ee; }
+      .route-b { left: 51%; top: 66%; width: 20%; background: linear-gradient(90deg, transparent, #8b5cf6, transparent); transform: rotate(16deg); color: #8b5cf6; }
+      .route-c { left: 41%; top: 79%; width: 17%; background: linear-gradient(90deg, transparent, #34d399, transparent); transform: rotate(42deg); color: #34d399; }
       .sprite-project-card, .sprite-bench-panel, .sprite-agent-card, .sprite-side-card { border: 1px solid rgba(148,163,184,.14); background: rgba(8,13,28,.78); backdrop-filter: blur(14px); box-shadow: 0 16px 50px rgba(0,0,0,.38), inset 0 0 0 1px rgba(255,255,255,.025); }
-      .sprite-project-card { position: absolute; z-index: 75; left: 24px; top: 70px; width: 238px; padding: 16px; border-radius: 16px; }
+      .sprite-project-card { position: absolute; z-index: 75; left: 24px; top: 76px; width: 214px; padding: 14px; border-radius: 16px; }
       .sprite-project-card small, .sprite-side-title, .sprite-panel-header { text-transform: uppercase; letter-spacing: .08em; color: #94a3b8; font-size: 10px; font-weight: 800; }
       .sprite-project-row { display: flex; justify-content: space-between; margin-top: 8px; align-items: center; }
       .sprite-project-row strong { color: #34d399; font-size: 18px; } .sprite-project-row span { color: #c4b5fd; font-weight: 900; }
-      .sprite-ring { position: absolute; top: 18px; right: 16px; width: 50px; height: 50px; border-radius: 50%; background: conic-gradient(#34d399 var(--progress), rgba(148,163,184,.14) 0); }
+      .sprite-ring { position: absolute; top: 18px; right: 16px; width: 44px; height: 44px; border-radius: 50%; background: conic-gradient(#34d399 var(--progress), rgba(148,163,184,.14) 0); }
       .sprite-ring:after { content: ''; position: absolute; inset: 7px; border-radius: 50%; background: #08111f; }
-      .sprite-project-metrics { display: flex; gap: 13px; margin: 14px 0; padding-top: 12px; border-top: 1px solid rgba(148,163,184,.13); } .sprite-project-metrics span { font-size: 11px; color: #94a3b8; } .sprite-project-metrics b { color: #e5edf8; }
+      .sprite-project-metrics { display: flex; gap: 11px; margin: 12px 0; padding-top: 11px; border-top: 1px solid rgba(148,163,184,.13); } .sprite-project-metrics span { font-size: 11px; color: #94a3b8; } .sprite-project-metrics b { color: #e5edf8; }
       .sprite-project-card p { margin: 0; color: #94a3b8; font-size: 11px; line-height: 1.45; }
       .sprite-agent { position: absolute; border: 0; background: transparent; padding: 0; transform: translate(-50%, -100%) scale(var(--scale)); transform-origin: 50% 100%; cursor: pointer; animation: fatcat-breathe 4.6s ease-in-out infinite; }
       .sprite-agent.working, .sprite-agent.verifying { animation: fatcat-working 2.8s ease-in-out infinite; }
       .sprite-agent.reduced { animation: none !important; }
-      .sprite-agent img { display: block; height: min(25vh, 250px); width: auto; pointer-events: none; filter: drop-shadow(0 22px 22px rgba(0,0,0,.55)); }
-      .sprite-agent-glow { position: absolute; left: 50%; bottom: 3%; width: 72%; height: 17%; border-radius: 50%; transform: translateX(-50%); background: radial-gradient(circle, var(--status-color), transparent 68%); opacity: .16; filter: blur(7px); }
-      .sprite-agent.working .sprite-agent-glow, .sprite-agent.verifying .sprite-agent-glow, .sprite-agent.selected .sprite-agent-glow { opacity: .42; }
+      .sprite-agent img { display: block; height: min(21vh, 205px); width: auto; pointer-events: none; filter: drop-shadow(0 22px 22px rgba(0,0,0,.55)); }
+      .sprite-agent.manager img { height: min(22vh, 215px); }
+      .sprite-agent-glow { position: absolute; left: 50%; bottom: 3%; width: 72%; height: 17%; border-radius: 50%; transform: translateX(-50%); background: radial-gradient(circle, var(--status-color), transparent 68%); opacity: .10; filter: blur(7px); }
+      .sprite-agent.working .sprite-agent-glow, .sprite-agent.verifying .sprite-agent-glow, .sprite-agent.selected .sprite-agent-glow { opacity: .40; }
       .sprite-agent.blocked .sprite-agent-glow { opacity: .55; }
-      .sprite-agent-card { position: absolute; width: 178px; border-radius: 14px; padding: 10px 11px; color: #dbeafe; text-align: left; cursor: pointer; transition: transform .18s ease, opacity .18s ease, border-color .18s ease; }
+      .sprite-agent-card { position: absolute; min-width: 104px; max-width: 176px; border-radius: 999px; padding: 7px 10px; color: #dbeafe; text-align: left; cursor: pointer; transition: width .18s ease, border-radius .18s ease, transform .18s ease, opacity .18s ease, border-color .18s ease, box-shadow .18s ease; }
       .sprite-agent-card.left { transform: translate(-100%, 0); } .sprite-agent-card.right { transform: translate(0, 0); }
-      .sprite-agent-card:hover, .sprite-agent-card.selected { opacity: 1; border-color: var(--agent-color); box-shadow: 0 16px 50px rgba(0,0,0,.38), 0 0 18px color-mix(in srgb, var(--agent-color), transparent 50%); }
-      .sprite-agent-card strong { display: block; font-size: 12px; margin-bottom: 4px; } .sprite-agent-card span:not(:first-child) { display: block; font-size: 11px; color: #94a3b8; margin-top: 7px; line-height: 1.35; }
+      .sprite-agent-card:hover, .sprite-agent-card.selected { opacity: 1; border-color: var(--agent-color); box-shadow: 0 16px 50px rgba(0,0,0,.38), 0 0 18px color-mix(in srgb, var(--agent-color), transparent 55%); }
+      .sprite-agent-card strong { display: block; font-size: 11px; line-height: 1.2; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .sprite-agent-card span:not(:first-child) { display: block; font-size: 11px; color: #94a3b8; margin-top: 7px; line-height: 1.35; }
       .sprite-agent-card i { display: flex; align-items: center; gap: 8px; margin-top: 8px; height: 5px; border-radius: 999px; background: rgba(148,163,184,.18); font-style: normal; }
       .sprite-agent-card i b { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--agent-color), #22d3ee); } .sprite-agent-card i em { font-style: normal; color: #cbd5e1; font-size: 10px; }
+      .sprite-agent-card.compact span:not(:first-child), .sprite-agent-card.compact i { display: none; }
+      .sprite-agent-card.expanded { width: 176px; border-radius: 14px; padding: 10px 11px; }
+      .sprite-agent-card.manager.compact { min-width: 118px; }
       .sprite-office-workflow-chip { position: absolute; z-index: 80; left: 24px; bottom: 18px; display: flex; align-items: center; gap: 8px; padding: 8px 11px; border-radius: 999px; color: #c4b5fd; background: rgba(8,13,28,.8); border: 1px solid rgba(139,92,246,.25); font-size: 11px; font-weight: 800; }
       .sprite-bench-panel { position: absolute; right: 18px; bottom: 18px; z-index: 80; border-radius: 14px; padding: 10px 12px; display: flex; gap: 8px; align-items: center; font-size: 11px; color: #94a3b8; } .sprite-bench-panel strong { color: #e5edf8; } .sprite-bench-panel span { padding: 3px 7px; border-radius: 999px; background: rgba(148,163,184,.10); }
       .sprite-panel-header { display: flex; justify-content: space-between; align-items: center; margin: 2px 0 12px; } .sprite-panel-header button { color: #94a3b8; background: transparent; border: 0; cursor: pointer; }
@@ -403,7 +425,7 @@ function SpriteOfficeStyles() {
       .sprite-manager-summary button { width: 100%; border: 0; border-radius: 10px; background: linear-gradient(135deg, #7c3aed, #4f46e5); color: white; padding: 10px 12px; font-weight: 800; display: flex; justify-content: center; align-items: center; gap: 7px; }
       .sprite-task-list { margin-top: 12px; display: grid; gap: 10px; } .sprite-task-row { display: grid; grid-template-columns: 8px 1fr auto; gap: 9px; align-items: start; } .sprite-task-dot { width: 8px; height: 8px; border-radius: 999px; margin-top: 5px; } .sprite-task-row strong { display: block; color: #e5edf8; font-size: 12px; } .sprite-task-row small { color: #94a3b8; font-size: 10px; } .sprite-task-row em { color: #c4b5fd; font-size: 11px; font-style: normal; }
       .sprite-empty { color: #64748b; font-size: 12px; }
-      .sprite-office-feed { height: 118px; flex-shrink: 0; background: rgba(8,13,28,.88); display: grid; grid-template-columns: 150px 1fr; align-items: center; padding: 0 20px; gap: 16px; }
+      .sprite-office-feed { height: 106px; flex-shrink: 0; background: rgba(8,13,28,.88); display: grid; grid-template-columns: 150px 1fr; align-items: center; padding: 0 20px; gap: 16px; }
       .sprite-feed-title { display: flex; gap: 8px; align-items: center; color: #94a3b8; font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
       .sprite-feed-items { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); gap: 14px; overflow-x: auto; } .sprite-feed-item { display: flex; gap: 9px; align-items: flex-start; min-width: 0; padding-right: 14px; border-right: 1px solid rgba(148,163,184,.11); }
       .sprite-feed-icon { width: 34px; height: 34px; border-radius: 999px; flex-shrink: 0; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #7c3aed, #22c55e); } .sprite-feed-item time { display: block; color: #64748b; font-size: 10px; } .sprite-feed-item strong { display: block; color: #e5edf8; font-size: 12px; } .sprite-feed-item span:last-child { color: #94a3b8; font-size: 11px; line-height: 1.35; }
