@@ -238,6 +238,25 @@
   }
 }
 
+/* Sprite Office visual override: keep labels quiet in the scene. The right-hand
+   detail panel is where the expanded selected-agent information belongs. */
+.sprite-office-root .sprite-agent-card.expanded {
+  width: auto !important;
+  min-width: 104px !important;
+  max-width: 132px !important;
+  border-radius: 999px !important;
+  padding: 7px 10px !important;
+}
+
+.sprite-office-root .sprite-agent-card.expanded span:not(:first-child),
+.sprite-office-root .sprite-agent-card.expanded i {
+  display: none !important;
+}
+
+.sprite-office-root .sprite-agent-card.selected {
+  box-shadow: 0 0 0 1px var(--agent-color), 0 0 14px color-mix(in srgb, var(--agent-color), transparent 65%) !important;
+}
+
 @keyframes fadeOut {
   from { opacity: 1; }
   to   { opacity: 0; pointer-events: none; }
